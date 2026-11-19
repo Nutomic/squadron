@@ -33,17 +33,20 @@ pub struct PipelineCtx {
 }
 
 /// How to obtain implementer/validator outputs for a lane.
-/// In test mode, exec a command on the sprite that prints JSON to stdout.
-/// In real mode, this would run full harness; here we provide a hookable command builder.
+///
+/// `Real` runs the actual harness chain inside the sprite and is the only mode
+/// used by the public API. `Command` is TEST-ONLY: it execs a fixed command that
+/// prints JSON to stdout, and must never be reachable from untrusted input.
 #[derive(Debug, Clone)]
 pub enum HarnessMode {
-    /// Exec `command` inside sprite; stdout must be schema-valid JSON for the role.
+    /// Real mode: attempts the opencode -> codex -> claude -> curl-loop chain.
+    Real { gateway_connector_id: String },
+    /// Test-only hook: exec `command` inside sprite; stdout must be schema-valid
+    /// JSON for the role. Never constructed from API/web input.
     Command {
         impl_command: String,
         val_command: String,
     },
-    /// Real mode placeholder: attempts opencode/codex/curl-loop chain (best-effort).
-    Real { gateway_connector_id: String },
 }
 
 impl Default for HarnessMode {

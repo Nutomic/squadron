@@ -2,7 +2,6 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use orchestrator::HarnessMode;
 use serde::{Deserialize, Serialize};
 
 use crate::snapshot;
@@ -22,10 +21,6 @@ pub struct CreateRunBody {
     pub brief: String,
     #[serde(default)]
     pub n_lanes: Option<usize>,
-    #[serde(default)]
-    pub impl_command: Option<String>,
-    #[serde(default)]
-    pub val_command: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,15 +35,8 @@ async fn create_run(
     Json(body): Json<CreateRunBody>,
 ) -> Result<(StatusCode, Json<CreateRunResponse>), (StatusCode, String)> {
     let n = body.n_lanes.unwrap_or(state.config.n_lanes);
-    let harness = match (body.impl_command, body.val_command) {
-        (Some(impl_command), Some(val_command)) => HarnessMode::Command {
-            impl_command,
-            val_command,
-        },
-        _ => state.real_harness(),
-    };
     let run = state
-        .start_pipeline(body.brief, n, harness)
+        .start_pipeline(body.brief, n, state.real_harness())
         .await
         .map_err(internal)?;
     Ok((
