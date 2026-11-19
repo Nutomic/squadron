@@ -15,3 +15,4 @@ reqwest.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 axum.workspace = true
+sprites-client.workspace = true

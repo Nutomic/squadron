@@ -845,6 +845,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sprites-client",
  "tempfile",
  "thiserror",
  "tokio",
