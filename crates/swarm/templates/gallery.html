@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}sprite swarm — run {{ run_id }}{% endblock %}
+{% block content %}
+<div class="flex flex-wrap items-center gap-3 mb-4">
+  <h1 class="text-2xl font-bold text-primary font-mono">{{ run_id }}</h1>
+  <span class="badge badge-sm badge-ghost">{{ status }}</span>
+  <div class="flex-1"></div>
+  <a href="/runs" class="btn btn-ghost btn-sm text-base-content/60">&larr; all runs</a>
+</div>
+<div id="island" data-run-id="{{ run_id }}" data-events-url="{{ events_url }}">
+  <div class="flex items-center gap-3 text-base-content/40 py-12 justify-center">
+    <span class="loading loading-spinner"></span> connecting to run events...
+  </div>
+</div>
+<dialog id="tokei-dialog" class="modal">
+  <div class="modal-box bg-base-100"></div>
+  <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+{% endblock %}

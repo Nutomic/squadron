@@ -1,0 +1,23 @@
+<table class="table table-zebra bg-base-100 rounded-lg">
+  <thead>
+    <tr>
+      <th>run</th>
+      <th>status</th>
+      <th>brief</th>
+      <th>created</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      <td><a class="link link-primary" href="/{{ row.id }}">{{ row.id }}</a></td>
+      <td><span class="badge badge-sm {% if row.status == "judged" %}badge-success{% else if row.status == "failed" %}badge-error{% else if row.status == "running" %}badge-warning{% else if row.status == "promoted" %}badge-accent{% else %}badge-ghost{% endif %}">{{ row.status }}</span></td>
+      <td class="max-w-md truncate text-base-content/70">{{ row.brief }}</td>
+      <td class="text-base-content/50 whitespace-nowrap">{{ row.created }}</td>
+    </tr>
+    {% endfor %}
+    {% if rows.len() == 0 %}
+    <tr><td colspan="4" class="text-base-content/40 text-center py-8">no runs yet — <a class="link link-primary" href="/">launch one</a></td></tr>
+    {% endif %}
+  </tbody>
+</table>

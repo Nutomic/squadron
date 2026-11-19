@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}sprite swarm — lane {{ idx }}{% endblock %}
+{% block content %}
+<div class="flex flex-wrap items-center gap-3 mb-4">
+  <h1 class="text-2xl font-bold text-primary">lane {{ idx }}</h1>
+  <span class="badge badge-sm badge-ghost font-mono">{{ run_id }}</span>
+  <span class="badge badge-sm {% if state == "validated" %}badge-success{% else if state == "failed" %}badge-error{% else if state == "running" %}badge-warning{% else %}badge-ghost{% endif %}">{{ state }}</span>
+  <div class="flex-1"></div>
+  <a href="/{{ run_id }}" class="btn btn-ghost btn-sm text-base-content/60">&larr; gallery</a>
+</div>
+
+{% if let Some(url) = impl_url %}
+<section class="mb-6">
+  <div class="flex flex-wrap items-center gap-2 mb-2">
+    <span class="text-sm text-base-content/60">live preview</span>
+    <a class="link link-primary link-hover text-sm" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ url }}</a>
+  </div>
+  <iframe
+    src="{{ url }}"
+    sandbox="allow-scripts"
+    referrerpolicy="no-referrer"
+    class="w-full h-[560px] rounded-lg border border-base-content/10 bg-base-100"></iframe>
+</section>
+{% endif %}
+
+<div class="grid gap-6 lg:grid-cols-2">
+  <section class="card bg-base-100 border border-base-content/10">
+    <div class="card-body">
+      <h2 class="card-title text-primary">validator report</h2>
+      {% if let Some(v) = val_verdict %}
+      <p class="text-sm">verdict: <span class="badge badge-sm {% if v == "pass" %}badge-success{% else %}badge-error{% endif %}">{{ v }}</span>{% if let Some(q) = val_quality %} &middot; quality {{ q }}{% endif %}</p>
+      {% else %}
+      <p class="text-sm text-base-content/40">validation not complete.</p>
+      {% endif %}
+      {% if val_summary.len() > 0 %}
+      <pre class="whitespace-pre-wrap text-xs leading-relaxed bg-base-200 rounded p-3 text-base-content/80">{{ val_summary }}</pre>
+      {% endif %}
+    </div>
+  </section>
+  <div class="flex flex-col gap-6">
+    <section class="card bg-base-100 border border-base-content/10">
+      <div class="card-body">
+        <h2 class="card-title text-primary">artifacts</h2>
+        <dl class="grid grid-cols-2 gap-2 text-sm">
+          <dt class="text-base-content/50">agent / model</dt><dd>{{ model }}</dd>
+          <dt class="text-base-content/50">build time</dt><dd>{{ build }}</dd>
+          <dt class="text-base-content/50">cost</dt><dd>{{ cost }}</dd>
+          <dt class="text-base-content/50">screenshot</dt><dd>{{ screenshot_state }}</dd>
+        </dl>
+        {% if tokei_json.len() > 0 %}
+        <details class="mt-2">
+          <summary class="text-sm text-base-content/70 cursor-pointer">tokei output</summary>
+          <pre class="whitespace-pre-wrap text-xs bg-base-200 rounded p-3 mt-2 text-base-content/80">{{ tokei_json }}</pre>
+        </details>
+        {% endif %}
+        <div class="card-actions mt-2">
+          <a href="/{{ run_id }}/source/{{ idx }}" class="btn btn-sm btn-outline">download source (.tar.gz)</a>
+          <a href="/{{ run_id }}/thumb/{{ idx }}" class="btn btn-sm btn-outline" {% if screenshot_state != "done" %}disabled{% endif %}>screenshot</a>
+        </div>
+      </div>
+    </section>
+    {% if console_tail.len() > 0 %}
+    <section class="card bg-base-100 border border-base-content/10">
+      <div class="card-body">
+        <h2 class="card-title text-primary">console</h2>
+        <pre class="whitespace-pre-wrap text-xs leading-relaxed bg-base-200 rounded p-3 text-base-content/80 max-h-64 overflow-auto">{{ console_tail }}</pre>
+      </div>
+    </section>
+    {% endif %}
+    {% if let Some(err) = error %}
+    <section class="card bg-base-100 border border-error/30">
+      <div class="card-body">
+        <h2 class="card-title text-error">lane error</h2>
+        <pre class="whitespace-pre-wrap text-xs text-error/80">{{ err }}</pre>
+      </div>
+    </section>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
