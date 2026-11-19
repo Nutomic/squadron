@@ -1,0 +1,10 @@
+@import 'tailwindcss';
+@plugin 'daisyui' {
+  themes: dark --default;
+}
+@source '../../templates/**/*.html';
+@source './';
+
+html {
+  color-scheme: dark;
+}
