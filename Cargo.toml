@@ -28,3 +28,6 @@ base64 = "0.22"
 tempfile = "3"
 fs2 = "0.4"
 sprites-client = { path = "crates/sprites-client" }
+llm-gateway = { path = "crates/llm-gateway" }
+prompts = { path = "crates/prompts" }
+store = { path = "crates/store" }

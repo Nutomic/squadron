@@ -4,7 +4,10 @@ use store::{is_valid_run_id, new_run_id, Store, StoreError};
 async fn run_lifecycle_persists_and_lists() {
     let store = Store::connect_in_memory().await.unwrap();
     store.migrate().await.unwrap();
-    let run = store.create_run("build a game", 3, 1_700_000_000_000).await.unwrap();
+    let run = store
+        .create_run("build a game", 3, 1_700_000_000_000)
+        .await
+        .unwrap();
     assert!(is_valid_run_id(&run.id));
     assert_eq!(run.status, "queued");
     assert_eq!(run.n_lanes, 3);
@@ -16,7 +19,14 @@ async fn run_lifecycle_persists_and_lists() {
 
     store.update_run_status(&run.id, "running").await.unwrap();
     store
-        .finish_run(&run.id, "judged", "Bold. Playable.", 2, 1.25, 1_700_000_100_000)
+        .finish_run(
+            &run.id,
+            "judged",
+            "Bold. Playable.",
+            2,
+            1.25,
+            1_700_000_100_000,
+        )
         .await
         .unwrap();
     let fetched = store.get_run(&run.id).await.unwrap().unwrap();
@@ -99,12 +109,15 @@ async fn lanes_store_all_pipeline_fields() {
     assert_eq!(lane.cost_usd, Some(0.30000000000000004));
 
     assert_eq!(store.list_lanes(&run.id).await.unwrap().len(), 1);
-    store
-        .set_lane_error(&run.id, 0, "timeout")
-        .await
-        .unwrap();
+    store.set_lane_error(&run.id, 0, "timeout").await.unwrap();
     assert_eq!(
-        store.get_lane(&run.id, 0).await.unwrap().unwrap().error.as_deref(),
+        store
+            .get_lane(&run.id, 0)
+            .await
+            .unwrap()
+            .unwrap()
+            .error
+            .as_deref(),
         Some("timeout")
     );
     assert!(matches!(

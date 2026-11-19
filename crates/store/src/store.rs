@@ -204,7 +204,10 @@ impl Store {
         )
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(|row| lane_from_query_row!(row)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|row| lane_from_query_row!(row))
+            .collect())
     }
 
     pub async fn update_lane_state(

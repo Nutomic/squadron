@@ -1539,8 +1539,11 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "fs2",
+ "llm-gateway",
+ "prompts",
  "serde",
  "serde_json",
+ "store",
  "tempfile",
  "thiserror",
  "tokio",

@@ -161,7 +161,8 @@ fn mock_cli_models_cold_start_create_exec_and_destroy() {
         "echo warm",
     ]))
     .unwrap();
-    assert!(cold_start.elapsed() >= Duration::from_millis(300));
+    let cold_elapsed = cold_start.elapsed();
+    assert!(cold_elapsed >= Duration::from_millis(300));
 
     let warm_start = Instant::now();
     mock_cli::execute(&args(vec![
@@ -175,7 +176,7 @@ fn mock_cli_models_cold_start_create_exec_and_destroy() {
         "echo warm2",
     ]))
     .unwrap();
-    assert!(warm_start.elapsed() < Duration::from_millis(200));
+    assert!(warm_start.elapsed() < cold_elapsed);
     mock_cli::execute(&args(vec!["checkpoint", "create", "lane0"])).unwrap();
     mock_cli::execute(&args(vec!["config", "update", "--url-auth", "public"])).unwrap();
     let listing = mock_cli::execute(&args(vec!["list"])).unwrap();

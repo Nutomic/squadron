@@ -15,6 +15,13 @@ axum.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+llm-gateway.workspace = true
+prompts.workspace = true
+store.workspace = true
+
+[[test]]
+name = "foundation"
+path = "../../tests/foundation.rs"
 
 [[bin]]
 name = "mock-sprite-cli"
