@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COALESCE(MAX(ts), 0) AS max_ts FROM lane_events WHERE run_id = ? AND lane_idx = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "max_ts",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f036aee77522ffc6103e6aa47439b8d781200d2adf34227bd667425bb0364d66"
+}

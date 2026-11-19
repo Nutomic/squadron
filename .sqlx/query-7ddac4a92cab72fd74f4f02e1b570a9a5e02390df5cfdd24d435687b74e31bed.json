@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE lanes SET val_verdict = ?, val_summary = ?, val_quality = ? WHERE run_id = ? AND idx = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "7ddac4a92cab72fd74f4f02e1b570a9a5e02390df5cfdd24d435687b74e31bed"
+}

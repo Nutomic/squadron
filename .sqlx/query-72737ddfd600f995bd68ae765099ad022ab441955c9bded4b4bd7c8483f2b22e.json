@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE lanes SET cost_usd = COALESCE(cost_usd, 0) + ? WHERE run_id = ? AND idx = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "72737ddfd600f995bd68ae765099ad022ab441955c9bded4b4bd7c8483f2b22e"
+}

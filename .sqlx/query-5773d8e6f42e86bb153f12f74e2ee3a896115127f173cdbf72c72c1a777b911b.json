@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE lanes SET sprite_name = ?, impl_url = ?, impl_model = ?, impl_started_at = ?, impl_deadline = ? WHERE run_id = ? AND idx = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "5773d8e6f42e86bb153f12f74e2ee3a896115127f173cdbf72c72c1a777b911b"
+}

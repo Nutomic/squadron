@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE runs SET status = ?, judge_verdict = ?, winner_lane = ?, total_cost_usd = ?, finished_at = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "2281092b6976a0964e11cd124631a2cdf612fdb2b076a04e9a659b0afb1b5aca"
+}

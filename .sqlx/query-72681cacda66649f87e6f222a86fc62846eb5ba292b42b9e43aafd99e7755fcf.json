@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO lane_events (run_id, lane_idx, ts, kind, payload) VALUES (?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "72681cacda66649f87e6f222a86fc62846eb5ba292b42b9e43aafd99e7755fcf"
+}
