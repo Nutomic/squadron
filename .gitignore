@@ -3,3 +3,5 @@
 /dev.db.*
 /.env
 *.log
+crates/swarm/island/node_modules/
+crates/swarm/island/package-lock.json

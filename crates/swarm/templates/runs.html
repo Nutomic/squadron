@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}sprite swarm — runs{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-primary mb-4">runs</h1>
+<div id="runs-table" hx-get="/runs/table" hx-trigger="every 5s, refresh from:body" hx-swap="outerHTML">
+  {% include "runs_table.html" %}
+</div>
+{% endblock %}

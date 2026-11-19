@@ -322,8 +322,10 @@ async fn run_lane_attempt(
     transition(&ctx, &run_id, idx, LaneState::Done).await?;
     publish(&ctx, &run_id).await;
 
-    // 200-check + artifacts at lane completion (after impl)
-    let http_ok = artifacts::check_http_200(&impl_url).await
+    // 200-check + artifacts at lane completion (after impl).
+    // Test mode uses fake URLs, so skip real network probes to keep the pipeline deterministic.
+    let http_ok = ctx.config.test_mode
+        || artifacts::check_http_200(&impl_url).await
         || artifacts::check_http_200("http://127.0.0.1:8080").await;
     let _ = ctx
         .store
@@ -549,7 +551,9 @@ async fn run_judge_phase(
     let reports = judge::validator_reports_from_lanes(validated);
     let mut extracts = Vec::new();
     for l in validated {
-        if let Some(url) = &l.impl_url {
+        if ctx.config.test_mode {
+            extracts.push(format!("<test extract for lane {}>", l.idx));
+        } else if let Some(url) = &l.impl_url {
             let ext = judge::fetch_sanitized_extract(url).await;
             if ext.is_empty() {
                 extracts.push(format!("<empty extract for lane {}>", l.idx));

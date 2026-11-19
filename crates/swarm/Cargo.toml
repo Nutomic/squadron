@@ -7,12 +7,14 @@ license.workspace = true
 [dependencies]
 axum.workspace = true
 tokio.workspace = true
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+askama.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-tokio-stream = { version = "0.1", features = ["sync"] }
-futures = "0.3"
-store = { path = "../store" }
+tracing-subscriber.workspace = true
+store.workspace = true
 orchestrator = { path = "../orchestrator" }
 sprites-client = { path = "../sprites-client" }
 llm-gateway = { path = "../llm-gateway" }
@@ -21,4 +23,5 @@ prompts = { path = "../prompts" }
 [dev-dependencies]
 tempfile.workspace = true
 reqwest.workspace = true
-tower = { version = "0.5", features = ["util"] }
+tower.workspace = true
+http-body-util.workspace = true
