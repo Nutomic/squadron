@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE lanes SET screenshot_state = ?, screenshot_path = COALESCE(?, screenshot_path) WHERE run_id = ? AND idx = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "5620f62981b40668a6aded9f31cf3621ee3fc7d63b0a1b2158a978728bb6456a"
+}

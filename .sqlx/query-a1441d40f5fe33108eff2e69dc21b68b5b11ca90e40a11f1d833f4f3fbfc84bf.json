@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE lanes SET console_tail = ? WHERE run_id = ? AND idx = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "a1441d40f5fe33108eff2e69dc21b68b5b11ca90e40a11f1d833f4f3fbfc84bf"
+}

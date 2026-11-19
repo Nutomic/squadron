@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Run {
     pub id: String,
     pub brief: String,
@@ -11,7 +13,7 @@ pub struct Run {
     pub finished_at: Option<i64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Lane {
     pub run_id: String,
     pub idx: i64,
@@ -39,7 +41,7 @@ pub struct Lane {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LaneEvent {
     pub run_id: String,
     pub lane_idx: i64,

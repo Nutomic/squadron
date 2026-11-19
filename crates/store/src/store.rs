@@ -338,6 +338,42 @@ impl Store {
         ensure_lane(result.rows_affected(), run_id, idx)
     }
 
+    pub async fn set_screenshot_state(
+        &self,
+        run_id: &str,
+        idx: i64,
+        screenshot_state: &str,
+        screenshot_path: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let result = sqlx::query!(
+            "UPDATE lanes SET screenshot_state = ?, screenshot_path = COALESCE(?, screenshot_path) WHERE run_id = ? AND idx = ?",
+            screenshot_state,
+            screenshot_path,
+            run_id,
+            idx
+        )
+        .execute(&self.pool)
+        .await?;
+        ensure_lane(result.rows_affected(), run_id, idx)
+    }
+
+    pub async fn set_lane_console_tail(
+        &self,
+        run_id: &str,
+        idx: i64,
+        console_tail: &str,
+    ) -> Result<(), StoreError> {
+        let result = sqlx::query!(
+            "UPDATE lanes SET console_tail = ? WHERE run_id = ? AND idx = ?",
+            console_tail,
+            run_id,
+            idx
+        )
+        .execute(&self.pool)
+        .await?;
+        ensure_lane(result.rows_affected(), run_id, idx)
+    }
+
     pub async fn set_lane_error(
         &self,
         run_id: &str,
