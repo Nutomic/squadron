@@ -26,3 +26,4 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "macros", "migr
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 tempfile = "3"
+fs2 = "0.4"

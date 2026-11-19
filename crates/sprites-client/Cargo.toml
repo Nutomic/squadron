@@ -10,6 +10,20 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+fs2.workspace = true
+axum.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[bin]]
+name = "mock-sprite-cli"
+path = "src/bin/mock-sprite-cli.rs"
+
+[[bin]]
+name = "mock-http-server"
+path = "src/bin/mock-http-server.rs"
+
+[[bin]]
+name = "sprite-fixture"
+path = "src/bin/sprite-fixture.rs"
