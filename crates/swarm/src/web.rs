@@ -153,6 +153,13 @@ pub struct LaneTemplate {
 }
 
 #[derive(Template)]
+#[template(path = "tokei.html")]
+pub struct TokeiTemplate {
+    pub idx: i64,
+    pub tokei_json: String,
+}
+
+#[derive(Template)]
 #[template(path = "gallery.html")]
 pub struct GalleryTemplate {
     pub run_id: String,
@@ -291,12 +298,6 @@ async fn lane_tokei(
     let Some(lane) = state.store.get_lane(&run_id, idx).await.ok().flatten() else {
         return not_found();
     };
-    #[derive(Template)]
-    #[template(path = "tokei.html")]
-    struct TokeiTemplate {
-        idx: i64,
-        tokei_json: String,
-    }
     let tpl = TokeiTemplate {
         idx: lane.idx,
         tokei_json: lane.tokei_json.clone().unwrap_or_default(),
