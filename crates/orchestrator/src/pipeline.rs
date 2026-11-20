@@ -499,8 +499,11 @@ async fn run_implementer(
     let stdout = out.stdout.trim().to_string();
     let text = extract_json(&stdout).unwrap_or(stdout.clone());
     let gate_opts = GateOptions::default();
-    gate_with_options(Role::Implementer, &text, &gate_opts)
-        .map_err(|e| format!("impl schema: {e}; out={text}"))?;
+    gate_with_options(Role::Implementer, &text, &gate_opts).map_err(|e| {
+        // the raw agent output is untrusted data: name the gate failure and
+        // its size, never echo the payload itself
+        format!("impl schema: {e} (output {} bytes, not stored)", text.len())
+    })?;
     let parsed: ImplementerOutput = parse(Role::Implementer, &text).map_err(|e| e.to_string())?;
     Ok(ImplRunResult {
         summary: parsed.summary,
@@ -536,7 +539,7 @@ async fn run_validator(
     let stdout = out.stdout.trim().to_string();
     let text = extract_json(&stdout).unwrap_or(stdout.clone());
     gate_with_options(Role::Validator, &text, &GateOptions::default())
-        .map_err(|e| format!("val schema: {e}; out={text}"))?;
+        .map_err(|e| format!("val schema: {e} (output {} bytes, not stored)", text.len()))?;
     let parsed: ValidatorOutput = parse(Role::Validator, &text).map_err(|e| e.to_string())?;
     Ok(ValRunResult {
         verdict: parsed.verdict,
