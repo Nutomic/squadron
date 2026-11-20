@@ -12,6 +12,7 @@ use store::{Run, Store};
 
 use crate::artifacts;
 use crate::config::{ms_after, now_ms, PipelineConfig};
+use crate::harness::{self, HarnessCache};
 use crate::judge;
 use crate::lane::LaneState;
 use crate::screenshot::ScreenshotQueue;
@@ -28,6 +29,8 @@ pub struct PipelineCtx {
     pub screenshots: ScreenshotQueue,
     pub config: PipelineConfig,
     pub slots: SlotSemaphore,
+    /// Probed-once harness chain winner, cached for the process lifetime.
+    pub harness_cache: Arc<HarnessCache>,
     pub hub_registry:
         Option<std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, SseHub>>>>,
 }
@@ -224,16 +227,26 @@ async fn run_lane(
                     )
                     .await;
                 if transient && attempts < max_attempts {
-                    // retry: reset to queued-ish by trying again (state will be set in attempt)
+                    // #8: a retry cannot succeed while the previous sprite
+                    // still exists (deterministic name, real `sprite create`
+                    // rejects duplicates). Destroy --force it and reset the
+                    // lane so the next attempt starts clean.
+                    if let Ok(Some(l)) = ctx.store.get_lane(&run_id, idx).await {
+                        if let Some(name) = l.sprite_name {
+                            let _ = ctx.sprite.destroy(&name).await;
+                        }
+                    }
+                    let _ = ctx.store.set_lane_error(&run_id, idx, "").await;
+                    // The harness choice may have been an install failure;
+                    // invalidate so the next attempt re-probes the chain.
+                    ctx.harness_cache.invalidate().await;
                     continue;
                 } else {
                     // hard fail / skip
-                    let _state = if attempts > 1 || !transient {
-                        "failed"
-                    } else {
-                        "failed"
-                    };
-                    let _ = ctx.store.set_lane_error(&run_id, idx, &e).await;
+                    let _ = ctx
+                        .store
+                        .set_lane_error(&run_id, idx, &lane_error_message(&e))
+                        .await;
                     let _ = transition(&ctx, &run_id, idx, LaneState::Failed).await;
                     // best-effort destroy
                     if let Ok(Some(l)) = ctx.store.get_lane(&run_id, idx).await {
@@ -269,13 +282,35 @@ async fn run_lane_attempt(
     let permit = ctx.slots.acquire().await;
     transition(&ctx, &run_id, idx, LaneState::Creating).await?;
 
+    let lane = ctx
+        .store
+        .get_lane(&run_id, idx)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("lane {idx} missing"))?;
+    let variant_json = lane.variant_json.clone();
+
     let short = short_run_id(&run_id);
     let sprite_name = format!("swarm-{short}-impl-{idx}");
-    // create sprite
-    ctx.sprite
-        .create(&sprite_name)
-        .await
-        .map_err(|e| e.to_string())?;
+    // create sprite; if a stale sprite still holds the deterministic name,
+    // destroy --force it once and retry the create.
+    if let Err(e) = ctx.sprite.create(&sprite_name).await {
+        let _ = ctx
+            .store
+            .append_lane_event(
+                &run_id,
+                idx,
+                now_ms(),
+                "log",
+                &format!("create failed ({e}); destroying stale sprite and retrying"),
+            )
+            .await;
+        let _ = ctx.sprite.destroy(&sprite_name).await;
+        ctx.sprite
+            .create(&sprite_name)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     let _ = ctx.sprite.set_url_auth_public().await; // best effort; may fail in mock - mock handles it
     let impl_url = format!("https://{sprite_name}.sprites.app");
 
@@ -300,7 +335,15 @@ async fn run_lane_attempt(
     // run implementer harness (deadline enforced)
     let impl_result = tokio::time::timeout(
         ctx.config.impl_deadline,
-        run_implementer(&ctx, &run_id, idx, &sprite_name, &model, harness),
+        run_implementer(
+            &ctx,
+            &run_id,
+            idx,
+            &sprite_name,
+            &model,
+            &variant_json,
+            harness,
+        ),
     )
     .await;
     // slot freed after implementer session ends (sprite warm)
@@ -323,14 +366,6 @@ async fn run_lane_attempt(
         .add_lane_cost(&run_id, idx, impl_out.cost_usd)
         .await
         .ok();
-    transition(&ctx, &run_id, idx, LaneState::Done).await?;
-    publish(&ctx, &run_id).await;
-
-    // 200-check + artifacts at lane completion (after impl).
-    // Test mode uses fake URLs, so skip real network probes to keep the pipeline deterministic.
-    let http_ok = ctx.config.test_mode
-        || artifacts::check_http_200(&impl_url).await
-        || artifacts::check_http_200("http://127.0.0.1:8080").await;
     let _ = ctx
         .store
         .append_lane_event(
@@ -338,10 +373,23 @@ async fn run_lane_attempt(
             idx,
             now_ms(),
             "log",
-            &format!("http_200={http_ok}"),
+            &format!("impl run_command: {}", impl_out.run_command),
         )
         .await;
 
+    // #10: the sprite URL must answer with 200 before the lane can be Done.
+    // Test mode uses fake URLs, so the probe is skipped to stay deterministic;
+    // the 127.0.0.1 self-probe fallback is gone (a passing orchestrator is not
+    // a passing lane).
+    if !ctx.config.test_mode && !artifacts::check_http_200(&impl_url).await {
+        return Err(format!(
+            "implementer: live URL did not answer 200: {impl_url}"
+        ));
+    }
+    transition(&ctx, &run_id, idx, LaneState::Done).await?;
+    publish(&ctx, &run_id).await;
+
+    // artifacts at lane completion (after impl, before validation)
     let workdir = lane_workdir(&ctx, &run_id, idx);
     let console_tail = impl_out.console_tail.clone();
     if let Ok((tarball, tokei_json, files_n, _loc_n)) =
@@ -382,6 +430,10 @@ async fn run_lane_attempt(
             )
             .await;
     }
+
+    // #28: checkpoint the sprite after the implementer is done, before
+    // validation, so validation/retries can restart from a known state.
+    let _ = ctx.sprite.checkpoint(&sprite_name).await;
 
     // --- Validator phase: acquires its own slot ---
     let _val_permit = ctx.slots.acquire().await;
@@ -446,6 +498,7 @@ async fn run_lane_attempt(
 struct ImplRunResult {
     summary: String,
     files: u32,
+    run_command: String,
     cost_usd: f64,
     console_tail: String,
 }
@@ -464,48 +517,80 @@ async fn run_implementer(
     idx: i64,
     sprite_name: &str,
     model: &str,
+    variant_json: &str,
     harness: &HarnessMode,
 ) -> Result<ImplRunResult, String> {
-    let (cmd, envs) = match harness {
-        HarnessMode::Command { impl_command, .. } => (impl_command.clone(), vec![]),
-        HarnessMode::Real {
-            gateway_connector_id,
-        } => {
-            let prompt_text = format!("Implement lane {idx} for run {run_id} model {model}");
-            let cmd = format!(
-                "set -e; if command -v opencode >/dev/null 2>&1; then nohup opencode run '{}' >/tmp/opencode_run.log 2>&1 & echo started; else echo '{{\"summary\":\"fallback\",\"files\":0,\"run_command\":\"none\",\"done\":false,\"blockers\":[\"no harness\"]}}'; fi",
-                prompt_text.replace('\'', "'\\''")
+    let stdout = match harness {
+        HarnessMode::Command { impl_command, .. } => {
+            let workdir = lane_workdir(ctx, run_id, idx);
+            let _ = std::fs::create_dir_all(&workdir);
+            let opts = ExecOptions::default()
+                .with_dir(&workdir)
+                .with_timeout(ctx.config.impl_deadline);
+            let out = ctx
+                .sprite
+                .exec(sprite_name, impl_command, &opts)
+                .await
+                .map_err(|e| format!("implementer exec: {e}"))?;
+            out.stdout
+        }
+        HarnessMode::Real { .. } => {
+            let variant: Value = serde_json::from_str(variant_json)
+                .map_err(|e| format!("implementer variant: {e}"))?;
+            let prompt = prompts::implementer_prompt(&variant);
+            let recipe =
+                llm_gateway::SpriteRecipe::for_model(format!("{run_id}-{idx}"), model.to_owned());
+            let connector_env = (
+                "OPENCODE_GATEWAY_CONNECTOR".to_owned(),
+                ctx.config.gateway_connector_id.clone(),
             );
-            (
-                cmd,
-                vec![(
-                    "OPENCODE_GATEWAY_CONNECTOR".to_owned(),
-                    gateway_connector_id.clone(),
-                )],
+            let run = harness::run_prompt(
+                &ctx.harness_cache,
+                &ctx.sprite,
+                sprite_name,
+                &prompt.system,
+                &prompt.user,
+                &recipe,
+                ctx.config.impl_deadline,
+                Some(connector_env),
+                Some(&sprite_workdir(run_id, idx)),
             )
+            .await
+            .map_err(|e| format!("implementer: {e}"))?;
+            let _ = ctx
+                .store
+                .append_lane_event(
+                    run_id,
+                    idx,
+                    now_ms(),
+                    "log",
+                    &format!("harness choice: {}", run.choice.as_str()),
+                )
+                .await;
+            run.output
         }
     };
-    let workdir = lane_workdir(ctx, run_id, idx);
-    let _ = std::fs::create_dir_all(&workdir);
-    let mut opts = ExecOptions::default().with_dir(&workdir);
-    for (k, v) in envs {
-        opts = opts.with_env(k, v);
+    let stdout = stdout.trim().to_string();
+    let parsed: ImplementerOutput =
+        gate_last_json(Role::Implementer, &stdout, &GateOptions::default())
+            .map_err(|e| format!("implementer: schema gate failed ({e})"))?;
+    // #13: honor the implementer's own report; a not-done or blocked claim is
+    // a lane failure before artifacts/validation.
+    if !parsed.done {
+        return Err("implementer: reported done=false".to_owned());
     }
-    let out = ctx
-        .sprite
-        .exec(sprite_name, &cmd, &opts)
-        .await
-        .map_err(|e| e.to_string())?;
-    let stdout = out.stdout.trim().to_string();
-    let text = extract_json(&stdout).unwrap_or(stdout.clone());
-    let gate_opts = GateOptions::default();
-    gate_with_options(Role::Implementer, &text, &gate_opts)
-        .map_err(|e| format!("impl schema: {e}; out={text}"))?;
-    let parsed: ImplementerOutput = parse(Role::Implementer, &text).map_err(|e| e.to_string())?;
+    if !parsed.blockers.is_empty() {
+        return Err(format!(
+            "implementer: reported blockers ({})",
+            parsed.blockers.join("; ")
+        ));
+    }
+    let _ = gate_injection_free(Role::Implementer, &run_id, idx, &stdout, ctx).await;
     Ok(ImplRunResult {
         summary: parsed.summary,
         files: parsed.files,
-        cost_usd: 0.0,
+        run_command: parsed.run_command,
+        cost_usd: cost_from_output(&stdout).unwrap_or(0.0),
         console_tail: tail_4k(&stdout),
     })
 }
@@ -515,29 +600,58 @@ async fn run_validator(
     run_id: &str,
     idx: i64,
     sprite_name: &str,
-    _impl_url: &str,
-    _impl_summary: &str,
+    impl_url: &str,
+    impl_summary: &str,
     harness: &HarnessMode,
 ) -> Result<ValRunResult, String> {
-    let cmd = match harness {
-        HarnessMode::Command { val_command, .. } => val_command.clone(),
+    let stdout = match harness {
+        HarnessMode::Command { val_command, .. } => {
+            let workdir = lane_workdir(ctx, run_id, idx);
+            let _ = std::fs::create_dir_all(&workdir);
+            let opts = ExecOptions::default()
+                .with_dir(&workdir)
+                .with_timeout(ctx.config.val_deadline);
+            let out = ctx
+                .sprite
+                .exec(sprite_name, val_command, &opts)
+                .await
+                .map_err(|e| format!("validator exec: {e}"))?;
+            out.stdout
+        }
         HarnessMode::Real { .. } => {
-            format!("echo '{{\"verdict\":\"fail\",\"features\":\"\",\"bugs\":\"not implemented\",\"security\":\"\",\"quality_score\":0,\"summary\":\"real harness not implemented in this environment\"}}'")
+            // Real mode: run the real validator report prompt through the
+            // harness against the actual code in the lane workdir and the
+            // live site. Never fabricate a verdict.
+            let workdir = sprite_workdir(run_id, idx);
+            let prompt = prompts::validator_prompt(impl_summary, impl_url, &workdir);
+            let recipe = llm_gateway::SpriteRecipe::for_model(
+                format!("{run_id}-{idx}-val"),
+                lane_model(idx as usize).to_owned(),
+            );
+            let connector_env = (
+                "OPENCODE_GATEWAY_CONNECTOR".to_owned(),
+                ctx.config.gateway_connector_id.clone(),
+            );
+            let run = harness::run_prompt(
+                &ctx.harness_cache,
+                &ctx.sprite,
+                sprite_name,
+                &prompt.system,
+                &prompt.user,
+                &recipe,
+                ctx.config.val_deadline,
+                Some(connector_env),
+                Some(&sprite_workdir(run_id, idx)),
+            )
+            .await
+            .map_err(|e| format!("validator: {e}"))?;
+            run.output
         }
     };
-    let workdir = lane_workdir(ctx, run_id, idx);
-    let _ = std::fs::create_dir_all(&workdir);
-    let opts = ExecOptions::default().with_dir(&workdir);
-    let out = ctx
-        .sprite
-        .exec(sprite_name, &cmd, &opts)
-        .await
-        .map_err(|e| e.to_string())?;
-    let stdout = out.stdout.trim().to_string();
-    let text = extract_json(&stdout).unwrap_or(stdout.clone());
-    gate_with_options(Role::Validator, &text, &GateOptions::default())
-        .map_err(|e| format!("val schema: {e}; out={text}"))?;
-    let parsed: ValidatorOutput = parse(Role::Validator, &text).map_err(|e| e.to_string())?;
+    let stdout = stdout.trim().to_string();
+    let parsed: ValidatorOutput = gate_last_json(Role::Validator, &stdout, &GateOptions::default())
+        .map_err(|e| format!("validator: schema gate failed ({e})"))?;
+    let _ = gate_injection_free(Role::Validator, &run_id, idx, &stdout, ctx).await;
     // Persist the full report (features/bugs/security) so the judge and the
     // lane detail view can be hydrated from the store.
     if let Ok(report_json) = serde_json::to_string(&parsed) {
@@ -550,7 +664,7 @@ async fn run_validator(
         verdict: parsed.verdict,
         summary: parsed.summary,
         quality_score: parsed.quality_score,
-        cost_usd: 0.0,
+        cost_usd: cost_from_output(&stdout).unwrap_or(0.0),
     })
 }
 
@@ -684,24 +798,176 @@ fn lane_workdir(ctx: &PipelineCtx, run_id: &str, idx: i64) -> PathBuf {
         .join(format!("lane-{idx}"))
 }
 
+/// Sprite-side (relative) workdir for real harness runs; the command cd's into
+/// it via the SWARM_WORKDIR env so mock and real execs share one convention.
+fn sprite_workdir(run_id: &str, idx: i64) -> String {
+    format!("swarm-work/{}/lane-{idx}", short_run_id(run_id))
+}
+
+/// Tail of at most 4096 chars, cut on a char boundary (untrusted output must
+/// never panic).
 fn tail_4k(s: &str) -> String {
     if s.len() <= 4096 {
         return s.to_owned();
     }
-    s[s.len() - 4096..].to_string()
+    let mut start = s.len() - 4096;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    s[start..].to_string()
 }
 
-fn extract_json(s: &str) -> Option<String> {
-    // find first '{'..last '}' span that parses
-    let start = s.find('{')?;
-    let end = s.rfind('}')?;
-    if end <= start {
-        return None;
+/// Gate the LAST balanced JSON object in the output (the agent's final answer),
+/// trying candidates back-to-front. Never exposes raw output in errors.
+fn gate_last_json<T: serde::de::DeserializeOwned>(
+    role: Role,
+    text: &str,
+    opts: &GateOptions,
+) -> Result<T, String> {
+    let mut last_err: Option<String> = None;
+    for cand in harness::json_candidates(text).into_iter().rev() {
+        match gate_with_options(role, &cand, opts)
+            .map_err(|e| e.to_string())
+            .and_then(|_| parse::<T>(role, &cand).map_err(|e| e.to_string()))
+        {
+            Ok(v) => return Ok(v),
+            Err(e) => last_err = Some(e),
+        }
     }
-    let cand = &s[start..=end];
-    if serde_json::from_str::<Value>(cand).is_ok() {
-        Some(cand.to_owned())
-    } else {
-        None
+    Err(last_err.unwrap_or_else(|| "no JSON object found".to_owned()))
+}
+
+/// #21: injection markers must actually act — flag them as a lane event and
+/// downgrade the lane to a failure. Brief/agent content is DATA, never
+/// instructions.
+async fn gate_injection_free(
+    role: Role,
+    run_id: &str,
+    idx: i64,
+    text: &str,
+    ctx: &PipelineCtx,
+) -> Result<(), String> {
+    let markers = match serde_json::from_str::<Value>(text) {
+        Ok(v) => prompts::injection_markers(&v),
+        Err(_) => Vec::new(),
+    };
+    if markers.is_empty() {
+        return Ok(());
+    }
+    let joined = markers.join(",");
+    let _ = ctx
+        .store
+        .append_lane_event(
+            run_id,
+            idx,
+            now_ms(),
+            "injection",
+            &format!("role={} paths={joined}", role.as_str()),
+        )
+        .await;
+    Err(format!(
+        "injection: marker detected in {} output (paths: {joined})",
+        role.as_str()
+    ))
+}
+
+/// Parse a cost figure out of the harness output when the gateway reported
+/// usage.opencode.allowance inline; 0.0 when absent.
+fn cost_from_output(text: &str) -> Option<f64> {
+    harness::json_candidates(text)
+        .iter()
+        .rev()
+        .find_map(|cand| {
+            let v: Value = serde_json::from_str(cand).ok()?;
+            let usage = v.get("usage")?;
+            let oc = usage.get("opencode")?;
+            match oc {
+                Value::Number(n) => n.as_f64(),
+                Value::String(s) => s.parse().ok(),
+                Value::Object(o) => ["allowance", "cost", "cost_usd", "total"]
+                    .iter()
+                    .find_map(|k| o.get(*k).and_then(|x| x.as_f64())),
+                _ => None,
+            }
+        })
+}
+
+/// #20: lanes.error is a fixed class plus a short, ASCII-safe excerpt — raw
+/// agent output never reaches the dashboard.
+fn lane_error_message(e: &str) -> String {
+    let (class, rest) = match e.find(": ") {
+        Some(pos) => (&e[..pos], &e[pos + 2..]),
+        None => (e, ""),
+    };
+    let class: String = class.chars().take(48).collect();
+    if rest.is_empty() {
+        return class;
+    }
+    let excerpt: String = rest
+        .chars()
+        .map(|c| {
+            if c.is_ascii_graphic() || c == ' ' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .take(200)
+        .collect();
+    format!("{class}: {excerpt}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tail_4k_cuts_on_char_boundary() {
+        // Multi-byte characters must never be split mid-sequence (#9).
+        let s: String = std::iter::repeat("héllo\u{1F600}").take(2000).collect();
+        let tail = tail_4k(&s);
+        assert!(tail.len() <= 4096);
+        assert!(std::str::from_utf8(tail.as_bytes()).is_ok());
+        assert_eq!(tail, s[s.len() - tail.len()..]);
+    }
+
+    #[test]
+    fn tail_4k_short_strings_unchanged() {
+        assert_eq!(tail_4k("short"), "short");
+    }
+
+    #[test]
+    fn lane_error_message_hides_raw_agent_output() {
+        let raw = "implementer: schema gate failed (missing field `summary`); out={\"summary\":\"<1000 chars of agent output>\"}";
+        let msg = lane_error_message(raw);
+        assert!(msg.starts_with("implementer: "));
+        assert!(msg.len() <= 260, "message must be short: {msg}");
+        // non-ASCII agent output is dropped
+        let msg2 = lane_error_message("validator: deadline exceeded — é");
+        assert!(msg2.chars().all(|c| c.is_ascii_graphic() || c == ' '));
+        assert_eq!(lane_error_message("plain"), "plain");
+    }
+
+    #[test]
+    fn gate_last_json_prefers_the_final_object() {
+        let text = "chatter {\"wrong\":true} final {\"summary\":\"ok\",\"files\":2,\"run_command\":\"x\",\"done\":true,\"blockers\":[]}";
+        let out: ImplementerOutput =
+            gate_last_json(Role::Implementer, text, &GateOptions::default()).unwrap();
+        assert_eq!(out.summary, "ok");
+        // garbage input errors without leaking the raw text
+        let err = gate_last_json::<ImplementerOutput>(
+            Role::Implementer,
+            "no json at all",
+            &GateOptions::default(),
+        )
+        .unwrap_err();
+        assert_eq!(err, "no JSON object found");
+    }
+
+    #[test]
+    fn cost_from_output_parses_usage_allowance() {
+        let text = r#"noise {"summary":"s","usage":{"opencode":{"allowance":0.25}}}"#;
+        assert_eq!(cost_from_output(text), Some(0.25));
+        assert_eq!(cost_from_output("nothing"), None);
     }
 }

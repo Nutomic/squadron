@@ -90,6 +90,7 @@ impl AppState {
             screenshots: self.screenshots.clone(),
             config: self.config.clone(),
             slots: self.slots.clone(),
+            harness_cache: std::sync::Arc::new(orchestrator::harness::HarnessCache::new()),
             hub_registry: Some(self.hubs.clone()),
         });
         orchestrator::start_run(

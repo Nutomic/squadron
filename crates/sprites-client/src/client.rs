@@ -30,6 +30,11 @@ impl ExecOptions {
         self.dir = Some(dir.as_ref().to_path_buf());
         self
     }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

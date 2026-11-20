@@ -74,6 +74,7 @@ async fn smoke_pipeline_mock_sprite_n3_judged_and_persisted() {
         screenshots,
         config,
         slots,
+        harness_cache: std::sync::Arc::new(orchestrator::harness::HarnessCache::new()),
         hub_registry: None,
     });
 

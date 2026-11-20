@@ -16,6 +16,8 @@ pub struct MockState {
     pub sprites: BTreeMap<String, MockSprite>,
     #[serde(default)]
     pub url_auth_public: bool,
+    #[serde(default)]
+    pub transient_failures: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -134,6 +136,11 @@ fn create(args: &[String]) -> Result<String, (i32, String)> {
     }
     delay_ms("MOCK_CREATE_MS", 0);
     with_state(|state| {
+        // Model the real CLI: creating an existing sprite fails until it is
+        // destroyed (pipeline retry must destroy --force before recreating).
+        if state.sprites.contains_key(name) {
+            return Err(format!("create: sprite {name} already exists"));
+        }
         state.sprites.insert(
             name.clone(),
             MockSprite {
@@ -218,6 +225,21 @@ fn exec(args: &[String]) -> Result<String, (i32, String)> {
         .clone();
     if shell != "sh" || flag != "-c" {
         return Err((2, "exec: only `sh -c <cmd>` is supported".to_owned()));
+    }
+
+    // Test hook: fail exactly one exec per state file so retry paths can be
+    // exercised end to end (a transient platform blip, not a per-sprite fault).
+    let fail_first = std::env::var_os("MOCK_FAIL_FIRST_EXEC").is_some();
+    if fail_first {
+        let already_failed = with_state(|state| {
+            let f = state.transient_failures > 0;
+            state.transient_failures += 1;
+            Ok(f)
+        })
+        .map_err(|e| (3, e))?;
+        if !already_failed {
+            return Err((1, format!("exec: temporary mock failure on {name}")));
+        }
     }
 
     let cold = with_state(|state| {

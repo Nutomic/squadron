@@ -190,6 +190,25 @@ fn mock_cli_models_cold_start_create_exec_and_destroy() {
     std::env::remove_var("MOCK_COLD_START_MS");
 }
 
+#[test]
+fn mock_cli_create_rejects_existing_sprite_until_destroyed() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state.json");
+    std::env::set_var("MOCK_SPRITE_STATE", &state);
+
+    let args = |v: Vec<&str>| v.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    mock_cli::execute(&args(vec!["create", "dup", "--skip-console"])).unwrap();
+    // Real CLI semantics: creating an existing sprite fails...
+    let err = mock_cli::execute(&args(vec!["create", "dup", "--skip-console"])).unwrap_err();
+    assert_eq!(err.0, 3, "duplicate create fails");
+    // ...until the sprite is destroyed --force.
+    mock_cli::execute(&args(vec!["destroy", "dup", "--force"])).unwrap();
+    mock_cli::execute(&args(vec!["create", "dup", "--skip-console"])).unwrap();
+
+    std::env::remove_var("MOCK_SPRITE_STATE");
+}
+
 #[tokio::test]
 async fn client_drives_mock_cli_binary_end_to_end() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

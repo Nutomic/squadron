@@ -1,5 +1,6 @@
 pub mod artifacts;
 pub mod config;
+pub mod harness;
 pub mod judge;
 pub mod lane;
 pub mod pipeline;
