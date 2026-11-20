@@ -51,11 +51,18 @@ pub fn validator_prompt(summary: &str, live_url: &str, workdir: &str) -> Prompt 
     )
 }
 
+/// Audit R3 finding: extracts are keyed by their lane idx (taken from the
+/// parallel `reports` entries), not by position, so a non-contiguous validated
+/// lane set can never misalign report and extract.
 pub fn judge_prompt(reports: &[crate::schema::LaneJudgeReport], extracts: &[String]) -> Prompt {
     let reports_json = serde_json::to_string_pretty(reports).unwrap_or_default();
     let mut data = data_block("validator-reports", &reports_json);
     for (index, extract) in extracts.iter().enumerate() {
-        data.push_str(&data_block(&format!("site-extract-{index}"), extract));
+        let lane_idx = reports.get(index).map(|r| r.lane_idx).unwrap_or(index);
+        data.push_str(&data_block(
+            &format!("site-extract-lane-{lane_idx}"),
+            extract,
+        ));
     }
     build(
         Role::Judge,

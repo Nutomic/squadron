@@ -3,6 +3,7 @@ pub mod config;
 pub mod harness;
 pub mod judge;
 pub mod lane;
+pub mod net;
 pub mod pipeline;
 pub mod screenshot;
 pub mod slots;
@@ -11,6 +12,6 @@ pub mod sse;
 
 pub use config::PipelineConfig;
 pub use pipeline::{start_run, HarnessMode, PipelineCtx, RunRequest};
-pub use screenshot::ScreenshotQueue;
+pub use screenshot::{HubRegistry, ScreenshotQueue};
 pub use slots::SlotSemaphore;
 pub use sse::SseHub;

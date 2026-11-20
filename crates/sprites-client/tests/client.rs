@@ -289,7 +289,7 @@ async fn mock_cli_records_http_200_from_port_8080() {
 /// bare name.
 #[tokio::test(flavor = "multi_thread")]
 async fn url_parses_the_suffixed_host_from_sprite_info() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("url-state.json");
     std::env::set_var("MOCK_SPRITE_STATE", &state);
@@ -356,7 +356,7 @@ fn parse_info_url_accepts_url_lines_only() {
 /// required"), and a failing url-auth update surfaces as a typed error.
 #[tokio::test(flavor = "multi_thread")]
 async fn url_auth_without_sprite_name_fails() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("auth-state.json");
     std::env::set_var("MOCK_SPRITE_STATE", &state);

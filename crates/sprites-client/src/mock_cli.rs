@@ -150,6 +150,16 @@ pub fn execute(args: &[String]) -> Result<String, (i32, String)> {
     }
 }
 
+/// URL a created sprite reports: `MOCK_URL_TEMPLATE` (with a `{name}`
+/// placeholder) lets tests point sprites at a local server; otherwise the
+/// R3-A #1 platform form with an opaque per-sprite suffix.
+fn sprite_url(name: &str) -> String {
+    std::env::var("MOCK_URL_TEMPLATE")
+        .ok()
+        .map(|t| t.replace("{name}", name))
+        .unwrap_or_else(|| format!("https://{name}-{}.sprites.app", url_suffix(name)))
+}
+
 fn create(args: &[String]) -> Result<String, (i32, String)> {
     let name = args
         .get(1)
@@ -172,10 +182,7 @@ fn create(args: &[String]) -> Result<String, (i32, String)> {
                 cold_started: false,
                 exec_count: 0,
                 http_200: false,
-                // R3-A #1: real sprite hosts carry an opaque platform suffix
-                // (`<name>-<suffix>.sprites.app`); the mock models that so URL
-                // fabrication can never pass a 200-check unnoticed.
-                url: format!("https://{name}-{}.sprites.app", url_suffix(name)),
+                url: sprite_url(name),
                 ..MockSprite::default()
             },
         );

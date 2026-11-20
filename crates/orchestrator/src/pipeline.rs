@@ -112,6 +112,7 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
                     .await;
             }
             publish(&ctx_bg, &run_id).await;
+            drop_hub(&ctx_bg, &run_id).await;
         }
     });
 
@@ -220,7 +221,22 @@ async fn execute_run(
     }
 
     publish(&ctx, &run_id).await;
+    // The run is terminal (judged or failed): drop its hub from the registry
+    // so the per-run broadcast channel is not leaked (audit R3 finding 5).
+    // Subscribers already holding a receiver still drain the final snapshot
+    // before the channel closes.
+    drop_hub(&ctx, &run_id).await;
     Ok(())
+}
+
+/// Remove the run's hub from the registry once the run cannot change anymore.
+/// The terminal snapshot was already broadcast by `publish`; dropping the
+/// sender closes the channel for late subscribers, and the web layer falls
+/// back to the DB snapshot path for them.
+async fn drop_hub(ctx: &PipelineCtx, run_id: &str) {
+    if let Some(reg) = &ctx.hub_registry {
+        reg.write().await.remove(run_id);
+    }
 }
 
 async fn run_lane(

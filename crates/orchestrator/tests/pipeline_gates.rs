@@ -64,7 +64,8 @@ async fn test_ctx(
         ..PipelineConfig::default()
     };
     std::fs::create_dir_all(&config.data_dir).unwrap();
-    let screenshots = ScreenshotQueue::new(store.clone(), true);
+    // Audit R3 finding 4: data dir comes from the config (never /data).
+    let screenshots = ScreenshotQueue::with_data_dir(store.clone(), true, config.data_dir.clone());
     let ctx = Arc::new(PipelineCtx {
         store: store.clone(),
         sprite,

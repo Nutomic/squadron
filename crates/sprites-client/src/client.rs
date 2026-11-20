@@ -147,6 +147,14 @@ impl SpriteClient {
         Ok(parse_sprite_names(&output.stdout))
     }
 
+    /// Query the public URL of a sprite (`sprite info <name>`). Returns the
+    /// first http(s) URL found in the CLI output, or an empty string when the
+    /// CLI prints none (callers fall back to the deterministic name form).
+    pub async fn info(&self, name: &str) -> Result<String, SpriteError> {
+        let output = self.run(vec!["info".into(), name.into()], None).await?;
+        Ok(parse_url(&output.stdout))
+    }
+
     async fn run(
         &self,
         args: Vec<String>,
@@ -275,4 +283,31 @@ fn parse_sprite_names(text: &str) -> Vec<String> {
         }
     }
     names
+}
+
+/// Extract the first http(s) URL from CLI output (used by `sprite info`).
+fn parse_url(text: &str) -> String {
+    for token in text.split_whitespace() {
+        let token =
+            token.trim_matches(|c: char| c == ',' || c == '"' || c == '\'' || c == ')' || c == '>');
+        if token.starts_with("http://") || token.starts_with("https://") {
+            return token.to_owned();
+        }
+    }
+    String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_url;
+
+    #[test]
+    fn parse_url_takes_the_first_http_token() {
+        assert_eq!(
+            parse_url("sprite foo  running  https://foo.sprites.app\n"),
+            "https://foo.sprites.app"
+        );
+        assert_eq!(parse_url("no url here"), "");
+        assert_eq!(parse_url(""), "");
+    }
 }

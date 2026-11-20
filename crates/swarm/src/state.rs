@@ -25,10 +25,14 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(store: Store, sprite: SpriteClient, config: PipelineConfig) -> Self {
-        let screenshots = ScreenshotQueue::with_data_dir(
+        // The screenshot queue shares the hub registry so thumbnail state
+        // changes broadcast to live SSE subscribers (audit R3 finding 3).
+        let hubs: Arc<RwLock<HashMap<String, SseHub>>> = Arc::new(RwLock::new(HashMap::new()));
+        let screenshots = ScreenshotQueue::with_data_dir_hubs(
             store.clone(),
             config.test_mode,
             config.data_dir.clone(),
+            Some(hubs.clone()),
         );
         let slots = SlotSemaphore::new(config.max_running_slots);
         Self {
@@ -38,7 +42,7 @@ impl AppState {
             screenshots,
             config,
             slots,
-            hubs: Arc::new(RwLock::new(HashMap::new())),
+            hubs,
             fixtures: false,
             static_dir: crate::static_dir(),
             launch_pipeline: true,

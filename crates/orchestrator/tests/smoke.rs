@@ -1,11 +1,13 @@
 #![allow(clippy::unwrap_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use orchestrator::{
-    HarnessMode, PipelineConfig, PipelineCtx, RunRequest, ScreenshotQueue, SlotSemaphore, SseHub,
+    HarnessMode, HubRegistry, PipelineConfig, PipelineCtx, RunRequest, ScreenshotQueue,
+    SlotSemaphore, SseHub,
 };
 use sprites_client::{SpriteClient, SpriteConfig};
 use store::Store;
@@ -67,9 +69,13 @@ async fn smoke_pipeline_mock_sprite_n3_judged_and_persisted() {
     };
     std::fs::create_dir_all(&config.data_dir).unwrap();
 
-    let screenshots = ScreenshotQueue::new(store.clone(), true);
+    // Audit R3 finding 4: data dir comes from the config, never the /data
+    // fallback (suite must pass on a non-root dev box).
+    let screenshots = ScreenshotQueue::with_data_dir(store.clone(), true, config.data_dir.clone());
     let slots = SlotSemaphore::new(config.max_running_slots);
     let hub = SseHub::new(256);
+    // Audit R3 finding 5: the registry must not leak a channel per run.
+    let hub_registry: HubRegistry = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
     let ctx = Arc::new(PipelineCtx {
         store: store.clone(),
         sprite,
@@ -79,7 +85,7 @@ async fn smoke_pipeline_mock_sprite_n3_judged_and_persisted() {
         config,
         slots,
         harness_cache: std::sync::Arc::new(orchestrator::harness::HarnessCache::new()),
-        hub_registry: None,
+        hub_registry: Some(hub_registry.clone()),
     });
 
     let harness = HarnessMode::Command {
@@ -187,6 +193,13 @@ async fn smoke_pipeline_mock_sprite_n3_judged_and_persisted() {
     let runs = store.list_runs().await.unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].id, run.id);
+
+    // Audit R3 finding 5: the terminal (judged) run must have removed its hub
+    // from the registry — no leaked broadcast channel per run.
+    assert!(
+        hub_registry.read().await.is_empty(),
+        "hub registry must not retain a terminal run's hub"
+    );
 
     std::env::remove_var("MOCK_SPRITE_STATE");
     std::env::remove_var("MOCK_COLD_START_MS");

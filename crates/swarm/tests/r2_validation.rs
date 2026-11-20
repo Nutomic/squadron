@@ -178,3 +178,45 @@ async fn static_assets_keep_max_age_and_pages_stay_no_store() {
         .to_owned();
     assert!(cc.contains("no-store"), "pages must stay no-store: {cc}");
 }
+
+/// Audit R3 finding: an empty or whitespace-only brief is a 400 on both the
+/// JSON API and the web form (parity), and the API stores the trimmed brief.
+#[tokio::test]
+async fn empty_brief_rejected_on_api_and_form() {
+    let app = app().await;
+    for json in [
+        r#"{"brief":"","n_lanes":4}"#,
+        r#"{"brief":"   \n\t ","n_lanes":4}"#,
+    ] {
+        let res = post_json(&app, json).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "json={json}");
+        let value: serde_json::Value =
+            serde_json::from_str(&body_string(res.into_body()).await).unwrap();
+        assert!(
+            value["error"]
+                .as_str()
+                .unwrap()
+                .contains("must not be empty"),
+            "{json}"
+        );
+    }
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/runs")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from("brief="))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // A padded-but-non-empty brief is accepted (and trimmed server-side).
+    let res = post_json(&app, r#"{"brief":"  padded site  ","n_lanes":4}"#).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let value: serde_json::Value =
+        serde_json::from_str(&body_string(res.into_body()).await).unwrap();
+    assert!(
+        !value["run_id"].as_str().unwrap().is_empty(),
+        "run created for a whitespace-padded brief"
+    );
+}
