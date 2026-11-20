@@ -5,6 +5,8 @@ use std::process::Command;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
+use base64::Engine as _;
+
 use crate::config::PipelineConfig;
 
 pub fn lane_artifacts_dir(cfg: &PipelineConfig, run_id: &str, lane_idx: i64) -> PathBuf {
@@ -233,41 +235,19 @@ pub async fn collect_artifacts_from_sprite(
     ))
 }
 
-/// Decode standard base64 (with or without padding) without pulling in an
-/// external base64 crate: 6-bit groups assembled into bytes.
+/// Decode standard base64 via the shared `base64` crate (whitespace tolerated;
+/// padding indifferent so CLI-wrapped output decodes even when truncated).
 fn decode_base64(s: &str) -> Result<Vec<u8>, String> {
-    fn val(b: u8) -> Result<u8, String> {
-        match b {
-            b'A'..=b'Z' => Ok(b - b'A'),
-            b'a'..=b'z' => Ok(b - b'a' + 26),
-            b'0'..=b'9' => Ok(b - b'0' + 52),
-            b'+' => Ok(62),
-            b'/' => Ok(63),
-            _ => Err(format!("invalid base64 byte {b}")),
-        }
-    }
-    let trimmed: Vec<u8> = s
-        .bytes()
-        .filter(|b| !b.is_ascii_whitespace() && *b != b'=')
-        .collect();
-    let mut out = Vec::with_capacity(trimmed.len() / 4 * 3);
-    for chunk in trimmed.chunks(4) {
-        if chunk.len() == 1 {
-            return Err("truncated base64".to_owned());
-        }
-        let mut n: u32 = 0;
-        for (i, b) in chunk.iter().enumerate() {
-            n |= (val(*b)? as u32) << (18 - 6 * i);
-        }
-        out.push((n >> 16) as u8);
-        if chunk.len() > 2 {
-            out.push((n >> 8) as u8);
-        }
-        if chunk.len() > 3 {
-            out.push(n as u8);
-        }
-    }
-    Ok(out)
+    use base64::engine::DecodePaddingMode;
+    let engine = base64::engine::GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        base64::engine::GeneralPurposeConfig::new()
+            .with_decode_padding_mode(DecodePaddingMode::Indifferent),
+    );
+    let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    engine
+        .decode(cleaned.as_bytes())
+        .map_err(|e| format!("base64: {e}"))
 }
 
 #[cfg(test)]

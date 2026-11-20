@@ -33,12 +33,6 @@ fn sprite_recipe_requests_default_to_low_reasoning() {
     let recipe = SpriteRecipe::for_model("lane-3", lane_model(0));
     let request = recipe.build("system", "user");
     assert_low(&serde_json::to_value(&request).unwrap(), "sprite build");
-
-    let parts = recipe.build_with_parts("system", vec![ContentPart::text("parts")]);
-    assert_low(
-        &serde_json::to_value(&parts).unwrap(),
-        "sprite build_with_parts",
-    );
 }
 
 #[test]

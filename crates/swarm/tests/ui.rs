@@ -926,8 +926,8 @@ async fn sse_stream_ends_when_hub_reports_terminal_status() {
     let body = res.into_body();
 
     // Wake the stream with a terminal hub payload.
-    hub.publish(orchestrator::snapshot::RunSnapshot {
-        run: orchestrator::snapshot::RunView {
+    hub.publish(orchestrator::snapshot::Snapshot {
+        run: orchestrator::snapshot::RunSnapshot {
             id: run.id.clone(),
             status: "judged".to_owned(),
             judge_verdict: Some("winner card".to_owned()),

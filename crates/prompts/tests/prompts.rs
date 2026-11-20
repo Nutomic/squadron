@@ -220,6 +220,57 @@ fn escape_is_case_insensitive_and_never_panics_on_turkic_i() {
 }
 
 #[test]
+fn judge_gate_rejects_rankings_outside_the_validated_lane_set() {
+    // Base: a valid permutation of the validated set passes.
+    let ok = json!({
+        "ranking": [1, 0, 2], "winner": 1,
+        "verdict_card": "Bold and playable. It wins.", "reasons": []
+    })
+    .to_string();
+    let opts = GateOptions {
+        expected_lane_indices: Some(vec![0, 1, 2]),
+        ..GateOptions::default()
+    };
+    assert!(gate_with_options(Role::Judge, &ok, &opts).is_ok());
+
+    // Winner outside the validated set: winner 9 with ranking [0,1,2].
+    let outside = json!({
+        "ranking": [0, 1, 2], "winner": 9,
+        "verdict_card": "Bold and playable. It wins.", "reasons": []
+    })
+    .to_string();
+    assert!(gate_with_options(Role::Judge, &outside, &opts).is_err());
+
+    // Not a permutation: an unranked lane index (5) sneaks in.
+    let stranger = json!({
+        "ranking": [0, 1, 5], "winner": 5,
+        "verdict_card": "Bold and playable. It wins.", "reasons": []
+    })
+    .to_string();
+    assert!(matches!(
+        gate_with_options(Role::Judge, &stranger, &opts),
+        Err(SchemaError::NonConforming { role, detail })
+            if role == "judge" && detail.contains("permutation")
+    ));
+
+    // Duplicate indices are not a permutation either.
+    let dup = json!({
+        "ranking": [0, 0, 1], "winner": 1,
+        "verdict_card": "Bold and playable. It wins.", "reasons": []
+    })
+    .to_string();
+    assert!(gate_with_options(Role::Judge, &dup, &opts).is_err());
+
+    // Missing a lane (short ranking) is rejected.
+    let short = json!({
+        "ranking": [0, 1], "winner": 1,
+        "verdict_card": "Bold and playable. It wins.", "reasons": []
+    })
+    .to_string();
+    assert!(gate_with_options(Role::Judge, &short, &opts).is_err());
+}
+
+#[test]
 fn gate_and_scan_injections_reports_marker_paths() {
     let clean = json!({"ranking": [0], "winner": 0, "verdict_card": "Fine. Wins.", "reasons": []})
         .to_string();

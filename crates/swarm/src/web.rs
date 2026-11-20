@@ -379,6 +379,7 @@ async fn events(State(state): State<SharedState>, Path(run_id): Path<String>) ->
         loop {
             let mut hub_closed = false;
             let mut hub_terminal = false;
+            let mut hub_payload: Option<crate::snapshot::Snapshot> = None;
             match hub_rx.as_mut() {
                 Some(hub_rx) => {
                     tokio::select! {
@@ -389,6 +390,7 @@ async fn events(State(state): State<SharedState>, Path(run_id): Path<String>) ->
                             Err(_) => {}
                             Ok(payload) => {
                                 hub_terminal = is_terminal_status(&payload.run.status);
+                                hub_payload = Some(payload);
                             }
                         },
                         _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {}
@@ -399,8 +401,14 @@ async fn events(State(state): State<SharedState>, Path(run_id): Path<String>) ->
             if hub_closed {
                 hub_rx = None;
             }
-            let Some(snap) = crate::snapshot::build_snapshot(&store, &run_id).await else {
-                break;
+            // R2-4 unification: the hub payload is the live source; the DB
+            // rebuild below is only the late-subscriber fallback.
+            let snap = match hub_payload {
+                Some(p) => p,
+                None => match crate::snapshot::build_snapshot(&store, &run_id).await {
+                    Some(s) => s,
+                    None => break,
+                },
             };
             if send_snapshot(&tx, &mut last, &snap).await {
                 break;

@@ -314,6 +314,31 @@ async fn injection_marker_fails_lane() {
     }
 }
 
+fn canned_fail() -> String {
+    serde_json::json!({
+        "verdict": "fail",
+        "features": [],
+        "bugs": ["page does not render"],
+        "security": "ok",
+        "quality_score": 20.0,
+        "summary": "Detailed validation: implementation does not meet the brief."
+    })
+    .to_string()
+}
+
+/// Per-lane validator output: the listed lanes report fail, the rest pass. The
+/// mock exec runs the command with the lane workdir as cwd, so $PWD selects it.
+fn per_lane_val_command(fail_lanes: &[i64], fail_json: &str, pass_json: &str) -> String {
+    let fail = fail_json.replace('\'', "'\\''");
+    let pass = pass_json.replace('\'', "'\\''");
+    let patterns = fail_lanes
+        .iter()
+        .map(|i| format!("*lane-{i}*"))
+        .collect::<Vec<_>>()
+        .join("|");
+    format!("case \"$PWD\" in {patterns}) echo '{fail}' ;; *) echo '{pass}' ;; esac")
+}
+
 /// R2 finding 5: a validator `verdict: fail` demotes the lane out of the judge
 /// set (failed-with-report); the report stays visible in the detail view, and
 /// the winner can only be a passing lane.
@@ -330,23 +355,9 @@ async fn validator_fail_verdict_demotes_lane_out_of_judge_set() {
 
     // Lane 0's validator reports fail; the other lanes pass. The validator
     // exec runs in the per-lane workdir, so $(pwd) discriminates the lanes.
-    let fail_val = serde_json::json!({
-        "verdict": "fail",
-        "features": ["game loop"],
-        "bugs": ["score never persists"],
-        "security": "ok",
-        "quality_score": 40.0,
-        "summary": "Detailed validation: the score is never persisted."
-    })
-    .to_string();
-    let val_command = format!(
-        "case \"$(pwd)\" in *lane-0*) echo '{}' ;; *) echo '{}' ;; esac",
-        fail_val.replace('\'', "'\\''"),
-        canned_val().replace('\'', "'\\''")
-    );
     let harness = HarnessMode::Command {
         impl_command: format!("echo '{}'", canned_impl().replace('\'', "'\\''")),
-        val_command,
+        val_command: per_lane_val_command(&[0], &canned_fail(), &canned_val()),
     };
     let run = orchestrator::start_run(
         ctx.clone(),
@@ -375,5 +386,52 @@ async fn validator_fail_verdict_demotes_lane_out_of_judge_set() {
     assert!(fail_lane.error.is_some(), "failed-with-report is stated");
     for lane in lanes.iter().filter(|l| l.idx != 0) {
         assert_eq!(lane.state, "validated", "lane {:?}", lane.idx);
+    }
+}
+
+/// #24 (round 2, adapted to R2 finding 5 demotion): with fewer than two
+/// passing verdicts there is no judge set, so the run fails even though every
+/// lane reached validation; the fail-verdict lanes are demoted with report.
+#[tokio::test(flavor = "multi_thread")]
+async fn single_pass_verdict_fails_run_without_judging() {
+    let _env = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("MOCK_SPRITE_STATE", dir.path().join("mock-state.json"));
+    std::env::set_var("MOCK_COLD_START_MS", "0");
+    std::env::set_var("MOCK_CREATE_MS", "0");
+    std::env::set_var("MOCK_EXEC_MS", "0");
+
+    let (ctx, store) = test_ctx(dir.path(), 10, Duration::from_secs(30)).await;
+
+    // Lanes 1 and 2 fail; lane 0 passes: only one judge candidate remains.
+    let harness = HarnessMode::Command {
+        impl_command: format!("echo '{}'", canned_impl().replace('\'', "'\\''")),
+        val_command: per_lane_val_command(&[1, 2], &canned_fail(), &canned_val()),
+    };
+    let run = orchestrator::start_run(
+        ctx.clone(),
+        RunRequest {
+            brief: "Build a 90s arcade game".to_owned(),
+            n_lanes: 3,
+            harness,
+        },
+    )
+    .await
+    .unwrap();
+
+    let final_run = wait_run(&store, &run.id, 60).await;
+    assert_eq!(
+        final_run.status, "failed",
+        "only one passing lane: no judge"
+    );
+    assert_eq!(final_run.winner_lane, None);
+    for lane in store.list_lanes(&run.id).await.unwrap() {
+        assert!(lane.val_verdict.is_some(), "verdict recorded");
+        if lane.idx == 0 {
+            assert_eq!(lane.state, "validated", "lane {:?}", lane.idx);
+        } else {
+            assert_eq!(lane.state, "failed", "lane {:?} demoted", lane.idx);
+            assert!(lane.val_report_json.is_some(), "report retained");
+        }
     }
 }

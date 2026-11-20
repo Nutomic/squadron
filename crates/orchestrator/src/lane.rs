@@ -6,7 +6,6 @@ pub enum LaneState {
     Done,
     Validated,
     Failed,
-    Skipped,
     Judged,
 }
 
@@ -19,7 +18,6 @@ impl LaneState {
             Self::Done => "done",
             Self::Validated => "validated",
             Self::Failed => "failed",
-            Self::Skipped => "skipped",
             Self::Judged => "judged",
         }
     }
@@ -32,7 +30,6 @@ impl LaneState {
             "done" => Self::Done,
             "validated" => Self::Validated,
             "failed" => Self::Failed,
-            "skipped" => Self::Skipped,
             "judged" => Self::Judged,
             _ => return None,
         })
@@ -44,18 +41,13 @@ impl LaneState {
             (self, next),
             (Queued, Creating)
                 | (Queued, Failed)
-                | (Queued, Skipped)
                 | (Creating, Running)
                 | (Creating, Failed)
-                | (Creating, Skipped)
                 | (Running, Done)
                 | (Running, Failed)
-                | (Running, Skipped)
                 | (Done, Validated)
                 | (Done, Failed)
-                | (Done, Skipped)
                 | (Validated, Judged)
-                | (Failed, Skipped)
         )
     }
 }

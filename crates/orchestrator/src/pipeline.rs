@@ -9,10 +9,10 @@ use prompts::{
 };
 use serde_json::Value;
 use sprites_client::{ExecOptions, SpriteClient};
-use store::{Run, Store};
+use store::{now_ms, Run, Store};
 
 use crate::artifacts;
-use crate::config::{ms_after, now_ms, PipelineConfig};
+use crate::config::{ms_after, PipelineConfig};
 use crate::harness::{self, HarnessCache};
 use crate::judge;
 use crate::lane::LaneState;
@@ -196,7 +196,8 @@ async fn execute_run(
         let _ = h.await;
     }
 
-    // Judge if >=2 succeeded (validated lanes)
+    // Judge if >=2 lanes passed validation (validator fail verdicts and
+    // failed lanes are excluded from the judge set).
     let lanes = ctx
         .store
         .list_lanes(&run_id)
@@ -204,7 +205,7 @@ async fn execute_run(
         .map_err(|e| e.to_string())?;
     let validated: Vec<_> = lanes
         .iter()
-        .filter(|l| l.state == "validated")
+        .filter(|l| l.state == "validated" && l.val_verdict.as_deref() == Some("pass"))
         .cloned()
         .collect();
     if validated.len() >= 2 {
@@ -987,11 +988,9 @@ async fn transition(
 }
 
 pub async fn publish(ctx: &PipelineCtx, run_id: &str) {
-    if let (Ok(Some(run)), Ok(lanes)) = (
-        ctx.store.get_run(run_id).await,
-        ctx.store.list_lanes(run_id).await,
-    ) {
-        let snap = snapshot::snapshot_for(&run, &lanes, now_ms());
+    // #7: the hub payload is the single source for live subscribers; the web
+    // layer only rebuilds from the DB as a late-subscriber fallback.
+    if let Some(snap) = snapshot::build_snapshot(&ctx.store, run_id).await {
         ctx.sse.publish(snap);
     }
 }

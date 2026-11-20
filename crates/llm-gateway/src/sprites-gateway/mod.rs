@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::types::DEFAULT_REASONING_EFFORT;
-use crate::{ChatRequest, LlmError, MessageContent, USER_AGENT};
+use crate::{ChatRequest, LlmError, USER_AGENT};
 
 /// #34: canonical connector id; the endpoint URL is derived from it so the
 /// id lives in exactly one place (shared with orchestrator's config default).
@@ -84,28 +84,6 @@ impl SpriteRecipe {
             .system(system)
             .user(user)
             .reasoning_effort(self.reasoning_effort.clone())
-    }
-
-    pub fn build_with_parts(&self, system: &str, parts: Vec<crate::ContentPart>) -> ChatRequest {
-        ChatRequest::new(self.model.clone())
-            .system(system)
-            .message(crate::ChatMessage::new(
-                "user",
-                MessageContent::Parts(parts),
-            ))
-            .reasoning_effort(self.reasoning_effort.clone())
-    }
-
-    pub async fn chat(&self, request: &ChatRequest) -> Result<crate::ChatResponse, LlmError> {
-        let client = reqwest::Client::new();
-        crate::transport::post_chat(
-            &client,
-            &self.endpoint,
-            &self.headers(),
-            request,
-            self.timeout,
-        )
-        .await
     }
 
     pub fn curl_command(&self, request: &ChatRequest) -> Result<String, LlmError> {

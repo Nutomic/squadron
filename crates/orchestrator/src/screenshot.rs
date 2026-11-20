@@ -6,8 +6,7 @@ use base64::Engine;
 use futures::StreamExt;
 use tokio::sync::{mpsc, Notify, RwLock};
 
-use crate::config::now_ms;
-use store::Store;
+use store::{now_ms, Store};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScreenshotState {
