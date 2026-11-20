@@ -10,33 +10,35 @@ use tokio::sync::Mutex;
 
 use llm_gateway::MachineLlmClient;
 
-/// Stub inference endpoint: records the request body and replies with a
-/// schema-valid judge verdict.
-async fn stub(
-    State(captured): State<Arc<Mutex<Vec<Value>>>>,
-    Json(body): Json<Value>,
-) -> (StatusCode, Json<Value>) {
-    captured.lock().await.push(body.clone());
-    (
-        StatusCode::OK,
-        Json(json!({
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": json!({
-                "ranking": [0], "winner": 0,
-                "verdict_card": "Lane 0 wins; criteria met.",
-                "reasons": "only lane"
-            }).to_string()}}],
-            "usage": {"opencode": {"allowance": {"usd": 0.01}}}
-        })),
-    )
-}
-
-fn app(captured: Arc<Mutex<Vec<Value>>>) -> Router {
+fn app(captured: Arc<Mutex<Vec<Value>>>, judge_content: Value) -> Router {
     Router::new()
-        .route("/chat/completions", post(stub))
+        .route(
+            "/chat/completions",
+            post(move |State(captured): State<Arc<Mutex<Vec<Value>>>>,
+                      Json(body): Json<Value>| async move {
+                captured.lock().await.push(body.clone());
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "choices": [{"index": 0, "message": {"role": "assistant", "content": judge_content.to_string()}}],
+                        "usage": {"opencode": {"allowance": {"usd": 0.01}}}
+                    })),
+                )
+            }),
+        )
         .with_state(captured)
 }
 
 async fn spawn_stub() -> (String, Arc<Mutex<Vec<Value>>>) {
+    let content = json!({
+        "ranking": [0], "winner": 0,
+        "verdict_card": "Lane 0 wins; criteria met.",
+        "reasons": "only lane"
+    });
+    spawn_stub_with(content).await
+}
+
+async fn spawn_stub_with(judge_content: Value) -> (String, Arc<Mutex<Vec<Value>>>) {
     let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -44,7 +46,7 @@ async fn spawn_stub() -> (String, Arc<Mutex<Vec<Value>>>) {
     let addr = listener.local_addr().unwrap();
     let server_state = captured.clone();
     tokio::spawn(async move {
-        let _ = axum::serve(listener, app(server_state)).await;
+        let _ = axum::serve(listener, app(server_state, judge_content)).await;
     });
     (format!("http://{addr}/chat/completions"), captured)
 }
@@ -196,5 +198,91 @@ async fn judge_winner_outside_validated_lanes_is_rejected() {
     assert!(
         err.contains("permutation"),
         "rejection must name the permutation gate, got: {err}"
+    );
+}
+
+/// Audit R3 finding: images are keyed per lane, never flattened. When lane 0
+/// has no render and lane 1 has one, the image must be labeled "lane 1:" —
+/// a flattened list would silently attach it to lane 0.
+#[tokio::test(flavor = "multi_thread")]
+async fn judge_labels_each_image_with_its_lane_idx() {
+    let (endpoint, captured) = spawn_stub_with(json!({
+        "ranking": [0, 1], "winner": 0,
+        "verdict_card": "Lane 0 wins; criteria met.",
+        "reasons": "lane 0 rendered correctly"
+    }))
+    .await;
+    let client = MachineLlmClient::new("test-key", &endpoint);
+
+    let report = |idx: usize| {
+        prompts::LaneJudgeReport::new(
+            idx,
+            prompts::ValidatorOutput {
+                verdict: prompts::Verdict::Pass,
+                summary: "ok".to_owned(),
+                features: prompts::TextOrList::Text("feature".to_owned()),
+                bugs: prompts::TextOrList::Text(String::new()),
+                security: prompts::TextOrList::Text(String::new()),
+                quality_score: 8.0,
+            },
+        )
+    };
+    let png = std::fs::read(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../swarm/static/logo.png"),
+    )
+    .ok()
+    .unwrap_or_else(|| vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    let data_url = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&png)
+    );
+
+    let (out, _cost) = judge::run_judge(
+        &client,
+        &[report(0), report(1)],
+        &["<extract 0>".to_owned(), "<extract 1>".to_owned()],
+        &[None, Some(data_url.clone())],
+        std::time::Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.winner, 0);
+
+    let bodies = captured.lock().await;
+    let content = bodies[0]["messages"][1]["content"].as_array().unwrap();
+    let lane_labels: Vec<&str> = content
+        .iter()
+        .filter_map(|p| p["text"].as_str())
+        .filter(|t| t.starts_with("lane ") && t.ends_with(':'))
+        .collect();
+    assert_eq!(
+        lane_labels,
+        vec!["lane 1:"],
+        "only the rendered lane is labeled"
+    );
+    // The image part follows its label, and no image appears unlabeled.
+    let label_pos = content
+        .iter()
+        .position(|p| p["text"] == json!("lane 1:"))
+        .unwrap();
+    let image_pos = content
+        .iter()
+        .position(|p| p["type"] == "image_url" && p["image_url"]["url"] == json!(data_url))
+        .unwrap();
+    assert_eq!(
+        image_pos,
+        label_pos + 1,
+        "image must ride right after its lane label"
+    );
+    assert_eq!(
+        content.iter().filter(|p| p["type"] == "image_url").count(),
+        1,
+        "no unlabeled or duplicate image parts"
+    );
+    // Extracts are keyed by lane idx in the prompt text.
+    let prompt_text = content[0]["text"].as_str().unwrap();
+    assert!(
+        prompt_text.contains("site-extract-lane-0") && prompt_text.contains("site-extract-lane-1"),
+        "extracts must be keyed by lane idx, got: {prompt_text}"
     );
 }

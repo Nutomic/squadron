@@ -46,11 +46,21 @@ async fn judge_once(
 ) -> Result<(JudgeOutput, f64), String> {
     let prompt = prompts::judge_prompt(reports, extracts);
     // #12: when lane screenshots exist, attach them as image parts so the judge
-    // can see the rendered sites, not just the text extracts.
+    // can see the rendered sites, not just the text extracts. Audit R3 finding:
+    // images must stay keyed to their lane, never flattened — after one missing
+    // render a flattened list would shift every later image onto the wrong
+    // lane. Each image is preceded by a per-lane label text part; lanes without
+    // a render contribute no image part (they stay text-only in the prompt).
     let request = if images.iter().any(|i| i.is_some()) {
         let mut parts = vec![llm_gateway::ContentPart::text(&prompt.user)];
-        for img in images.iter().flatten() {
-            parts.push(llm_gateway::ContentPart::image(img));
+        for (report, img) in reports.iter().zip(images.iter()) {
+            if let Some(img) = img {
+                parts.push(llm_gateway::ContentPart::text(&format!(
+                    "lane {}:",
+                    report.lane_idx
+                )));
+                parts.push(llm_gateway::ContentPart::image(img));
+            }
         }
         llm_gateway::ChatRequest::new(llm_gateway::JUDGE_MODEL)
             .system(&prompt.system)
@@ -73,16 +83,12 @@ async fn judge_once(
 }
 
 /// Fetch HTML from a URL and sanitize: strip <script> blocks, truncate ~20KB.
+/// Audit R3 finding: the URL is agent-controlled, so the fetch goes through
+/// the shared SSRF-safe fetcher (no unvalidated redirects, no non-public
+/// resolved IPs). Any failure degrades to an empty extract.
 pub async fn fetch_sanitized_extract(url: &str) -> String {
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return String::new(),
-    };
-    let html = match client.get(url).send().await {
-        Ok(r) => r.text().await.unwrap_or_default(),
+    let html = match crate::net::fetch_public_text(url).await {
+        Ok(html) => html,
         Err(_) => return String::new(),
     };
     sanitize_html(&html, 20_000)
