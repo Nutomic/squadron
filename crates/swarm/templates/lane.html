@@ -56,7 +56,7 @@
         {% else %}
         <p class="text-sm text-base-content/45">Validation has not run yet.</p>
         {% endif %}
-        {% if val_features.len() == 0 and val_bugs.len() == 0 and val_security.len() == 0 %}
+        {% if val_features.len() == 0 && val_bugs.len() == 0 && val_security.len() == 0 %}
         {# Older runs store one prose blob — show it only when no structured rows exist #}
         {% if val_summary.len() > 0 %}
         <pre class="whitespace-pre-wrap font-sans text-[13px] leading-relaxed text-base-content/75 bg-base-200 rounded-lg p-4">{{ val_summary }}</pre>
