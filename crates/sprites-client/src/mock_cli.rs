@@ -60,7 +60,12 @@ pub fn write_state(state: &MockState) -> Result<(), String> {
         }
     }
     let text = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
-    fs::write(&path, text).map_err(|e| e.to_string())
+    // Atomic replace (temp file + rename): unlocked readers (`info`, `list`)
+    // must never observe a torn file, which would parse as an empty state and
+    // report live sprites as "unknown" (R3-A #1 flake).
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, text).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
 fn with_state<T>(f: impl FnOnce(&mut MockState) -> Result<T, String>) -> Result<T, String> {
@@ -89,6 +94,19 @@ fn now_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+/// Opaque per-sprite host suffix (FNV-1a over name + creation time), modeling
+/// the platform-assigned suffix on real sprite URLs.
+fn url_suffix(name: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in name.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h ^= now_ms() as u64;
+    h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    format!("{:05x}", (h & 0xfffff) as u32)
 }
 
 fn delay_ms(name: &str, default: u64) {
@@ -122,6 +140,7 @@ pub fn execute(args: &[String]) -> Result<String, (i32, String)> {
         Some("destroy") => destroy(args),
         Some("checkpoint") => checkpoint(args),
         Some("config") => config_update(args),
+        Some("info") => info(args),
         Some("list") => list(),
         _ => Err((2, format!("mock-sprite-cli: unsupported command: {args:?}"))),
     }
@@ -149,7 +168,10 @@ fn create(args: &[String]) -> Result<String, (i32, String)> {
                 cold_started: false,
                 exec_count: 0,
                 http_200: false,
-                url: format!("https://{name}.sprites.app"),
+                // R3-A #1: real sprite hosts carry an opaque platform suffix
+                // (`<name>-<suffix>.sprites.app`); the mock models that so URL
+                // fabrication can never pass a 200-check unnoticed.
+                url: format!("https://{name}-{}.sprites.app", url_suffix(name)),
                 ..MockSprite::default()
             },
         );
@@ -333,13 +355,36 @@ fn checkpoint(args: &[String]) -> Result<String, (i32, String)> {
 }
 
 fn config_update(args: &[String]) -> Result<String, (i32, String)> {
-    if args.get(1).map(String::as_str) != Some("update")
-        || args.get(2).map(String::as_str) != Some("--url-auth")
-        || args.get(3).map(String::as_str) != Some("public")
+    if args.get(1).map(String::as_str) != Some("update") {
+        return Err((2, format!("config: unsupported args {args:?}")));
+    }
+    // R3-A #2: real CLI semantics require the sprite to be named explicitly;
+    // `sprite config update --url-auth public` without `-s <name>` fails on
+    // the Machine ("sprite name required"). The mock refuses too.
+    let name = args
+        .iter()
+        .position(|a| a == "-s")
+        .and_then(|i| args.get(i + 1))
+        .ok_or_else(|| {
+            (
+                2,
+                "config update: sprite name required (-s <name>)".to_owned(),
+            )
+        })?;
+    // argv shape: `config update -s <name> --url-auth public`
+    let s_at = args.iter().position(|a| a == "-s").unwrap();
+    if args.get(s_at + 2).map(String::as_str) != Some("--url-auth")
+        || args.get(s_at + 3).map(String::as_str) != Some("public")
     {
         return Err((2, format!("config: unsupported args {args:?}")));
     }
+    if std::env::var_os("MOCK_CONFIG_FAIL").is_some() {
+        return Err((1, "config update: mock url-auth failure".to_owned()));
+    }
     with_state(|state| {
+        if !state.sprites.contains_key(name) {
+            return Err(format!("config update: unknown sprite {name}"));
+        }
         state.url_auth_public = true;
         Ok(())
     })
@@ -347,8 +392,32 @@ fn config_update(args: &[String]) -> Result<String, (i32, String)> {
     Ok("url-auth set to public\n".to_owned())
 }
 
+/// `sprite info <name>`: the URL line is the source of truth for the public
+/// host (R3-A #1). The read takes the same exclusive lock as `with_state` so
+/// it can never observe a mid-update state.
+fn info(args: &[String]) -> Result<String, (i32, String)> {
+    let name = args
+        .get(1)
+        .ok_or_else(|| (2, "info: missing name".to_owned()))?;
+    let (sprite, auth) = with_state(|state| {
+        let sprite = state
+            .sprites
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("info: unknown sprite {name}"))?;
+        Ok((sprite, state.url_auth_public))
+    })
+    .map_err(|e| (3, e))?;
+    Ok(format!(
+        "Name: {}\nStatus: running\nURL: {}\nurl-auth: {}\n",
+        sprite.name,
+        sprite.url,
+        if auth { "public" } else { "private" }
+    ))
+}
+
 fn list() -> Result<String, (i32, String)> {
-    let state = read_state();
+    let state = with_state(|state| Ok(state.clone())).map_err(|e| (3, e))?;
     let mut text = String::new();
     for sprite in state.sprites.values() {
         text.push_str(&format!(

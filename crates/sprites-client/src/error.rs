@@ -17,4 +17,8 @@ pub enum SpriteError {
         #[source]
         source: std::io::Error,
     },
+    /// R3-A #1: `sprite info <name>` ran but its output carried no parseable
+    /// `URL:` line, so the real (opaque-suffixed) public URL is unknown.
+    #[error("sprite info for `{command}` did not report a URL")]
+    InfoUrlMissing { command: String },
 }

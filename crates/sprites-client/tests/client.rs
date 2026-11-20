@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 use sprites_client::mock_cli::{self, MockState};
-use sprites_client::{ExecOptions, SpriteClient, SpriteConfig, SpriteError};
+use sprites_client::{parse_info_url, ExecOptions, SpriteClient, SpriteConfig, SpriteError};
 
 fn fixture_client() -> (SpriteClient, PathBuf, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -31,7 +31,9 @@ async fn create_exec_destroy_checkpoint_and_config_use_verified_syntax() {
 
     client.create(&name).await.unwrap();
     client.checkpoint(&name).await.unwrap();
-    client.set_url_auth_public().await.unwrap();
+    client.set_url_auth_public(&name).await.unwrap();
+    let url = client.url(&name).await.unwrap();
+    assert_eq!(url, format!("https://{name}-f1x2e.sprites.app"));
     client.destroy(&name).await.unwrap();
     let output = client
         .exec(&name, "echo hi", &ExecOptions::default())
@@ -48,7 +50,11 @@ async fn create_exec_destroy_checkpoint_and_config_use_verified_syntax() {
         lines.contains("checkpoint create swarm-abc-impl-0"),
         "{lines}"
     );
-    assert!(lines.contains("config update --url-auth public"), "{lines}");
+    assert!(
+        lines.contains("config update -s swarm-abc-impl-0 --url-auth public"),
+        "{lines}"
+    );
+    assert!(lines.contains("info swarm-abc-impl-0"), "{lines}");
     assert!(
         lines.contains("destroy swarm-abc-impl-0 --force"),
         "{lines}"
@@ -178,7 +184,15 @@ fn mock_cli_models_cold_start_create_exec_and_destroy() {
     .unwrap();
     assert!(warm_start.elapsed() < cold_elapsed);
     mock_cli::execute(&args(vec!["checkpoint", "create", "lane0"])).unwrap();
-    mock_cli::execute(&args(vec!["config", "update", "--url-auth", "public"])).unwrap();
+    mock_cli::execute(&args(vec![
+        "config",
+        "update",
+        "-s",
+        "lane0",
+        "--url-auth",
+        "public",
+    ]))
+    .unwrap();
     let listing = mock_cli::execute(&args(vec!["list"])).unwrap();
     assert!(listing.contains("lane0"));
     mock_cli::execute(&args(vec!["destroy", "lane0", "--force"])).unwrap();
@@ -222,7 +236,7 @@ async fn client_drives_mock_cli_binary_end_to_end() {
     });
     let name = client.name("smoke");
     client.create(&name).await.unwrap();
-    client.set_url_auth_public().await.unwrap();
+    client.set_url_auth_public(&name).await.unwrap();
     let output = client
         .exec(&name, "echo running", &ExecOptions::default())
         .await
@@ -265,4 +279,110 @@ async fn mock_cli_records_http_200_from_port_8080() {
     assert!(state.sprites["serving"].http_200);
     std::env::remove_var("MOCK_SPRITE_STATE");
     server.abort();
+}
+
+/// R3-A #1: the real sprite URL carries an opaque platform suffix; it must be
+/// parsed from the `URL:` line of `sprite info`, never fabricated from the
+/// bare name.
+#[tokio::test(flavor = "multi_thread")]
+async fn url_parses_the_suffixed_host_from_sprite_info() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("url-state.json");
+    std::env::set_var("MOCK_SPRITE_STATE", &state);
+    let client = SpriteClient::new(SpriteConfig {
+        cli_path: PathBuf::from(env!("CARGO_BIN_EXE_mock-sprite-cli")),
+        command_timeout: Duration::from_secs(5),
+        ..SpriteConfig::default()
+    });
+    let name = client.name("urltest");
+    client.create(&name).await.unwrap();
+
+    let url = client.url(&name).await.unwrap();
+    assert!(
+        url.starts_with("https://") && url.ends_with(".sprites.app"),
+        "url must be a real host: {url}"
+    );
+    // the suffix: bare-name form is forbidden
+    let bare = format!("https://{name}.sprites.app");
+    assert_ne!(url, bare, "the opaque suffix must not be dropped: {url}");
+    assert!(
+        url.strip_prefix("https://")
+            .map(|host| host
+                .strip_prefix(&format!("{name}-"))
+                .map(|rest| rest != ".sprites.app")
+                .unwrap_or(false))
+            .unwrap_or(false),
+        "host must be <name>-<suffix>.sprites.app: {url}"
+    );
+
+    // the URL in the mock state matches what info reported
+    let state: MockState = serde_json::from_str(&fs::read_to_string(&state).unwrap()).unwrap();
+    assert_eq!(state.sprites[&name].url, url);
+
+    // the bare-name fabrication is a different host than the real one
+    assert!(
+        !state.sprites[&name]
+            .url
+            .ends_with(&format!("{name}.sprites.app")),
+        "suffixed host must differ from the bare name"
+    );
+    std::env::remove_var("MOCK_SPRITE_STATE");
+}
+
+/// R3-A #1: the parser accepts the documented shapes and nothing else.
+#[test]
+fn parse_info_url_accepts_url_lines_only() {
+    assert_eq!(
+        parse_info_url("Name: x\nURL: https://x-b5t5x.sprites.app\nStatus: running\n"),
+        Some("https://x-b5t5x.sprites.app".to_owned())
+    );
+    // lowercase key and table padding
+    assert_eq!(
+        parse_info_url("| url | https://x-b5t5x.sprites.app |\n"),
+        Some("https://x-b5t5x.sprites.app".to_owned())
+    );
+    // no URL line -> None (never fabricate)
+    assert_eq!(parse_info_url("Name: x\nStatus: running\n"), None);
+    assert_eq!(parse_info_url(""), None);
+    // non-http values are rejected
+    assert_eq!(parse_info_url("URL: not-a-url\n"), None);
+}
+
+/// R3-A #2: `config update` without `-s <name>` fails (real CLI: "sprite name
+/// required"), and a failing url-auth update surfaces as a typed error.
+#[tokio::test(flavor = "multi_thread")]
+async fn url_auth_without_sprite_name_fails() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("auth-state.json");
+    std::env::set_var("MOCK_SPRITE_STATE", &state);
+    let client = SpriteClient::new(SpriteConfig {
+        cli_path: PathBuf::from(env!("CARGO_BIN_EXE_mock-sprite-cli")),
+        command_timeout: Duration::from_secs(5),
+        ..SpriteConfig::default()
+    });
+
+    // the flag must carry the sprite name
+    let err = client
+        .set_url_auth_public("auth-flag-sprite")
+        .await
+        .unwrap_err();
+    match err {
+        SpriteError::CliExit { command, .. } => {
+            assert!(
+                command.contains("-s auth-flag-sprite"),
+                "-s <name> must be passed: {command}"
+            );
+        }
+        other => panic!("expected CliExit, got {other:?}"),
+    }
+
+    // create the sprite, then the scoped flag succeeds
+    let name = client.name("auth-ok");
+    client.create(&name).await.unwrap();
+    client.set_url_auth_public(&name).await.unwrap();
+    let state: MockState = serde_json::from_str(&fs::read_to_string(&state).unwrap()).unwrap();
+    assert!(state.url_auth_public);
+    std::env::remove_var("MOCK_SPRITE_STATE");
 }

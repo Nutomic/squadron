@@ -122,7 +122,11 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
         .ok_or_else(|| "run missing".to_owned())
 }
 
-async fn generate_variants(ctx: &PipelineCtx, brief: &str, n: usize) -> (Vec<Value>, f64) {
+/// Diversity variant generation. The cost is Option: None = the spend is
+/// unknown (machine LLM answered without usage data) and must never be
+/// rendered as $0.00 (R3-A #5). The deterministic fallback and a failed
+/// request genuinely cost nothing.
+async fn generate_variants(ctx: &PipelineCtx, brief: &str, n: usize) -> (Vec<Value>, Option<f64>) {
     let fallback = || {
         prompts::template_variants(n)
             .into_iter()
@@ -139,7 +143,7 @@ async fn generate_variants(ctx: &PipelineCtx, brief: &str, n: usize) -> (Vec<Val
         // output is rejected; count it against the run either way.
         match llm.chat(&request).await {
             Ok(resp) => {
-                let cost = resp.cost_usd().unwrap_or(0.0);
+                let cost = resp.cost_usd();
                 if let Some(text) = resp.text() {
                     let opts = GateOptions {
                         expected_variants: Some(n),
@@ -161,11 +165,11 @@ async fn generate_variants(ctx: &PipelineCtx, brief: &str, n: usize) -> (Vec<Val
                 }
                 (fallback(), cost)
             }
-            Err(_) => (fallback(), 0.0),
+            Err(_) => (fallback(), Some(0.0)),
         }
     } else {
         // fallback
-        (fallback(), 0.0)
+        (fallback(), Some(0.0))
     }
 }
 
@@ -173,7 +177,7 @@ async fn execute_run(
     ctx: Arc<PipelineCtx>,
     run_id: String,
     harness: HarnessMode,
-    diversity_cost: f64,
+    diversity_cost: Option<f64>,
 ) -> Result<(), String> {
     let lanes = ctx
         .store
@@ -226,15 +230,25 @@ async fn run_lane(
     harness: HarnessMode,
 ) -> Result<(), String> {
     let mut attempts = 0;
-    let max_attempts = ctx.config.retries_per_lane + 1;
+    // R3-A #4: two independent retry budgets. Lane-level failures (transient
+    // infra) consume `retries_per_lane`; harness-attributable failures (probe,
+    // exec, schema gate from a broken harness) get their own budget = chain
+    // length so the chain can be walked to the curl floor without ever
+    // burning the lane retry.
+    let max_lane_retries = ctx.config.retries_per_lane;
+    let max_harness_retries = harness::HARNESS_CHAIN.len();
+    let mut lane_retries = 0;
+    let mut harness_retries = 0;
     loop {
         attempts += 1;
         let res = run_lane_attempt(ctx.clone(), run_id.clone(), idx, &harness).await;
         match res {
             Ok(()) => return Ok(()),
             Err(e) => {
-                let transient = is_transient_error(&e);
                 let harness_failure = is_harness_error(&e);
+                let transient = is_transient_error(&e);
+                let retry_lane = !harness_failure && transient && lane_retries < max_lane_retries;
+                let retry_harness = harness_failure && harness_retries < max_harness_retries;
                 let ts = now_ms();
                 let _ = ctx
                     .store
@@ -253,20 +267,44 @@ async fn run_lane(
                         ),
                     )
                     .await;
-                if (transient || harness_failure) && attempts < max_attempts {
+                if retry_lane || retry_harness {
+                    if retry_harness {
+                        harness_retries += 1;
+                    } else {
+                        lane_retries += 1;
+                    }
                     // #8: a retry cannot succeed while the previous sprite
                     // still exists (deterministic name, real `sprite create`
                     // rejects duplicates). Destroy --force it and reset the
                     // lane so the next attempt starts clean.
-                    if let Ok(Some(l)) = ctx.store.get_lane(&run_id, idx).await {
-                        if let Some(name) = l.sprite_name {
-                            let _ = ctx.sprite.destroy(&name).await;
-                        }
+                    let sprite_name = ctx
+                        .store
+                        .get_lane(&run_id, idx)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|l| l.sprite_name);
+                    if let Some(name) = &sprite_name {
+                        let _ = ctx.sprite.destroy(name).await;
                     }
                     let _ = ctx.store.set_lane_error(&run_id, idx, "").await;
                     // The harness choice may have been an install failure;
                     // invalidate so the next attempt re-probes the chain.
-                    ctx.harness_cache.invalidate().await;
+                    if let Some(name) = &sprite_name {
+                        if retry_harness {
+                            // R3-A #4: blacklist the choice this attempt used
+                            // (Fatal harness errors never blacklisted it
+                            // inside run_prompt), so the retry walks the
+                            // chain instead of re-picking the same member.
+                            if let Some(used) = ctx.harness_cache.last_used().await {
+                                ctx.harness_cache.invalidate_choice(name, used).await;
+                            } else {
+                                ctx.harness_cache.invalidate(name).await;
+                            }
+                        } else {
+                            ctx.harness_cache.invalidate(name).await;
+                        }
+                    }
                     continue;
                 } else {
                     // hard fail / skip
@@ -347,8 +385,21 @@ async fn run_lane_attempt(
             .await
             .map_err(|e| e.to_string())?;
     }
-    let _ = ctx.sprite.set_url_auth_public().await; // best effort; may fail in mock - mock handles it
-    let impl_url = format!("https://{sprite_name}.sprites.app");
+    // R3-A #2: url-auth public is scoped to the sprite (-s <name>) and a
+    // failure is a hard lane error: a private URL can never pass the 200-check,
+    // serve the validator, or be iframed, so silently proceeding would only
+    // defer the failure.
+    ctx.sprite
+        .set_url_auth_public(&sprite_name)
+        .await
+        .map_err(|e| format!("url-auth: {e}"))?;
+    // R3-A #1: the real host carries an opaque platform suffix; parse it from
+    // `sprite info` instead of fabricating `https://{name}.sprites.app`.
+    let impl_url = ctx
+        .sprite
+        .url(&sprite_name)
+        .await
+        .map_err(|e| format!("sprite url: {e}"))?;
 
     let started = now_ms();
     let deadline = ms_after(started, ctx.config.impl_deadline);
@@ -398,10 +449,11 @@ async fn run_lane_attempt(
         .finish_impl(&run_id, idx, &impl_out.summary, impl_out.files as i64)
         .await
         .map_err(|e| e.to_string())?;
-    ctx.store
-        .add_lane_cost(&run_id, idx, impl_out.cost_usd)
-        .await
-        .ok();
+    // R3-A #5: unknown cost stays NULL in the store (rendered as "—"); only
+    // known costs are persisted and sparklined.
+    if let Some(cost) = impl_out.cost_usd {
+        ctx.store.add_lane_cost(&run_id, idx, cost).await.ok();
+    }
     let _ = ctx
         .store
         .append_lane_event(
@@ -533,10 +585,9 @@ async fn run_lane_attempt(
         )
         .await
         .map_err(|e| e.to_string())?;
-    ctx.store
-        .add_lane_cost(&run_id, idx, val_out.cost_usd)
-        .await
-        .ok();
+    if let Some(cost) = val_out.cost_usd {
+        ctx.store.add_lane_cost(&run_id, idx, cost).await.ok();
+    }
     // R2 finding 5: a validator `verdict: fail` must demote the lane out of
     // the judge set. The report stays persisted (val_verdict, val_report_json)
     // so the detail view keeps showing it; the lane is failed-with-report.
@@ -570,7 +621,9 @@ struct ImplRunResult {
     summary: String,
     files: u32,
     run_command: String,
-    cost_usd: f64,
+    /// Gateway-reported cost; None = unknown (R3-A #5: persist NULL, never
+    /// fabricate 0.00).
+    cost_usd: Option<f64>,
     console_tail: String,
 }
 
@@ -579,7 +632,7 @@ struct ValRunResult {
     verdict: Verdict,
     summary: String,
     quality_score: f64,
-    cost_usd: f64,
+    cost_usd: Option<f64>,
 }
 
 async fn run_implementer(
@@ -604,7 +657,9 @@ async fn run_implementer(
                 .exec(sprite_name, impl_command, &opts)
                 .await
                 .map_err(|e| format!("implementer exec: {e}"))?;
-            (out.stdout, 0.0)
+            // Test-only canned command: it provably makes no model calls, so
+            // zero is the true cost, not a fabrication.
+            (out.stdout, Some(0.0))
         }
         HarnessMode::Real { .. } => {
             let variant: Value = serde_json::from_str(variant_json)
@@ -640,8 +695,8 @@ async fn run_implementer(
                 )
                 .await;
             used_choice = Some(run.choice);
-            // R2 finding 3: the gateway-reported cost travels with the run;
-            // cost was never inside the agent's own JSON.
+            // R2 finding 3 / R3-A #5: the gateway-reported cost travels with
+            // the run; an unknown cost stays None (never fabricated to 0.00).
             let cost = harness_cost_of(&run);
             (run.output, cost)
         }
@@ -656,9 +711,9 @@ async fn run_implementer(
         Err(e) => {
             // R2-2: a schema-gate failure is harness-attributable (the agent
             // produced unusable output); blacklist the choice so the retry
-            // probes the next chain member within the lane retry budget.
+            // probes the next chain member within the harness budget.
             if let Some(c) = used_choice {
-                ctx.harness_cache.invalidate_choice(c).await;
+                ctx.harness_cache.invalidate_choice(sprite_name, c).await;
             }
             return Err(format!(
                 // the raw agent output is untrusted data: name the gate failure
@@ -730,7 +785,8 @@ async fn run_validator(
                 .exec(sprite_name, val_command, &opts)
                 .await
                 .map_err(|e| format!("validator exec: {e}"))?;
-            (out.stdout, 0.0)
+            // Test-only canned command: no model calls, zero is the true cost.
+            (out.stdout, Some(0.0))
         }
         HarnessMode::Real { .. } => {
             // Real mode: run the real validator report prompt through the
@@ -760,8 +816,7 @@ async fn run_validator(
             .await
             .map_err(|e| format!("validator: {e}"))?;
             used_choice = Some(run.choice);
-            // R2 finding 3: gateway-reported cost, not a probe into the
-            // agent's own JSON.
+            // R2 finding 3 / R3-A #5: gateway-reported cost; unknown stays None.
             let cost = harness_cost_of(&run);
             (run.output, cost)
         }
@@ -777,7 +832,7 @@ async fn run_validator(
             // R2-2: a schema-gate failure is harness-attributable; blacklist
             // the choice so the retry probes the next chain member.
             if let Some(c) = used_choice {
-                ctx.harness_cache.invalidate_choice(c).await;
+                ctx.harness_cache.invalidate_choice(sprite_name, c).await;
             }
             return Err(format!("validator: schema gate failed ({e})"));
         }
@@ -878,7 +933,7 @@ async fn run_judge_phase(
     ctx: &PipelineCtx,
     run_id: &str,
     validated: &[store::Lane],
-    diversity_cost: f64,
+    diversity_cost: Option<f64>,
 ) -> Result<(), String> {
     ensure_judge_renders(ctx, run_id, validated).await;
     // gather validator reports and sanitized extracts
@@ -898,7 +953,7 @@ async fn run_judge_phase(
             extracts.push(String::new());
         }
     }
-    let (verdict, cost) = if let Some(llm) = &ctx.machine_llm {
+    let (verdict, judge_cost) = if let Some(llm) = &ctx.machine_llm {
         let images = collect_lane_screenshot_images(&ctx.config.data_dir, run_id, validated).await;
         judge::run_judge(llm, &reports, &extracts, &images, ctx.config.judge_deadline).await?
     } else {
@@ -911,7 +966,7 @@ async fn run_judge_phase(
                 verdict_card: "Winner selected by fallback. Criteria met.".to_owned(),
                 reasons: prompts::TextOrList::Text("fallback".to_owned()),
             },
-            0.0,
+            Some(0.0),
         )
     };
     let ts = now_ms();
@@ -922,9 +977,16 @@ async fn run_judge_phase(
         .await
         .map_err(|e| e.to_string())?;
     // R2 finding 3: total run cost = per-lane costs + judge cost + diversity
-    // call cost.
-    let total_cost: f64 =
-        lanes.iter().filter_map(|l| l.cost_usd).sum::<f64>() + cost + diversity_cost;
+    // call cost. R3-A #5: unknown components are skipped, never zero-filled;
+    // with nothing known the total stays NULL ("—").
+    let mut known: Vec<f64> = lanes.iter().filter_map(|l| l.cost_usd).collect();
+    known.extend(judge_cost);
+    known.extend(diversity_cost);
+    let total_cost = if known.is_empty() {
+        None
+    } else {
+        Some(known.iter().sum())
+    };
     ctx.store
         .finish_run(
             run_id,
@@ -1055,9 +1117,10 @@ fn gate_last_json<T: serde::de::DeserializeOwned>(
     Err(last_err.unwrap_or_else(|| "no JSON object found".to_owned()))
 }
 
-/// R2 finding 3: the harness reports the gateway cost on the run itself.
-fn harness_cost_of(run: &harness::HarnessRun) -> f64 {
-    run.cost_usd.unwrap_or(0.0)
+/// R2 finding 3 / R3-A #5: the harness reports the gateway cost on the run
+/// itself; None = unknown and must never be rendered as $0.00.
+fn harness_cost_of(run: &harness::HarnessRun) -> Option<f64> {
+    run.cost_usd
 }
 
 /// #20: lanes.error is a fixed class plus a short, ASCII-safe excerpt — raw
@@ -1171,7 +1234,8 @@ mod tests {
     }
 
     /// R2 finding 3: per-lane cost comes from the gateway-reported HarnessRun
-    /// cost, not from usage fields inside the agent's own JSON.
+    /// cost, not from usage fields inside the agent's own JSON. R3-A #5: an
+    /// unknown cost is None, never a fabricated 0.00.
     #[test]
     fn harness_cost_of_uses_gateway_reported_cost() {
         let mut run = harness::HarnessRun {
@@ -1179,8 +1243,8 @@ mod tests {
             output: r#"{"summary":"s","usage":{"opencode":{"allowance":999.0}}}"#.to_owned(),
             cost_usd: Some(0.25),
         };
-        assert_eq!(harness_cost_of(&run), 0.25);
+        assert_eq!(harness_cost_of(&run), Some(0.25));
         run.cost_usd = None;
-        assert_eq!(harness_cost_of(&run), 0.0);
+        assert_eq!(harness_cost_of(&run), None);
     }
 }

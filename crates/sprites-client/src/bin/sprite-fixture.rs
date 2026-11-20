@@ -15,6 +15,11 @@ fn main() {
         print!("alpha-sprite  running  https://alpha.sprites.app\nbeta-sprite  running  https://beta.sprites.app\n");
         return;
     }
+    if args.get(1).map(String::as_str) == Some("info") {
+        let name = args.get(2).cloned().unwrap_or_default();
+        print!("Name: {name}\nStatus: running\nURL: https://{name}-f1x2e.sprites.app\nurl-auth: public\n");
+        return;
+    }
     if whole.contains("fail") {
         eprintln!("synthetic failure");
         std::process::exit(7);

@@ -24,7 +24,7 @@ async fn run_lifecycle_persists_and_lists() {
             "judged",
             "Bold. Playable.",
             2,
-            1.25,
+            Some(1.25),
             1_700_000_100_000,
         )
         .await
@@ -35,6 +35,20 @@ async fn run_lifecycle_persists_and_lists() {
     assert_eq!(fetched.winner_lane, Some(2));
     assert_eq!(fetched.total_cost_usd, Some(1.25));
     assert_eq!(fetched.finished_at, Some(1_700_000_100_000));
+    // R3-A #5: an unknown total persists NULL and reads back None.
+    store
+        .finish_run(
+            &run.id,
+            "judged",
+            "Bold. Playable.",
+            2,
+            None,
+            1_700_000_100_000,
+        )
+        .await
+        .unwrap();
+    let fetched = store.get_run(&run.id).await.unwrap().unwrap();
+    assert_eq!(fetched.total_cost_usd, None);
     assert!(matches!(
         store.update_run_status("missing", "running").await,
         Err(StoreError::NotFound(_))

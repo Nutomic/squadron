@@ -114,7 +114,10 @@ async fn foundation_pipeline_composes_against_mock_sprite_and_stub_llm() {
             .unwrap();
         let name = client.name(&format!("smoke-{}", index));
         client.create(&name).await.unwrap();
-        client.set_url_auth_public().await.unwrap();
+        // R3-A: auth is scoped per sprite and the URL is parsed from
+        // `sprite info`, never fabricated from the bare name.
+        client.set_url_auth_public(&name).await.unwrap();
+        let url = client.url(&name).await.unwrap();
         store
             .update_lane_state(&run.id, idx, "creating")
             .await
@@ -124,7 +127,7 @@ async fn foundation_pipeline_composes_against_mock_sprite_and_stub_llm() {
                 &run.id,
                 idx,
                 &name,
-                &format!("https://{name}.sprites.app"),
+                &url,
                 "glm-5.3-flash",
                 1_700_000_001_000,
                 1_700_003_601_000,
@@ -202,7 +205,7 @@ async fn foundation_pipeline_composes_against_mock_sprite_and_stub_llm() {
             "judged",
             &verdict.verdict_card,
             verdict.winner as i64,
-            total_cost,
+            Some(total_cost),
             1_700_000_100_000,
         )
         .await

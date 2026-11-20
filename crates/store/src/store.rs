@@ -150,7 +150,7 @@ impl Store {
         status: &str,
         judge_verdict: &str,
         winner_lane: i64,
-        total_cost_usd: f64,
+        total_cost_usd: Option<f64>,
         finished_at: i64,
     ) -> Result<(), StoreError> {
         let result = sqlx::query!(

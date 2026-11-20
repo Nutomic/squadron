@@ -113,17 +113,33 @@ impl SpriteClient {
         .await
     }
 
-    pub async fn set_url_auth_public(&self) -> Result<CommandOutput, SpriteError> {
+    /// R3-A #2: the auth flag must be scoped to the sprite: real CLI semantics
+    /// require `-s <name>`, and a missing name is a hard failure on the
+    /// Machine. Callers must assert success instead of discarding the error.
+    pub async fn set_url_auth_public(&self, name: &str) -> Result<CommandOutput, SpriteError> {
         self.run(
             vec![
                 "config".into(),
                 "update".into(),
+                "-s".into(),
+                name.into(),
                 "--url-auth".into(),
                 "public".into(),
             ],
             None,
         )
         .await
+    }
+
+    /// R3-A #1: the real public URL is NOT `{scheme}://{name}.sprites.app` —
+    /// sprite hosts carry an opaque suffix assigned by the platform (e.g.
+    /// `swarm-x` -> `swarm-x-b5t5x.sprites.app`). Parse the `URL:` line from
+    /// `sprite info <name>` instead of ever fabricating a host.
+    pub async fn url(&self, name: &str) -> Result<String, SpriteError> {
+        let args = vec!["info".into(), name.into()];
+        let output = self.run(args.clone(), None).await?;
+        let command = args.join(" ");
+        parse_info_url(&output.stdout).ok_or(SpriteError::InfoUrlMissing { command })
     }
 
     pub async fn list(&self) -> Result<Vec<String>, SpriteError> {
@@ -194,6 +210,46 @@ fn describe(args: &[String]) -> String {
         }
     }
     parts.join(" ")
+}
+
+/// R3-A #1: extract the public URL from `sprite info` output. The URL line is
+/// `URL: <https url>` (case-insensitive key, optional table padding); anything
+/// else is not a URL we may invent.
+pub fn parse_info_url(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        // Table row (`| url | https://... |`): split cells on the pipe so a
+        // ':' inside the URL itself cannot break key detection.
+        if trimmed.starts_with('|') || trimmed.starts_with('│') {
+            let cells: Vec<String> = trimmed
+                .trim_matches(|c| c == '|' || c == '│')
+                .split(|c| c == '|' || c == '│')
+                .map(|c| c.trim().to_owned())
+                .collect();
+            for pair in cells.windows(2) {
+                if pair[0].eq_ignore_ascii_case("url") {
+                    let url = pair[1].as_str();
+                    if url.starts_with("http://") || url.starts_with("https://") {
+                        return Some(url.to_owned());
+                    }
+                }
+            }
+            continue;
+        }
+        // Plain `key: value` line.
+        let (key, value) = match trimmed.split_once(':') {
+            Some(kv) => kv,
+            None => continue,
+        };
+        if !key.trim().eq_ignore_ascii_case("url") {
+            continue;
+        }
+        let url = value.trim();
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return Some(url.to_owned());
+        }
+    }
+    None
 }
 
 fn parse_sprite_names(text: &str) -> Vec<String> {

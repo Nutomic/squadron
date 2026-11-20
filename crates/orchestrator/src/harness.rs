@@ -152,14 +152,19 @@ pub fn chat_response_cost(body: &str) -> Option<f64> {
     cost.filter(|c| c.is_finite() && *c >= 0.0)
 }
 
-/// Process-lifetime cache of the probed harness chain winner. Probed once at
-/// the first lane, then reused; on run-time failure the failed choice is
-/// blacklisted (`invalidate_choice`) so the escalation re-probe skips it and
-/// picks the next chain member. `invalidate` drops the winner without
-/// blacklisting (transient failures keep the chain intact).
+/// Cache of the probed harness chain winner, keyed PER SPRITE: harness
+/// installs (e.g. the in-lane opencode install) live inside one sprite, so a
+/// choice probed on sprite A must never be reused for sprite B — lanes >= 1
+/// would otherwise skip `ensure_opencode` and hit `command not found`, the
+/// global invalidate would blacklist opencode process-wide, and every later
+/// lane would be stuck on claude/curl (R3-A finding 3). On run-time failure
+/// the failed choice is blacklisted (`invalidate_choice`) so the escalation
+/// re-probe skips it and picks the next chain member. `invalidate` drops one
+/// sprite's winner without blacklisting (transient failures keep the chain
+/// intact).
 #[derive(Debug, Default)]
 pub struct HarnessCache {
-    choice: RwLock<Option<HarnessChoice>>,
+    choices: RwLock<std::collections::HashMap<String, HarnessChoice>>,
     last_used: RwLock<Option<HarnessChoice>>,
     skipped: RwLock<Vec<HarnessChoice>>,
 }
@@ -169,8 +174,9 @@ impl HarnessCache {
         Self::default()
     }
 
-    pub async fn cached(&self) -> Option<HarnessChoice> {
-        *self.choice.read().await
+    /// The cached winner for one sprite (None = probe on next use).
+    pub async fn cached(&self, name: &str) -> Option<HarnessChoice> {
+        self.choices.read().await.get(name).copied()
     }
 
     /// The choice the last `run_prompt` went through, so non-transient
@@ -188,17 +194,17 @@ impl HarnessCache {
         *self.last_used.write().await = Some(choice);
     }
 
-    /// Probe the chain in order inside the sprite and cache the winner. The
-    /// probe only runs while the cache is empty, skips blacklisted members,
-    /// and installs opencode in-lane when it is missing. The curl-loop floor
-    /// is the guaranteed last resort: even when blacklisted it is used again
-    /// as long as curl itself is available.
+    /// Probe the chain in order inside the sprite and cache the winner for
+    /// that sprite. The probe only runs while the sprite has no cached
+    /// choice, skips blacklisted members, and installs opencode in-lane when
+    /// it is missing. The curl-loop floor is the guaranteed last resort: even
+    /// when blacklisted it is used again as long as curl itself is available.
     pub async fn get_or_probe(
         &self,
         sprite: &SpriteClient,
         name: &str,
     ) -> Result<HarnessChoice, String> {
-        if let Some(c) = *self.choice.read().await {
+        if let Some(c) = self.choices.read().await.get(name).copied() {
             return Ok(c);
         }
         let skipped = self.skipped.read().await.clone();
@@ -238,24 +244,25 @@ impl HarnessCache {
         }
         match winner {
             Some(c) => {
-                *self.choice.write().await = Some(c);
+                self.choices.write().await.insert(name.to_owned(), c);
                 Ok(c)
             }
             None => Err("harness: no member of the chain is available (floor failed)".to_owned()),
         }
     }
 
-    /// Drop the cached choice after a transient failure so the next attempt
-    /// re-probes (spec: retry same harness after recreation, then next in
-    /// list). Blacklisted choices stay blacklisted.
-    pub async fn invalidate(&self) {
-        *self.choice.write().await = None;
+    /// Drop one sprite's cached choice after a transient failure so the next
+    /// attempt re-probes (spec: retry same harness after recreation, then
+    /// next in list). Blacklisted choices stay blacklisted.
+    pub async fn invalidate(&self, name: &str) {
+        self.choices.write().await.remove(name);
     }
 
-    /// R2-2 escalation: after a non-transient, harness-attributable failure,
-    /// blacklist the failed choice and drop the cached winner so the next
-    /// attempt probes the chain starting at the next member.
-    pub async fn invalidate_choice(&self, failed: HarnessChoice) {
+    /// R2-2/R3-A escalation: after a non-transient, harness-attributable
+    /// failure, blacklist the failed choice and drop the sprite's cached
+    /// winner so the next attempt probes the chain starting at the next
+    /// member.
+    pub async fn invalidate_choice(&self, name: &str, failed: HarnessChoice) {
         {
             let mut skipped = self.skipped.write().await;
             if !skipped.contains(&failed) {
@@ -263,7 +270,7 @@ impl HarnessCache {
             }
         }
         *self.last_used.write().await = None;
-        self.invalidate().await;
+        self.invalidate(name).await;
     }
 }
 
@@ -563,7 +570,7 @@ pub async fn run_prompt(
                 escalations += 1;
                 // R2-2: blacklist the failed choice; the re-probe skips it and
                 // picks the next chain member.
-                cache.invalidate_choice(choice).await;
+                cache.invalidate_choice(name, choice).await;
             }
             Err(HarnessError::Fatal(msg)) => return Err(msg),
         }
@@ -843,17 +850,31 @@ mod tests {
     #[tokio::test]
     async fn invalidate_choice_blacklists_and_drops_winner() {
         let cache = HarnessCache::new();
-        *cache.choice.write().await = Some(HarnessChoice::Opencode);
-        cache.invalidate_choice(HarnessChoice::Opencode).await;
-        assert_eq!(cache.cached().await, None);
+        *cache.choices.write().await =
+            std::collections::HashMap::from([("sprite-a".to_owned(), HarnessChoice::Opencode)]);
+        cache
+            .invalidate_choice("sprite-a", HarnessChoice::Opencode)
+            .await;
+        assert_eq!(cache.cached("sprite-a").await, None);
         assert_eq!(cache.skipped().await, vec![HarnessChoice::Opencode]);
         // blacklisting is idempotent
-        cache.invalidate_choice(HarnessChoice::Opencode).await;
+        cache
+            .invalidate_choice("sprite-a", HarnessChoice::Opencode)
+            .await;
         assert_eq!(cache.skipped().await, vec![HarnessChoice::Opencode]);
         // plain invalidate keeps the blacklist (transient failures)
-        *cache.choice.write().await = Some(HarnessChoice::Claude);
-        cache.invalidate().await;
+        *cache.choices.write().await =
+            std::collections::HashMap::from([("sprite-a".to_owned(), HarnessChoice::Claude)]);
+        cache.invalidate("sprite-a").await;
         assert_eq!(cache.skipped().await, vec![HarnessChoice::Opencode]);
+        // the cache is per sprite: one sprite's winner never leaks to another
+        *cache.choices.write().await =
+            std::collections::HashMap::from([("sprite-b".to_owned(), HarnessChoice::Opencode)]);
+        assert_eq!(cache.cached("sprite-a").await, None);
+        assert_eq!(
+            cache.cached("sprite-b").await,
+            Some(HarnessChoice::Opencode)
+        );
     }
 
     #[tokio::test]

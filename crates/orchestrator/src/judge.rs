@@ -11,7 +11,7 @@ pub async fn run_judge(
     extracts: &[String],
     images: &[Option<String>],
     deadline: Duration,
-) -> Result<(JudgeOutput, f64), String> {
+) -> Result<(JudgeOutput, Option<f64>), String> {
     if reports.is_empty() {
         return Err("judge: no validator reports".to_owned());
     }
@@ -43,7 +43,7 @@ async fn judge_once(
     extracts: &[String],
     images: &[Option<String>],
     opts: &GateOptions,
-) -> Result<(JudgeOutput, f64), String> {
+) -> Result<(JudgeOutput, Option<f64>), String> {
     let prompt = prompts::judge_prompt(reports, extracts);
     // #12: when lane screenshots exist, attach them as image parts so the judge
     // can see the rendered sites, not just the text extracts.
@@ -68,8 +68,8 @@ async fn judge_once(
         .ok_or_else(|| "judge: empty response".to_owned())?;
     gate_with_options(Role::Judge, &text, opts).map_err(|e| e.to_string())?;
     let out: JudgeOutput = parse(Role::Judge, &text).map_err(|e| e.to_string())?;
-    let cost = response.cost_usd().unwrap_or(0.0);
-    Ok((out, cost))
+    // R3-A #5: unknown judge cost stays None, never a fabricated 0.00.
+    Ok((out, response.cost_usd()))
 }
 
 /// Fetch HTML from a URL and sanitize: strip <script> blocks, truncate ~20KB.

@@ -212,6 +212,90 @@ async fn slot_exhaustion_queues_lanes_and_completes() {
         assert_eq!(lane.state, "validated", "lane {:?}", lane.idx);
     }
     assert_eq!(ctx.slots.available(), 1, "permits released after the run");
+    // R3-A #1: the lane URL must be the mock's opaque-suffixed host, never the
+    // bare-name fabrication.
+    for lane in store.list_lanes(&run.id).await.unwrap() {
+        let url = lane.impl_url.clone().expect("impl_url recorded");
+        assert!(url.starts_with("https://"), "url: {url}");
+        let name = lane.sprite_name.clone().expect("sprite_name recorded");
+        assert!(
+            url.starts_with(&format!("https://{name}-")),
+            "host must carry the opaque suffix, got: {url}"
+        );
+    }
+}
+
+/// R3-A #4: harness-attributable failures (schema-gate rejection from the
+/// harness chain) get their own retry budget (= chain length) and must NOT
+/// consume `retries_per_lane`. With `retries_per_lane = 0` two failing
+/// implementer attempts are still retried through the harness budget and the
+/// third attempt succeeds — under the old shared budget the lane would have
+/// hard-failed on attempt 1 before any harness escalation.
+#[tokio::test(flavor = "multi_thread")]
+async fn harness_budget_is_independent_of_lane_retries() {
+    let _env = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("MOCK_SPRITE_STATE", dir.path().join("mock-state.json"));
+    std::env::set_var("MOCK_COLD_START_MS", "0");
+    std::env::set_var("MOCK_CREATE_MS", "0");
+    std::env::set_var("MOCK_EXEC_MS", "0");
+
+    let (ctx, store) = test_ctx(dir.path(), 10, Duration::from_secs(30)).await;
+
+    // Each lane's exec runs in its persistent workdir, so a counter file there
+    // discriminates attempts: the first two echo invalid JSON (schema gate
+    // failure = harness-attributable), the third emits a valid implementer.
+    let impl_command = format!(
+        "n=$(cat impl-count 2>/dev/null || echo 0); n=$((n+1)); echo $n > impl-count; \
+         if [ $n -le 2 ]; then echo 'this is not json at all'; \
+         else echo '{}'; fi",
+        canned_impl().replace('\'', "'\\''")
+    );
+    let harness = HarnessMode::Command {
+        impl_command,
+        val_command: format!("echo '{}'", canned_val().replace('\'', "'\\''")),
+    };
+    let run = orchestrator::start_run(
+        ctx.clone(),
+        RunRequest {
+            brief: "Build a 90s arcade game".to_owned(),
+            n_lanes: 3,
+            harness,
+        },
+    )
+    .await
+    .unwrap();
+
+    let final_run = wait_run(&store, &run.id, 60).await;
+    assert_eq!(
+        final_run.status, "judged",
+        "harness retries must carry the lane past the two gate failures"
+    );
+    for lane in store.list_lanes(&run.id).await.unwrap() {
+        assert_eq!(lane.state, "validated", "lane {:?}", lane.idx);
+        assert!(lane.impl_summary.is_some(), "lane {:?}", lane.idx);
+        // exactly 3 attempts: 2 harness-budget retries, 0 lane retries
+        let counter = dir
+            .path()
+            .join("data")
+            .join("work")
+            .join(&run.id)
+            .join(format!("lane-{}", lane.idx))
+            .join("impl-count");
+        assert_eq!(
+            std::fs::read_to_string(&counter).unwrap().trim(),
+            "3",
+            "lane {} must have run exactly 3 attempts via the harness budget",
+            lane.idx
+        );
+        // the failure events name the escalation, and no lane retry was spent
+        let events = store.list_lane_events(&run.id, lane.idx).await.unwrap();
+        let escalations = events
+            .iter()
+            .filter(|e| e.kind == "log" && e.payload.contains("harness escalation"))
+            .count();
+        assert_eq!(escalations, 2, "lane {}", lane.idx);
+    }
 }
 
 /// #24: fewer than two validated lanes ends the run as failed, never judged.

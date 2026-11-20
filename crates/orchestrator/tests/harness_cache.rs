@@ -101,7 +101,7 @@ async fn get_or_probe_probes_once_then_serves_from_cache() {
     let sprite = test_sprite(dir.path(), "probe-sprite").await;
 
     let cache = HarnessCache::new();
-    assert_eq!(cache.cached().await, None);
+    assert_eq!(cache.cached("probe-sprite").await, None);
 
     let first = cache.get_or_probe(&sprite, "probe-sprite").await.unwrap();
     assert_eq!(first, HarnessChoice::Curl, "curl floor must win");
@@ -111,7 +111,7 @@ async fn get_or_probe_probes_once_then_serves_from_cache() {
         5,
         "probe + install per missing member"
     );
-    assert_eq!(cache.cached().await, Some(first));
+    assert_eq!(cache.cached("probe-sprite").await, Some(first));
 
     // Cached: no further sprite execs.
     let again = cache.get_or_probe(&sprite, "probe-sprite").await.unwrap();
@@ -136,8 +136,12 @@ async fn invalidate_drops_the_cache_and_reprobes() {
         .unwrap();
     assert_eq!(exec_count("invalidate-sprite"), 5);
 
-    cache.invalidate().await;
-    assert_eq!(cache.cached().await, None, "invalidate clears the choice");
+    cache.invalidate("invalidate-sprite").await;
+    assert_eq!(
+        cache.cached("probe-sprite").await,
+        None,
+        "invalidate clears the choice"
+    );
 
     let second = cache
         .get_or_probe(&sprite, "invalidate-sprite")
@@ -252,7 +256,7 @@ async fn get_or_probe_errors_when_no_harness_member_exists() {
         err.contains("no member of the chain"),
         "error must name the exhausted chain, got: {err}"
     );
-    assert_eq!(cache.cached().await, None);
+    assert_eq!(cache.cached("probe-sprite").await, None);
     // opencode probe + failed install + re-probe, claude, curl, curl fallback.
     assert_eq!(exec_count("empty-sprite"), 6, "every member was probed");
 }

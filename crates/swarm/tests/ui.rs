@@ -462,7 +462,14 @@ async fn promote_requires_judged_status() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     store
-        .finish_run(&run.id, "judged", "great site", 1, 1.0, 1_732_020_999_000)
+        .finish_run(
+            &run.id,
+            "judged",
+            "great site",
+            1,
+            Some(1.0),
+            1_732_020_999_000,
+        )
         .await
         .unwrap();
     let res = app
@@ -846,7 +853,14 @@ async fn sse_stream_ends_for_terminal_run() {
         .await
         .unwrap();
     store
-        .finish_run(&run.id, "judged", "verdict card", 1, 1.0, 1_732_020_999_000)
+        .finish_run(
+            &run.id,
+            "judged",
+            "verdict card",
+            1,
+            Some(1.0),
+            1_732_020_999_000,
+        )
         .await
         .unwrap();
     let res = app
