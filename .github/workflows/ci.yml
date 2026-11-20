@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-fmt:
+    name: rust-fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  rust-clippy:
+    name: rust-clippy
+    runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy (strict)
+        run: |
+          cargo clippy --workspace --all-targets -- \
+            -D warnings \
+            -D clippy::unwrap_used \
+            -D clippy::panic \
+            -D clippy::todo \
+            -D clippy::dbg_macro \
+            -D clippy::print_stdout \
+            -D clippy::print_stderr
+
+  rust-test:
+    name: rust-test
+    runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  js:
+    name: js-island
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/swarm/island
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/swarm/island/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  configs:
+    name: config-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: YAML lint (workflows)
+        uses: ibiqlik/action-yamllint@v10
+        with:
+          config_file: .yamllint.yml
+      - name: TOML lint (Cargo files + fly.toml)
+        run: |
+          python3 - <<'EOF'
+          import glob, tomllib
+          files = ["Cargo.toml", "fly.toml"] + glob.glob("crates/**/Cargo.toml", recursive=True)
+          for p in sorted(set(files)):
+              with open(p, "rb") as f:
+                  tomllib.load(f)
+              print(f"OK {p}")
+          EOF
+      - name: JSON lint (opencode configs)
+        run: |
+          python3 - <<'EOF'
+          import glob, json, sys
+          bad = False
+          for p in sorted(glob.glob("**/opencode.json", recursive=True)):
+              try:
+                  json.load(open(p))
+                  print(f"OK {p}")
+              except Exception as e:
+                  print(f"FAIL {p}: {e}")
+                  bad = True
+          sys.exit(1 if bad else 0)
+          EOF

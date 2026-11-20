@@ -1,0 +1,11 @@
+extends: default
+
+rules:
+  document-start: disable
+  # `on:` is a required key in GitHub workflow files but reads as boolean.
+  truthy:
+    check-keys: false
+  line-length:
+    max: 100
+  indentation:
+    indent-sequences: consistent
