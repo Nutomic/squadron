@@ -200,8 +200,9 @@ async fn run_prompt_runs_the_curl_floor_and_parses_cost() {
     // runs to the 12-turn budget; each turn costs the gateway-reported 0.02.
     let cost = run.cost_usd.unwrap_or(-1.0);
     assert!((cost - 0.24).abs() < 1e-9, "summed turn cost, got {cost}");
-    // Five chain probes plus twelve floor turns: seventeen execs.
-    assert_eq!(exec_count("curl-sprite"), 17);
+    // Five chain probes plus twelve floor turns plus one detached-server
+    // start-script exec (failure round): eighteen execs.
+    assert_eq!(exec_count("curl-sprite"), 18);
 }
 
 /// run_prompt on a CLI harness member execs the CLI and returns its stdout.
@@ -268,4 +269,174 @@ async fn get_or_probe_errors_when_no_harness_member_exists() {
     assert_eq!(cache.cached("probe-sprite").await, None);
     // opencode probe + failed install + re-probe, claude, curl, curl fallback.
     assert_eq!(exec_count("empty-sprite"), 6, "every member was probed");
+}
+
+/// Fake curl that answers with a reasoning_content-only gateway response
+/// until the request carries the "no reasoning" retry instruction (failure
+/// round: reasoning-only responses were previously an undiagnosable "no
+/// message text in response" with nothing else said).
+fn fake_reasoning_curl_script() -> &'static str {
+    r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo 'curl 9.9 (fake)'
+  exit 0
+fi
+if [ "$1" = "-fsSL" ]; then
+  exit 1
+fi
+case "$*" in
+  *'no reasoning'*)
+    printf '%s' '{"choices":[{"message":{"content":"{\"summary\":\"ok\",\"run_command\":\"python3 -m http.server 8080\",\"done\":true,\"blockers\":[],\"writes\":[]}"}}],"usage":{"opencode":{"allowance":0.02}}}'
+    ;;
+  *)
+    printf '%s' '{"choices":[{"message":{"reasoning_content":"write the site now...","content":""}}],"usage":{"opencode":{"allowance":0.02}}}'
+    ;;
+esac
+"#
+}
+
+/// The floor retries a reasoning_content-only response once with the
+/// "respond with the JSON only, no reasoning" instruction and then succeeds.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_prompt_retries_reasoning_only_floor_response() {
+    let _env = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let bin = bin_dir(dir.path());
+    write_fake(&bin, "curl", fake_reasoning_curl_script());
+    std::env::set_var("PATH", curl_only_path(&bin));
+    let sprite = test_sprite(dir.path(), "reasoning-sprite").await;
+
+    let cache = HarnessCache::new();
+    let recipe = SpriteRecipe::for_model("reasoning-test", "test-model");
+    let run = orchestrator::harness::run_prompt(
+        &cache,
+        &sprite,
+        "reasoning-sprite",
+        orchestrator::harness::HarnessPrompt {
+            system: "system prompt",
+            user: "user prompt",
+            recipe: &recipe,
+            timeout: Duration::from_secs(30),
+            connector_env: None,
+            workdir: Some(dir.path().join("lane-0").to_str().unwrap()),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(run.choice, HarnessChoice::Curl);
+    assert!(
+        run.output.contains("\"done\":true"),
+        "output: {}",
+        run.output
+    );
+    // Five probes + one turn (first attempt + no-reasoning retry) + the
+    // detached-server start-script exec.
+    assert_eq!(exec_count("reasoning-sprite"), 8);
+}
+
+/// Fake opencode that passes its availability probe but dies on the agent
+/// run (failure round: the observed real failure was an agent exit whose
+/// captured output vanished with the attempt).
+fn fake_dying_opencode_script() -> &'static str {
+    r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo 'opencode 9.9 (fake)'
+  exit 0
+fi
+printf '%s' 'partial output from the dying agent' >&2
+exit 3
+"#
+}
+
+/// A CLI member that exits non-zero escalates, and the failure carries the
+/// captured-stdout byte count plus the last attempt's run (failure round: a
+/// 0-byte capture must stay visible in the evidence, not vanish).
+#[tokio::test(flavor = "multi_thread")]
+async fn run_prompt_failure_carries_the_captured_attempt() {
+    let _env = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let bin = bin_dir(dir.path());
+    write_fake(&bin, "opencode", fake_dying_opencode_script());
+    std::env::set_var("PATH", curl_only_path(&bin));
+    let sprite = test_sprite(dir.path(), "dying-sprite").await;
+
+    let cache = HarnessCache::new();
+    let recipe = SpriteRecipe::for_model("dying-test", "test-model");
+    let err = orchestrator::harness::run_prompt(
+        &cache,
+        &sprite,
+        "dying-sprite",
+        orchestrator::harness::HarnessPrompt {
+            system: "system prompt",
+            user: "user prompt",
+            recipe: &recipe,
+            timeout: Duration::from_secs(30),
+            connector_env: None,
+            workdir: Some(dir.path().join("lane-0").to_str().unwrap()),
+        },
+    )
+    .await
+    .unwrap_err();
+
+    // The failing opencode escalates; with no claude/curl on PATH the chain
+    // then exhausts, so the message names the exhausted chain while the last
+    // attempt's evidence travels alongside it.
+    assert!(
+        err.msg.contains("no member of the chain"),
+        "msg: {}",
+        err.msg
+    );
+    let attempt = err.last.expect("the failed opencode attempt is carried");
+    assert_eq!(attempt.choice, HarnessChoice::Opencode);
+    // The mock CLI merges a failing command's stdout into its own stderr, so
+    // the `sprite exec` process itself captured 0 bytes on stdout — and the
+    // evidence must say exactly that instead of dropping the attempt.
+    assert_eq!(attempt.output, "", "a 0-byte capture stays visible");
+    // opencode probe + config write + agent run; then the re-probe skips the
+    // blacklisted opencode: claude, curl, curl fallback.
+    assert_eq!(exec_count("dying-sprite"), 6);
+}
+
+/// A floor response that never yields message text fails with a sanitized
+/// raw-response excerpt in the error string (was: bare "no message text").
+#[tokio::test(flavor = "multi_thread")]
+async fn run_prompt_reports_raw_excerpt_when_floor_response_has_no_text() {
+    let _env = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let bin = bin_dir(dir.path());
+    // Always reasoning-only: even the retry attempt fails, with the excerpt.
+    let script = fake_reasoning_curl_script().replace("*'no reasoning'*", "\"__never__\"");
+    write_fake(&bin, "curl", &script);
+    std::env::set_var("PATH", curl_only_path(&bin));
+    let sprite = test_sprite(dir.path(), "reasoning-fail-sprite").await;
+
+    let cache = HarnessCache::new();
+    let recipe = SpriteRecipe::for_model("reasoning-fail-test", "test-model");
+    let err = orchestrator::harness::run_prompt(
+        &cache,
+        &sprite,
+        "reasoning-fail-sprite",
+        orchestrator::harness::HarnessPrompt {
+            system: "system prompt",
+            user: "user prompt",
+            recipe: &recipe,
+            timeout: Duration::from_secs(30),
+            connector_env: None,
+            workdir: None,
+        },
+    )
+    .await
+    .unwrap_err()
+    .msg;
+
+    assert!(err.contains("no message text in response"), "err: {err}");
+    assert!(err.contains("raw:"), "err: {err}");
+    assert!(
+        err.contains("reasoning_content"),
+        "error must carry the sanitized raw-response excerpt, got: {err}"
+    );
+    // Five probes + one turn (first attempt + one retry); no start script,
+    // because the loop failed.
+    assert_eq!(exec_count("reasoning-fail-sprite"), 7);
 }

@@ -97,6 +97,30 @@ async fn list_parses_sprite_names() {
 }
 
 #[tokio::test]
+async fn cli_exit_carries_the_captured_stdout() {
+    let (client, _log, _dir) = fixture_client();
+    let err = client
+        .exec("s", "failstdout", &ExecOptions::default())
+        .await
+        .unwrap_err();
+    match err {
+        SpriteError::CliExit {
+            code,
+            stdout,
+            stderr,
+            ..
+        } => {
+            assert_eq!(code, 7);
+            // Failure round: stdout is captured even on failure (a 0-byte
+            // capture must stay distinguishable from a lost one).
+            assert_eq!(stdout, "partial stdout before the crash\n");
+            assert!(stderr.contains("synthetic failure"));
+        }
+        other => panic!("expected CliExit, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn error_variants_are_typed() {
     let (client, _log, _dir) = fixture_client();
     let err = client
@@ -108,10 +132,13 @@ async fn error_variants_are_typed() {
             code,
             stderr,
             command,
+            stdout,
         } => {
             assert_eq!(code, 7);
             assert!(stderr.contains("synthetic failure"));
             assert!(command.contains("sh -c fail"));
+            // Failure round: stdout is captured even on failure (here: empty).
+            assert!(stdout.is_empty(), "unexpected stdout: {stdout}");
         }
         other => panic!("expected CliExit, got {other:?}"),
     }

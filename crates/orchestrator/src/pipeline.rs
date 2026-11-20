@@ -686,7 +686,7 @@ async fn run_implementer(
                 "OPENCODE_GATEWAY_CONNECTOR".to_owned(),
                 ctx.config.gateway_connector_id.clone(),
             );
-            let run = harness::run_prompt(
+            let run = match harness::run_prompt(
                 &ctx.harness_cache,
                 &ctx.sprite,
                 sprite_name,
@@ -700,7 +700,26 @@ async fn run_implementer(
                 },
             )
             .await
-            .map_err(|e| format!("implementer: {e}"))?;
+            {
+                Ok(run) => run,
+                // Failure round: the failed attempt's captured stdout tail is
+                // logged too, so a 0-byte capture is visible in the evidence.
+                Err(f) => {
+                    if let Some(attempt) = &f.last {
+                        let _ = ctx
+                            .store
+                            .append_lane_event(
+                                run_id,
+                                idx,
+                                now_ms(),
+                                "log",
+                                &harness_tail_log(attempt),
+                            )
+                            .await;
+                    }
+                    return Err(format!("implementer: {}", f.msg));
+                }
+            };
             let _ = ctx
                 .store
                 .append_lane_event(
@@ -710,6 +729,12 @@ async fn run_implementer(
                     "log",
                     &format!("harness choice: {}", run.choice.as_str()),
                 )
+                .await;
+            // Failure round: the captured stdout tail is logged even on
+            // success so a 0-byte capture shows up in the tail evidence.
+            let _ = ctx
+                .store
+                .append_lane_event(run_id, idx, now_ms(), "log", &harness_tail_log(&run))
                 .await;
             used_choice = Some(run.choice);
             // R2 finding 3 / R3-A #5: the gateway-reported cost travels with
@@ -819,7 +844,7 @@ async fn run_validator(
                 "OPENCODE_GATEWAY_CONNECTOR".to_owned(),
                 ctx.config.gateway_connector_id.clone(),
             );
-            let run = harness::run_prompt(
+            let run = match harness::run_prompt(
                 &ctx.harness_cache,
                 &ctx.sprite,
                 sprite_name,
@@ -833,8 +858,33 @@ async fn run_validator(
                 },
             )
             .await
-            .map_err(|e| format!("validator: {e}"))?;
+            {
+                Ok(run) => run,
+                // Failure round: the failed attempt's captured stdout tail is
+                // logged too, so a 0-byte capture is visible in the evidence.
+                Err(f) => {
+                    if let Some(attempt) = &f.last {
+                        let _ = ctx
+                            .store
+                            .append_lane_event(
+                                run_id,
+                                idx,
+                                now_ms(),
+                                "log",
+                                &harness_tail_log(attempt),
+                            )
+                            .await;
+                    }
+                    return Err(format!("validator: {}", f.msg));
+                }
+            };
             used_choice = Some(run.choice);
+            // Failure round: the captured stdout tail is logged even on
+            // success so a 0-byte capture shows up in the tail evidence.
+            let _ = ctx
+                .store
+                .append_lane_event(run_id, idx, now_ms(), "log", &harness_tail_log(&run))
+                .await;
             // R2 finding 3 / R3-A #5: gateway-reported cost; unknown stays None.
             let cost = harness_cost_of(&run);
             (run.output, cost)
@@ -1116,17 +1166,30 @@ fn sprite_workdir(run_id: &str, idx: i64) -> String {
     format!("swarm-work/{}/lane-{idx}", short_run_id(run_id))
 }
 
+/// Tail of at most `max` chars, cut on a char boundary (untrusted output must
+/// never panic). Shared with the harness module.
+fn tail_chars(s: &str, max: usize) -> String {
+    harness::tail_chars(s, max)
+}
+
 /// Tail of at most 4096 chars, cut on a char boundary (untrusted output must
 /// never panic).
 fn tail_4k(s: &str) -> String {
-    if s.len() <= 4096 {
-        return s.to_owned();
-    }
-    let mut start = s.len() - 4096;
-    while !s.is_char_boundary(start) {
-        start += 1;
-    }
-    s[start..].to_string()
+    tail_chars(s, 4096)
+}
+
+/// Failure round (harness output capture): the LAST ~2KB of the captured
+/// harness stdout goes into lane_events as kind="log", on success AND failure,
+/// so a 0-byte capture is visible in the tail evidence instead of leaving an
+/// undiagnosable "error said nothing else". Control characters are stripped
+/// with the shared sanitizer; the payload is untrusted agent output.
+fn harness_tail_log(run: &harness::HarnessRun) -> String {
+    let tail = harness::sanitize_excerpt(&tail_chars(&run.output, 2048), 2048);
+    format!(
+        "harness[{}] stdout ({} bytes) tail: {tail}",
+        run.choice.as_str(),
+        run.output.len()
+    )
 }
 
 /// R2 finding 4 (#21 regression): gate the output with the SHARED
@@ -1171,17 +1234,7 @@ fn lane_error_message(e: &str) -> String {
     if rest.is_empty() {
         return class;
     }
-    let excerpt: String = rest
-        .chars()
-        .map(|c| {
-            if c.is_ascii_graphic() || c == ' ' {
-                c
-            } else {
-                ' '
-            }
-        })
-        .take(200)
-        .collect();
+    let excerpt = harness::sanitize_excerpt(rest, 200);
     format!("{class}: {excerpt}")
 }
 
@@ -1204,6 +1257,44 @@ mod tests {
     #[test]
     fn tail_4k_short_strings_unchanged() {
         assert_eq!(tail_4k("short"), "short");
+    }
+
+    /// Failure round (harness output capture): the logged stdout tail must
+    /// carry the byte count (0 bytes visible in the evidence), the harness
+    /// choice, and a sanitized (control-char-stripped, capped) tail.
+    #[test]
+    fn harness_tail_log_shows_zero_byte_and_sanitized_tails() {
+        // 0-byte capture: visible, not silently empty
+        let run = harness::HarnessRun {
+            choice: harness::HarnessChoice::Opencode,
+            output: String::new(),
+            cost_usd: None,
+        };
+        let msg = harness_tail_log(&run);
+        assert!(msg.contains("harness[opencode]"), "msg: {msg}");
+        assert!(msg.contains("0 bytes"), "msg: {msg}");
+        assert!(msg.ends_with("tail: "), "msg: {msg}");
+
+        // control characters are stripped by the shared sanitizer
+        let run = harness::HarnessRun {
+            choice: harness::HarnessChoice::Curl,
+            output: "ok\u{1}\u{7}done".to_owned(),
+            cost_usd: Some(0.02),
+        };
+        let msg = harness_tail_log(&run);
+        assert!(msg.contains("ok  done"), "msg: {msg}");
+        assert!(msg.contains("8 bytes"), "msg: {msg}");
+
+        // long outputs are capped at the last ~2KB
+        let long = "x".repeat(10_000);
+        let run = harness::HarnessRun {
+            choice: harness::HarnessChoice::Claude,
+            output: long,
+            cost_usd: None,
+        };
+        let msg = harness_tail_log(&run);
+        assert!(msg.contains("10000 bytes"), "msg: {msg}");
+        assert!(msg.len() < 2300, "tail must stay ~2KB: {}", msg.len());
     }
 
     /// R2-2: harness-attributable failures escalate on retry; lane-level

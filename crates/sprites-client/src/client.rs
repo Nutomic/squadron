@@ -181,6 +181,7 @@ impl SpriteClient {
                         command: description,
                         code: output.status.code().unwrap_or(-1),
                         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
                     });
                 }
                 Ok(CommandOutput {

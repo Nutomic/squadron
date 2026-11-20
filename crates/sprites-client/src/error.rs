@@ -7,6 +7,10 @@ pub enum SpriteError {
         command: String,
         code: i32,
         stderr: String,
+        /// Failure round: the captured stdout travels with the error so a
+        /// 0-byte harness capture stays visible in the lane evidence (it used
+        /// to be dropped with the failed attempt).
+        stdout: String,
     },
     #[error("sprite CLI `{command}` timed out after {duration:?}")]
     Timeout { command: String, duration: Duration },

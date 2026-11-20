@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -58,7 +59,26 @@ pub const CURL_FLOOR_REPAIR: &str = "Your previous reply was not a single parsea
 /// under `files` could never pass the schema gate (and the field would be
 /// stripped anyway). The orchestrator strips `writes` and synthesizes the
 /// `files` integer from the written set before the answer is returned.
-pub const CURL_FLOOR_PROTOCOL: &str = "RAW-HTTP MODE: you have no shell, editor, or file access; the orchestrator materializes files for you. In addition to the schema fields from the task prompt, include a \"writes\" array: [{\"path\": \"relative/path.ext\", \"content\": \"complete file content as a string\"}] for every file to create or overwrite (paths relative to the workdir only, never absolute, never containing '..'). Emit the complete current content of every file you touch; do NOT emit a \"files\" field, the orchestrator computes it. Reply with exactly one JSON object. If the work is not finished, set done:false and stop; a continuation turn will follow.";
+pub const CURL_FLOOR_PROTOCOL: &str = "RAW-HTTP MODE: you have no shell, editor, or file access; the orchestrator materializes files for you. In addition to the schema fields from the task prompt, include a \"writes\" array: [{\"path\": \"relative/path.ext\", \"content\": \"complete file content as a string\"}] for every file to create or overwrite (paths relative to the workdir only, never absolute, never containing '..'). Emit the complete current content of every file you touch; do NOT emit a \"files\" field, the orchestrator computes it. HARD REQUIREMENT on the final turn: your writes must include the complete site (at least index.html) AND a \"start-server.sh\" whose content starts the site detached exactly like `nohup python3 -m http.server 8080 > server.log 2>&1 &` (adapt the command if the site needs more than static files; it must keep serving after your session ends and never exit on its own). The orchestrator runs start-server.sh in the workdir and then verifies HTTP 200 itself — you have no shell, so you cannot verify, do not claim you did. Reply with exactly one JSON object. If the work is not finished, set done:false and stop; a continuation turn will follow.";
+
+/// Detached server start (failure round: the implementer session ended and
+/// killed the foreground server, so the public 200-check failed). The curl
+/// floor cannot run commands, so the orchestrator executes the start script
+/// the floor wrote (protocol above) right after the floor loop finishes.
+pub const FLOOR_START_SCRIPT: &str = "start-server.sh";
+
+/// Run the floor's start script in the sprite workdir, best effort: a failure
+/// here surfaces through the orchestrator's post-session HTTP 200 check, which
+/// stays the authority.
+pub fn floor_start_cmd(workdir: &str) -> String {
+    format!(
+        "mkdir -p {} && cd {} && if [ -f {} ]; then sh {}; fi",
+        shell_quote(workdir),
+        shell_quote(workdir),
+        shell_quote(FLOOR_START_SCRIPT),
+        shell_quote(FLOOR_START_SCRIPT)
+    )
+}
 
 impl HarnessChoice {
     pub fn as_str(self) -> &'static str {
@@ -138,6 +158,56 @@ pub fn chat_response_text(body: &str) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Retry instruction for a floor turn whose gateway response carried
+/// `reasoning_content` but empty message `content` (failure round: the raw
+/// response was otherwise dropped as an undiagnosable "no message text").
+pub const CURL_FLOOR_NO_REASONING: &str = "Respond with the JSON only, no reasoning.";
+
+/// True when the raw chat response has a non-empty
+/// `choices[0].message.reasoning_content` but empty/absent message `content`:
+/// the model spent its whole reply on reasoning. Such a turn is retried once
+/// with `CURL_FLOOR_NO_REASONING` instead of failing undiagnosably.
+pub fn response_has_reasoning_only(body: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    let Some(msg) = v
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+    else {
+        return false;
+    };
+    let reasoning = msg
+        .get("reasoning_content")
+        .and_then(Value::as_str)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let content_empty = match msg.get("content") {
+        None | Some(Value::Null) => true,
+        Some(Value::String(s)) => s.trim().is_empty(),
+        Some(Value::Array(a)) => a.is_empty(),
+        Some(_) => false,
+    };
+    reasoning && content_empty
+}
+
+/// Sanitized excerpt of untrusted output: control characters become spaces
+/// (nothing hostile can smuggle control bytes into logs or error strings) and
+/// the result is capped at `max` chars.
+pub fn sanitize_excerpt(s: &str, max: usize) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_graphic() || c == ' ' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .take(max)
+        .collect()
 }
 
 /// Extract usage cost (usage.opencode.allowance) from a raw chat response.
@@ -328,6 +398,54 @@ pub struct HarnessRun {
     pub cost_usd: Option<f64>,
 }
 
+/// A failed `run_prompt`: the terminal message plus the last harness attempt's
+/// captured stdout (failure round: a 0-byte capture used to vanish with the
+/// failed attempt, leaving an undiagnosable error). The pipeline logs the
+/// attempt's tail into lane_events so the evidence shows what was — and was
+/// not — captured.
+#[derive(Debug, Clone)]
+pub struct PromptFailure {
+    pub msg: String,
+    pub last: Option<HarnessRun>,
+}
+
+impl PromptFailure {
+    fn new(msg: impl Into<String>, last: Option<HarnessRun>) -> Self {
+        Self {
+            msg: msg.into(),
+            last,
+        }
+    }
+}
+
+/// Tail of at most `max` chars, cut on a char boundary (untrusted output must
+/// never panic).
+pub fn tail_chars(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_owned();
+    }
+    let mut start = s.len() - max;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    s[start..].to_string()
+}
+
+/// A sprite exec failure as error text; a `CliExit` with captured stdout
+/// carries a sanitized tail so the failure says what the agent DID produce,
+/// not only that it failed.
+fn exec_err_text(e: &SpriteError) -> String {
+    match e {
+        SpriteError::CliExit { stdout, .. } if !stdout.trim().is_empty() => {
+            format!(
+                "{e}; stdout tail: {}",
+                sanitize_excerpt(&tail_chars(stdout, 2048), 2048)
+            )
+        }
+        _ => e.to_string(),
+    }
+}
+
 /// One curl-floor turn: the raw response text, whether the model declared the
 /// work done, whether any JSON object was parseable (drives the repair turn),
 /// and the turn's usage cost.
@@ -448,7 +566,7 @@ pub async fn run_prompt(
     sprite: &SpriteClient,
     name: &str,
     prompt: HarnessPrompt<'_>,
-) -> Result<HarnessRun, String> {
+) -> Result<HarnessRun, PromptFailure> {
     let HarnessPrompt {
         system,
         user,
@@ -476,30 +594,68 @@ pub async fn run_prompt(
         None => cmd.to_owned(),
     };
     let mut escalations = 0usize;
+    // Failure round: the last failed attempt's captured stdout travels with
+    // the error so the pipeline can log its tail into lane_events.
+    let mut last_attempt: Option<HarnessRun> = None;
     loop {
-        let choice = cache.get_or_probe(sprite, name).await?;
+        let choice = cache
+            .get_or_probe(sprite, name)
+            .await
+            .map_err(|e| PromptFailure::new(e, last_attempt.clone()))?;
         cache.note_used(choice).await;
         let outcome: Result<HarnessRun, HarnessError> = match choice {
             HarnessChoice::Curl => {
                 let workdir = workdir.map(|d| d.to_owned());
                 // The floor's first turn carries the writes-contract addendum.
                 let floor_user = format!("{user}\n\n{CURL_FLOOR_PROTOCOL}");
+                // Failure round: remember the last raw curl stdout (the
+                // gateway HTTP response body) so a failed floor turn's capture
+                // lands in the lane evidence instead of vanishing.
+                let last_raw: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
+                let raw_for_turn = last_raw.clone();
                 match curl_floor_loop(&floor_user, |turn_user: String| {
                     let opts = opts.clone();
                     let workdir = workdir.clone();
+                    let last_raw = raw_for_turn.clone();
                     Box::pin(async move {
-                        let request = recipe.build(system, &turn_user);
-                        let curl = recipe
-                            .curl_command(&request)
-                            .map_err(|e: LlmError| format!("harness: curl recipe: {e}"))?;
-                        let out = sprite
-                            .exec(name, &cd_prefix(&curl), &opts)
-                            .await
-                            .map_err(|e| format!("harness[curl-loop]: {e}"))?;
-                        let text = chat_response_text(&out.stdout).ok_or_else(|| {
-                            "harness[curl-loop]: no message text in response".to_owned()
-                        })?;
-                        let cost = chat_response_cost(&out.stdout).unwrap_or(0.0);
+                        let mut user_msg = turn_user.clone();
+                        // One no-reasoning retry per turn: a gateway response that
+                        // carries reasoning_content with empty content otherwise
+                        // fails undiagnosably as "no message text in response".
+                        let (text, cost): (String, f64) = 'turn: {
+                            for attempt in 0..2 {
+                                let request = recipe.build(system, &user_msg);
+                                let curl = recipe
+                                    .curl_command(&request)
+                                    .map_err(|e: LlmError| format!("harness: curl recipe: {e}"))?;
+                                let out =
+                                    sprite.exec(name, &cd_prefix(&curl), &opts).await.map_err(
+                                        |e| format!("harness[curl-loop]: {}", exec_err_text(&e)),
+                                    )?;
+                                *last_raw.lock().expect("raw capture lock") =
+                                    Some(out.stdout.clone());
+                                // An empty-string content is no message text
+                                // either (a reasoning-only reply carries
+                                // content:"" but still returns Some("")).
+                                if let Some(t) =
+                                    chat_response_text(&out.stdout).filter(|t| !t.trim().is_empty())
+                                {
+                                    break 'turn (
+                                        t,
+                                        chat_response_cost(&out.stdout).unwrap_or(0.0),
+                                    );
+                                }
+                                if attempt == 0 && response_has_reasoning_only(&out.stdout) {
+                                    user_msg = format!("{user_msg}\n\n{CURL_FLOOR_NO_REASONING}");
+                                    continue;
+                                }
+                                return Err(format!(
+                                    "harness[curl-loop]: no message text in response (raw: {})",
+                                    sanitize_excerpt(&out.stdout, 200)
+                                ));
+                            }
+                            unreachable!("the retry loop exits via break or error return");
+                        };
                         // Persist files the model declared, then continue the loop.
                         let plan = floor_plan(&text);
                         if let Some(dir) = &workdir {
@@ -527,13 +683,38 @@ pub async fn run_prompt(
                 })
                 .await
                 {
-                    Ok((output, cost)) => Ok(HarnessRun {
-                        choice,
-                        output,
-                        cost_usd: (cost > 0.0).then_some(cost),
-                    }),
+                    Ok((output, cost)) => {
+                        // Failure round: the floor cannot start the server itself
+                        // (no shell), so the orchestrator runs the start script the
+                        // protocol requires it to write. Best effort: the
+                        // orchestrator's post-session HTTP 200 check stays the
+                        // authority.
+                        if let Some(dir) = &workdir {
+                            let cmd = cd_prefix(&floor_start_cmd(dir));
+                            let _ = sprite.exec(name, &cmd, &opts).await;
+                        }
+                        Ok(HarnessRun {
+                            choice,
+                            output,
+                            cost_usd: (cost > 0.0).then_some(cost),
+                        })
+                    }
                     // Floor errors are terminal: there is nothing beyond it.
-                    Err(e) => Err(HarnessError::Fatal(e)),
+                    // The last raw curl stdout (empty when nothing was ever
+                    // captured) becomes the failed attempt's evidence.
+                    Err(e) => {
+                        let raw = last_raw
+                            .lock()
+                            .expect("raw capture lock")
+                            .take()
+                            .unwrap_or_default();
+                        last_attempt = Some(HarnessRun {
+                            choice,
+                            output: raw,
+                            cost_usd: None,
+                        });
+                        Err(HarnessError::Fatal(e))
+                    }
                 }
             }
             _ => {
@@ -559,6 +740,16 @@ pub async fn run_prompt(
                     let out = match sprite.exec(name, &cd_prefix(&cmd), &opts).await {
                         Ok(out) => out,
                         Err(e) => {
+                            // Failure round: keep the captured stdout (a 0-byte
+                            // capture must stay visible, not vanish with the
+                            // failed attempt) and say how much was captured.
+                            if let SpriteError::CliExit { stdout, .. } = &e {
+                                last_attempt = Some(HarnessRun {
+                                    choice,
+                                    output: stdout.clone(),
+                                    cost_usd: None,
+                                });
+                            }
                             // R2-2: a non-zero agent exit is harness-attributable
                             // (wrong tool / broken install / incompatible API) and
                             // escalates to the next chain member. Timeouts and
@@ -567,13 +758,19 @@ pub async fn run_prompt(
                             return match e {
                                 SpriteError::CliExit { .. } => {
                                     Err(HarnessError::Escalate(format!(
-                                        "harness[{}]: agent exited with failure: {e}",
-                                        choice.as_str()
+                                        "harness[{}]: agent exited with failure (captured stdout {} bytes): {}",
+                                        choice.as_str(),
+                                        last_attempt
+                                            .as_ref()
+                                            .map(|r| r.output.len())
+                                            .unwrap_or_default(),
+                                        exec_err_text(&e)
                                     )))
                                 }
                                 _ => Err(HarnessError::Fatal(format!(
-                                    "harness[{}]: {e}",
-                                    choice.as_str()
+                                    "harness[{}]: {}",
+                                    choice.as_str(),
+                                    exec_err_text(&e)
                                 ))),
                             };
                         }
@@ -592,14 +789,16 @@ pub async fn run_prompt(
             Ok(run) => return Ok(run),
             Err(HarnessError::Escalate(msg)) => {
                 if escalations >= HARNESS_CHAIN.len() {
-                    return Err(msg);
+                    return Err(PromptFailure::new(msg, last_attempt.clone()));
                 }
                 escalations += 1;
                 // R2-2: blacklist the failed choice; the re-probe skips it and
                 // picks the next chain member.
                 cache.invalidate_choice(name, choice).await;
             }
-            Err(HarnessError::Fatal(msg)) => return Err(msg),
+            Err(HarnessError::Fatal(msg)) => {
+                return Err(PromptFailure::new(msg, last_attempt.clone()))
+            }
         }
     }
 }
@@ -1142,6 +1341,59 @@ mod tests {
     fn floor_protocol_uses_non_colliding_writes_key() {
         assert!(CURL_FLOOR_PROTOCOL.contains("\"writes\" array"));
         assert!(!CURL_FLOOR_PROTOCOL.contains("include a \"files\""));
+    }
+
+    /// Failure round: the floor cannot start the server itself, so the
+    /// protocol must require an index.html + a detached start script, and the
+    /// orchestrator must run that script in the workdir.
+    #[test]
+    fn floor_protocol_requires_detached_server_and_start_cmd_runs_it() {
+        assert!(CURL_FLOOR_PROTOCOL.contains("index.html"));
+        assert!(CURL_FLOOR_PROTOCOL.contains("start-server.sh"));
+        assert!(CURL_FLOOR_PROTOCOL.contains("nohup"));
+        assert!(CURL_FLOOR_PROTOCOL.contains("http.server 8080"));
+        assert_eq!(FLOOR_START_SCRIPT, "start-server.sh");
+        let cmd = floor_start_cmd("sw/0");
+        assert!(cmd.contains("cd 'sw/0'"), "cmd: {cmd}");
+        assert!(cmd.contains("sh 'start-server.sh'"), "cmd: {cmd}");
+    }
+
+    /// Failure round: a gateway response carrying reasoning_content with empty
+    /// content is detected so the floor can retry once with a no-reasoning
+    /// instruction instead of failing undiagnosably.
+    #[test]
+    fn response_has_reasoning_only_matches_mocked_reasoning_only_bodies() {
+        let only = r#"{"choices":[{"message":{"reasoning_content":"thinking...","content":""}}]}"#;
+        assert!(response_has_reasoning_only(only));
+        // content present -> not a reasoning-only response
+        let with_content =
+            r#"{"choices":[{"message":{"reasoning_content":"thinking...","content":"the json"}}]}"#;
+        assert!(!response_has_reasoning_only(with_content));
+        // empty reasoning_content is not a reasoning-only response
+        let empty_reasoning = r#"{"choices":[{"message":{"reasoning_content":"","content":""}}]}"#;
+        assert!(!response_has_reasoning_only(empty_reasoning));
+        // missing / null content field counts as empty
+        let no_content = r#"{"choices":[{"message":{"reasoning_content":"thinking..."}}]}"#;
+        assert!(response_has_reasoning_only(no_content));
+        let null_content = r#"{"choices":[{"message":{"reasoning_content":"t","content":null}}]}"#;
+        assert!(response_has_reasoning_only(null_content));
+        // plain text / non-JSON bodies are not reasoning-only
+        assert!(!response_has_reasoning_only("not json"));
+        assert!(!response_has_reasoning_only(
+            r#"{"choices":[{"message":{"content":"plain"}}]}"#
+        ));
+    }
+
+    /// The shared excerpt sanitizer strips control characters (untrusted
+    /// gateway/agent output can never smuggle control bytes into logs).
+    #[test]
+    fn sanitize_excerpt_strips_control_chars_and_caps() {
+        assert_eq!(sanitize_excerpt("a\u{1}b\u{7}c\n", 200), "a b c ");
+        assert_eq!(sanitize_excerpt("safe text", 200), "safe text");
+        assert_eq!(sanitize_excerpt("abcdef", 3), "abc");
+        assert_eq!(sanitize_excerpt("", 200), "");
+        // non-ASCII is dropped to spaces too (untrusted output stays ASCII-safe)
+        assert_eq!(sanitize_excerpt("héllo", 200), "h llo");
     }
 
     #[test]

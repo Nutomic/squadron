@@ -33,7 +33,7 @@ pub fn diversity_prompt(brief: &str, n: usize) -> Prompt {
 pub fn implementer_prompt(variant: &Value) -> Prompt {
     build(
         Role::Implementer,
-        "Build the web project described by the variant. Work in the sprite workdir, serve on port 8080, use no external services and no secrets. Declare done only after a local request to http://127.0.0.1:8080/ returns 200.",
+        "Build the web project described by the variant. Work in the sprite workdir, serve on port 8080, use no external services and no secrets. HARD REQUIREMENT: start the site DETACHED so it survives your session end, e.g. `nohup <run_command> > server.log 2>&1 &` — a server you only run in the foreground dies when the session ends. Verify YOURSELF that `curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8080` returns 200, and only then declare done:true. The detached server must still be serving after your session ends.",
         data_block("variant", &serde_json::to_string_pretty(variant).unwrap_or_default()),
     )
 }

@@ -58,6 +58,16 @@ fn role_prompts_include_schema_and_untrusted_data_rule() {
     assert!(implementer.system.contains("\"run_command\""));
     assert!(implementer.user.contains("port 8080"));
     assert!(implementer.user.contains("angle-0"));
+    // Failure round: the site must be served detached (nohup) and verified by
+    // the agent itself before done:true, so it survives the session end.
+    assert!(
+        implementer.user.contains("nohup"),
+        "user: {}",
+        implementer.user
+    );
+    assert!(implementer.user.contains("server.log"));
+    assert!(implementer.user.contains("http_code"));
+    assert!(implementer.user.contains("127.0.0.1:8080"));
 
     let validator = validator_prompt("summary text", "https://lane.sprites.app", "/workdir");
     assert!(validator.system.contains("\"quality_score\""));
