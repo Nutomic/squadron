@@ -33,6 +33,11 @@ impl ChatRequest {
         self
     }
 
+    pub fn user_parts(mut self, parts: Vec<ContentPart>) -> Self {
+        self.messages.push(ChatMessage::user_parts(parts));
+        self
+    }
+
     pub fn message(mut self, message: ChatMessage) -> Self {
         self.messages.push(message);
         self

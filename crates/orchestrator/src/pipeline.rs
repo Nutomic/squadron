@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use base64::Engine as _;
 use llm_gateway::{lane_model, MachineLlmClient};
 use prompts::{
     gate_with_options, parse, DiversityOutput, GateOptions, ImplementerOutput, JudgeOutput, Role,
@@ -681,6 +682,29 @@ async fn run_validator(
     })
 }
 
+/// #12: load each validated lane's rendered screenshot (if any) and return it
+/// as a data-URL image part, aligned with the report order. Missing renders map
+/// to None so the judge degrades to text-only for that lane.
+async fn collect_lane_screenshot_images(
+    run_id: &str,
+    lanes: &[store::Lane],
+) -> Vec<Option<String>> {
+    let mut out = Vec::with_capacity(lanes.len());
+    for lane in lanes {
+        let path = lane.screenshot_path.clone().unwrap_or_else(|| {
+            crate::screenshot::render_dest(run_id, lane.idx)
+                .to_string_lossy()
+                .into_owned()
+        });
+        let data = tokio::fs::read(&path).await.ok();
+        out.push(data.map(|bytes| {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+            format!("data:image/png;base64,{b64}")
+        }));
+    }
+    out
+}
+
 async fn run_judge_phase(
     ctx: &PipelineCtx,
     run_id: &str,
@@ -704,7 +728,8 @@ async fn run_judge_phase(
         }
     }
     let (verdict, cost) = if let Some(llm) = &ctx.machine_llm {
-        judge::run_judge(llm, &reports, &extracts, ctx.config.judge_deadline).await?
+        let images = collect_lane_screenshot_images(run_id, validated).await;
+        judge::run_judge(llm, &reports, &extracts, &images, ctx.config.judge_deadline).await?
     } else {
         // fallback deterministic judge (should not happen in proper runs; but keep safe)
         let winner = validated.first().map(|l| l.idx as usize).unwrap_or(0);

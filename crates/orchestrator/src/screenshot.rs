@@ -36,7 +36,7 @@ struct ScreenshotJob {
     url: String,
 }
 
-fn render_dest(run_id: &str, lane_idx: i64) -> PathBuf {
+pub fn render_dest(run_id: &str, lane_idx: i64) -> PathBuf {
     PathBuf::from("/data")
         .join("screenshots")
         .join(run_id)

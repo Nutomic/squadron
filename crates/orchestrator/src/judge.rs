@@ -9,6 +9,7 @@ pub async fn run_judge(
     client: &MachineLlmClient,
     reports: &[LaneJudgeReport],
     extracts: &[String],
+    images: &[Option<String>],
     deadline: Duration,
 ) -> Result<(JudgeOutput, f64), String> {
     if reports.is_empty() {
@@ -16,6 +17,9 @@ pub async fn run_judge(
     }
     if extracts.len() != reports.len() {
         return Err("judge: extracts/reports length mismatch".to_owned());
+    }
+    if images.len() != reports.len() {
+        return Err("judge: images/reports length mismatch".to_owned());
     }
     let lane_indices: Vec<usize> = reports.iter().map(|r| r.lane_idx).collect();
     let opts = GateOptions {
@@ -25,22 +29,39 @@ pub async fn run_judge(
     };
     // The judge future itself owns the request; the deadline is enforced here so
     // an unresponsive judge cannot stall a run forever.
-    timeout(deadline, judge_once(client, reports, extracts, &opts))
-        .await
-        .map_err(|_| "judge: deadline exceeded".to_owned())?
+    timeout(
+        deadline,
+        judge_once(client, reports, extracts, images, &opts),
+    )
+    .await
+    .map_err(|_| "judge: deadline exceeded".to_owned())?
 }
 
 async fn judge_once(
     client: &MachineLlmClient,
     reports: &[LaneJudgeReport],
     extracts: &[String],
+    images: &[Option<String>],
     opts: &GateOptions,
 ) -> Result<(JudgeOutput, f64), String> {
     let prompt = prompts::judge_prompt(reports, extracts);
-    let request = llm_gateway::ChatRequest::new(llm_gateway::JUDGE_MODEL)
-        .system(&prompt.system)
-        .user(&prompt.user)
-        .temperature(0.2);
+    // #12: when lane screenshots exist, attach them as image parts so the judge
+    // can see the rendered sites, not just the text extracts.
+    let request = if images.iter().any(|i| i.is_some()) {
+        let mut parts = vec![llm_gateway::ContentPart::text(&prompt.user)];
+        for img in images.iter().flatten() {
+            parts.push(llm_gateway::ContentPart::image(img));
+        }
+        llm_gateway::ChatRequest::new(llm_gateway::JUDGE_MODEL)
+            .system(&prompt.system)
+            .user_parts(parts)
+            .temperature(0.2)
+    } else {
+        llm_gateway::ChatRequest::new(llm_gateway::JUDGE_MODEL)
+            .system(&prompt.system)
+            .user(&prompt.user)
+            .temperature(0.2)
+    };
     let response = client.chat(&request).await.map_err(|e| e.to_string())?;
     let text = response
         .text()
@@ -293,4 +314,48 @@ fn truncate_chars(s: &str, max_bytes: usize) -> String {
     }
     out.push_str("\n...[truncated]");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #25: an unclosed <script> must be dropped, not passed through.
+    #[test]
+    fn sanitize_drops_unclosed_script() {
+        let html = "<p>ok</p><script>alert(1)";
+        let out = sanitize_html(html, 20_000);
+        assert!(!out.contains("script"), "out={out}");
+        assert!(!out.contains("alert(1)"), "out={out}");
+        assert!(out.contains("<p>ok</p>"));
+    }
+
+    /// #25: `</script >` (whitespace before `>`) still closes the block.
+    #[test]
+    fn sanitize_handles_close_tag_with_trailing_space() {
+        let html = "<script>x</script >after";
+        let out = sanitize_html(html, 20_000);
+        assert!(!out.contains("<script"), "out={out}");
+        assert!(out.contains("after"), "out={out}");
+    }
+
+    /// #25: multi-byte content plus truncation must never panic or split a char.
+    #[test]
+    fn sanitize_multibyte_truncation_no_panic() {
+        let html = format!("<p>İllegal 😀 {}</p><script>bad</script>", "é".repeat(5000));
+        let out = sanitize_html(&html, 512);
+        assert!(out.len() <= 512 + "...[truncated]".len());
+        assert!(out.is_char_boundary(out.len()), "out={out:?}");
+        assert!(!out.contains("bad"));
+    }
+
+    /// #25: on* handlers and javascript: URLs are neutralized.
+    #[test]
+    fn sanitize_strips_event_handlers_and_js_urls() {
+        let html = r#"<a href="javascript:alert(1)" onclick="evil()">c</a>"#;
+        let out = sanitize_html(html, 20_000);
+        assert!(!out.contains("javascript:"), "out={out}");
+        assert!(!out.contains("onclick"), "out={out}");
+        assert!(out.contains(">c</a>") || out.contains("c"), "out={out}");
+    }
 }
