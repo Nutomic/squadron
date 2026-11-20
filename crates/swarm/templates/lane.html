@@ -22,16 +22,12 @@
   <div class="flex flex-col gap-6 min-w-0">
     {% if let Some(url) = impl_url %}
     <section>
-      <div class="flex flex-wrap items-center gap-2 mb-2">
-        <span class="label-meta">Live preview</span>
-        <a class="text-[13px] font-mono text-primary hover:underline truncate" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ url }}</a>
-      </div>
       <div class="browser-frame">
         <div class="browser-frame-bar">
           <span class="browser-dot bg-[#FECACA]"></span>
           <span class="browser-dot bg-[#FEF3C7]"></span>
           <span class="browser-dot bg-[#DCFCE7]"></span>
-          <span class="browser-url">{{ url }}</span>
+          <a class="browser-url hover:border-primary hover:text-primary" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ url }}</a>
         </div>
         <iframe
           src="{{ url }}"
@@ -39,6 +35,7 @@
           referrerpolicy="no-referrer"
           class="w-full h-[560px] bg-white border-0"></iframe>
       </div>
+      <p class="text-[12px] text-base-content/45 mt-2">If the preview stays blank, the lane may have expired — open the live URL from the address bar above.</p>
     </section>
     {% endif %}
 
@@ -54,13 +51,16 @@
         </div>
         {% if let Some(v) = val_verdict %}
         {% if let Some(q) = val_quality %}
-        <p class="text-sm text-base-content/60">Quality <span class="mono-num text-base-content">{{ q }}</span> / 10</p>
+        <p class="mono-num text-base-content/70">quality {{ q }} / 10</p>
         {% endif %}
         {% else %}
         <p class="text-sm text-base-content/45">Validation has not run yet.</p>
         {% endif %}
+        {% if val_features.len() == 0 and val_bugs.len() == 0 and val_security.len() == 0 %}
+        {# Older runs store one prose blob — show it only when no structured rows exist #}
         {% if val_summary.len() > 0 %}
         <pre class="whitespace-pre-wrap font-sans text-[13px] leading-relaxed text-base-content/75 bg-base-200 rounded-lg p-4">{{ val_summary }}</pre>
+        {% endif %}
         {% endif %}
         {% if val_features.len() > 0 %}
         <div class="grid gap-2 text-[13px] leading-relaxed">
