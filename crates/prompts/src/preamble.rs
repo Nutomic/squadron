@@ -22,18 +22,19 @@ pub fn neutralize_data_closers(content: &str) -> String {
     let mut out = String::with_capacity(content.len() + 8);
     let mut i = 0usize;
     while i < bytes.len() {
-        if i + needle.len() <= bytes.len()
-            && bytes[i..i + needle.len()]
-                .iter()
-                .zip(needle.as_bytes())
-                .all(|(h, n)| h.to_ascii_lowercase() == n.to_ascii_lowercase())
+        if bytes[i..].len() >= needle.len()
+            && bytes[i..i + needle.len()].eq_ignore_ascii_case(needle.as_bytes())
         {
             out.push('<');
             out.push('\u{200B}');
             i += 1;
             continue;
         }
-        let ch = content[i..].chars().next().unwrap();
+        // `i` is always at a char boundary: it starts at 0, advances past whole
+        // chars, and past the matched '<' only when the next byte is ASCII.
+        let Some(ch) = content[i..].chars().next() else {
+            break;
+        };
         out.push(ch);
         i += ch.len_utf8();
     }

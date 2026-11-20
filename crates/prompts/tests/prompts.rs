@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
+
 use std::collections::HashSet;
 
 use prompts::{
@@ -196,7 +198,7 @@ fn data_block_escapes_closing_tag_breakout() {
     for content in cases {
         let block = data_block("brief", content);
         // the only literal closer left is the block's own terminator
-        let closing = block[format!("<data label=\"brief\">\n").len()..]
+        let closing = block["<data label=\"brief\">\n".len()..]
             .trim_end()
             .ends_with("</data>");
         assert!(closing, "block lost its own closer: {block:?}");

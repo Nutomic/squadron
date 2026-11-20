@@ -1,3 +1,7 @@
+// Test-fixture stand-in for the real `sprite` CLI: its contract is plain text
+// on stdout/stderr, so the print lints do not apply here.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;

@@ -4,7 +4,6 @@
 /.env
 *.log
 crates/swarm/island/node_modules/
-crates/swarm/island/package-lock.json
 
 # R2-3#6: test artifact must not be tracked
 mock-sprites.json*

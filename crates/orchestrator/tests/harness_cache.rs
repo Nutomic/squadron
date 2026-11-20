@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -175,15 +177,17 @@ async fn run_prompt_runs_the_curl_floor_and_parses_cost() {
         &cache,
         &sprite,
         "curl-sprite",
-        "system prompt",
-        "user prompt",
-        &recipe,
-        Duration::from_secs(30),
-        Some((
-            "FAKE_CURL_RESPONSE".to_owned(),
-            response_path.to_string_lossy().into_owned(),
-        )),
-        Some("swarm-work/x/lane-0"),
+        orchestrator::harness::HarnessPrompt {
+            system: "system prompt",
+            user: "user prompt",
+            recipe: &recipe,
+            timeout: Duration::from_secs(30),
+            connector_env: Some((
+                "FAKE_CURL_RESPONSE".to_owned(),
+                response_path.to_string_lossy().into_owned(),
+            )),
+            workdir: Some("swarm-work/x/lane-0"),
+        },
     )
     .await
     .unwrap();
@@ -214,16 +218,18 @@ async fn run_prompt_cli_choice_returns_agent_stdout() {
         &cache,
         &sprite,
         "cli-sprite",
-        "system prompt",
-        "user prompt",
-        &recipe,
-        Duration::from_secs(30),
-        Some((
-            "OPENCODE_FAKE_OUTPUT".to_owned(),
-            r#"{"summary":"agent done","files":2,"run_command":"x","done":true,"blockers":[]}"#
-                .to_owned(),
-        )),
-        Some("swarm-work/x/lane-1"),
+        orchestrator::harness::HarnessPrompt {
+            system: "system prompt",
+            user: "user prompt",
+            recipe: &recipe,
+            timeout: Duration::from_secs(30),
+            connector_env: Some((
+                "OPENCODE_FAKE_OUTPUT".to_owned(),
+                r#"{"summary":"agent done","files":2,"run_command":"x","done":true,"blockers":[]}"#
+                    .to_owned(),
+            )),
+            workdir: Some("swarm-work/x/lane-1"),
+        },
     )
     .await
     .unwrap();

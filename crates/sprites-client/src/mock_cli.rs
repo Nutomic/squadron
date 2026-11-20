@@ -77,6 +77,7 @@ fn with_state<T>(f: impl FnOnce(&mut MockState) -> Result<T, String>) -> Result<
     let lock = OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .open(lock_path)
         .map_err(|e| e.to_string())?;
     lock.lock_exclusive().map_err(|e| e.to_string())?;
@@ -119,6 +120,9 @@ fn delay_ms(name: &str, default: u64) {
     }
 }
 
+// This module emulates the real `sprite` CLI, whose contract is text on
+// stdout/stderr; no other output channel is correct for a CLI mock.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn run() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match execute(&args) {

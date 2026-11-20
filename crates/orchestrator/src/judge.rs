@@ -126,11 +126,7 @@ pub fn validator_reports_from_lanes(lanes: &[store::Lane]) -> Vec<LaneJudgeRepor
 fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
     let hb = haystack.as_bytes();
     let nb = needle.as_bytes();
-    hb.len() >= nb.len()
-        && hb
-            .iter()
-            .zip(nb)
-            .all(|(h, n)| h.to_ascii_lowercase() == n.to_ascii_lowercase())
+    hb.len() >= nb.len() && hb[..nb.len()].eq_ignore_ascii_case(nb)
 }
 
 fn sanitize_html_impl(html: &str, max_bytes: usize) -> String {
@@ -190,7 +186,9 @@ fn sanitize_html_impl(html: &str, max_bytes: usize) -> String {
                 None => break,
             }
         }
-        let ch = rest.chars().next().unwrap();
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
         stripped.push(ch);
         i += ch.len_utf8();
     }
@@ -228,11 +226,7 @@ fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
     let hb = haystack.as_bytes();
     let nb = needle.as_bytes();
     for i in 0..=(hb.len() - nb.len()) {
-        if hb[i..i + nb.len()]
-            .iter()
-            .zip(nb)
-            .all(|(h, n)| h.to_ascii_lowercase() == n.to_ascii_lowercase())
-        {
+        if hb[i..i + nb.len()].eq_ignore_ascii_case(nb) {
             return Some(i);
         }
     }
@@ -267,9 +261,8 @@ fn strip_event_handlers_and_js(input: &str) -> String {
                             Some(b'"') | Some(b'\'') => {
                                 let q = after_name.as_bytes()[1];
                                 let mut end = None;
-                                let b = after_name.as_bytes();
-                                for j in 2..b.len() {
-                                    if b[j] == q {
+                                for (j, c) in after_name.as_bytes().iter().enumerate().skip(2) {
+                                    if *c == q {
                                         end = Some(j + 1);
                                         break;
                                     }
@@ -294,7 +287,9 @@ fn strip_event_handlers_and_js(input: &str) -> String {
             i += "javascript:".len();
             continue;
         }
-        let ch = rest.chars().next().unwrap();
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
         out.push(ch);
         i += ch.len_utf8();
     }

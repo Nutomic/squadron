@@ -1,9 +1,12 @@
+#![allow(clippy::unwrap_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
+
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+// Env manipulation must serialize across concurrent async tests; a tokio mutex
+// is legal to hold across awaits, a std mutex guard is not.
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 use sprites_client::mock_cli::{self, MockState};
 use sprites_client::{parse_info_url, ExecOptions, SpriteClient, SpriteConfig, SpriteError};
@@ -143,9 +146,9 @@ async fn errors_never_leak_env_values() {
     assert!(!err.to_string().contains("do-not-print"), "{err}");
 }
 
-#[test]
-fn mock_cli_models_cold_start_create_exec_and_destroy() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+#[tokio::test]
+async fn mock_cli_models_cold_start_create_exec_and_destroy() {
+    let _guard = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state.json");
     std::env::set_var("MOCK_SPRITE_STATE", &state);
@@ -204,9 +207,9 @@ fn mock_cli_models_cold_start_create_exec_and_destroy() {
     std::env::remove_var("MOCK_COLD_START_MS");
 }
 
-#[test]
-fn mock_cli_create_rejects_existing_sprite_until_destroyed() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+#[tokio::test]
+async fn mock_cli_create_rejects_existing_sprite_until_destroyed() {
+    let _guard = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state.json");
     std::env::set_var("MOCK_SPRITE_STATE", &state);
@@ -225,7 +228,7 @@ fn mock_cli_create_rejects_existing_sprite_until_destroyed() {
 
 #[tokio::test]
 async fn client_drives_mock_cli_binary_end_to_end() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("binary-state.json");
     std::env::set_var("MOCK_SPRITE_STATE", &state);
@@ -251,7 +254,7 @@ async fn client_drives_mock_cli_binary_end_to_end() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mock_cli_records_http_200_from_port_8080() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = ENV_LOCK.lock().await;
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", 8080)).await {
         Ok(listener) => listener,
         Err(_) => return,

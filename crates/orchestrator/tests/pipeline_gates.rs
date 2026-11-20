@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,16 +52,18 @@ async fn test_ctx(
         command_timeout: Duration::from_secs(10),
         ..SpriteConfig::default()
     });
-    let mut config = PipelineConfig::default();
-    config.n_lanes = 3;
-    config.max_running_slots = slots;
-    config.retries_per_lane = 0;
-    config.test_mode = true;
-    config.data_dir = dir.join("data");
+    let config = PipelineConfig {
+        n_lanes: 3,
+        max_running_slots: slots,
+        retries_per_lane: 0,
+        test_mode: true,
+        data_dir: dir.join("data"),
+        impl_deadline,
+        val_deadline: Duration::from_secs(30),
+        judge_deadline: Duration::from_secs(15),
+        ..PipelineConfig::default()
+    };
     std::fs::create_dir_all(&config.data_dir).unwrap();
-    config.impl_deadline = impl_deadline;
-    config.val_deadline = Duration::from_secs(30);
-    config.judge_deadline = Duration::from_secs(15);
     let screenshots = ScreenshotQueue::new(store.clone(), true);
     let ctx = Arc::new(PipelineCtx {
         store: store.clone(),

@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,15 +55,17 @@ async fn smoke_pipeline_mock_sprite_n3_judged_and_persisted() {
         ..SpriteConfig::default()
     });
 
-    let mut config = PipelineConfig::default();
-    config.n_lanes = 3;
-    config.max_running_slots = 10;
-    config.test_mode = true;
-    config.data_dir = dir.path().join("data");
+    let config = PipelineConfig {
+        n_lanes: 3,
+        max_running_slots: 10,
+        test_mode: true,
+        data_dir: dir.path().join("data"),
+        impl_deadline: Duration::from_secs(30),
+        val_deadline: Duration::from_secs(30),
+        judge_deadline: Duration::from_secs(15),
+        ..PipelineConfig::default()
+    };
     std::fs::create_dir_all(&config.data_dir).unwrap();
-    config.impl_deadline = Duration::from_secs(30);
-    config.val_deadline = Duration::from_secs(30);
-    config.judge_deadline = Duration::from_secs(15);
 
     let screenshots = ScreenshotQueue::new(store.clone(), true);
     let slots = SlotSemaphore::new(config.max_running_slots);

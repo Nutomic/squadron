@@ -252,6 +252,8 @@ fn decode_base64(s: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
+
     use super::*;
 
     #[test]

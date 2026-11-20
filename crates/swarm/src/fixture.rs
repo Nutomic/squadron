@@ -106,7 +106,9 @@ async fn fixture_lane(Path(idx): Path<i64>) -> Response {
     };
     let common = LaneCommon::from_view(lane);
     let mut tpl = LaneTemplate::from_common("__fixtures", &common);
-    tpl.val_quality = Some("8.5".to_owned()).filter(|_| lane.val_verdict.is_some());
+    if lane.val_verdict.is_some() {
+        tpl.val_quality = Some("8.5".to_owned());
+    }
     tpl.val_summary = lane.val_verdict.as_ref().map(|_| {
         "PASS - verified against code and live site.\n\nFeatures: full arcade loop (paddle, ball, bricks, score, hiscore), CRT scanline overlay, keyboard + touch controls, pause/resume.\n\nBugs: none observed in 30 rounds of play.\n\nSecurity: no external calls, no eval, no inline event handlers; all assets local.\n\nQuality: 8.5/10 - clean game loop at fixed timestep, readable state machine, no build tooling needed."
             .to_owned()
@@ -194,12 +196,21 @@ async fn fixture_source() -> Response {
 }
 
 pub fn sse_response(rx: ReceiverStream<Result<axum::body::Bytes, std::io::Error>>) -> Response {
-    Response::builder()
-        .header(header::CONTENT_TYPE, "text/event-stream")
-        .header(header::CACHE_CONTROL, "no-cache")
-        .header("x-accel-buffering", "no")
-        .body(Body::from_stream(rx))
-        .unwrap()
+    let mut res = Response::new(Body::from_stream(rx));
+    let headers = res.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/event-stream"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-cache"),
+    );
+    headers.insert(
+        "x-accel-buffering",
+        axum::http::HeaderValue::from_static("no"),
+    );
+    res
 }
 
 use axum::routing::get;

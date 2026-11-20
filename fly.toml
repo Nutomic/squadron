@@ -8,6 +8,17 @@ primary_region = "iad"
 
 [env]
   PORT = "3000"
+  # Path of the sprite CLI installed by the Dockerfile (consumed by
+  # crates/sprites-client `SpriteConfig::from_env`).
+  SPRITE_CLI = "/usr/local/bin/sprite"
+
+# Secrets — never put secret values in [env] or this file:
+#   SPRITE_TOKEN: pre-generated sprite org token, format
+#     org-slug/org-id/token-id/token-value (generate via `sprite org --help`).
+#     Set with:  fly secrets set SPRITE_TOKEN=...
+#   The boot step in the Dockerfile CMD provisions it non-interactively via
+#     `sprite auth setup --token "$SPRITE_TOKEN"` and runs a `sprite list`
+#     health check, failing fast with a clear log if it is missing or rejected.
 
 [http_service]
   internal_port = 3000
