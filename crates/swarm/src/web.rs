@@ -307,6 +307,18 @@ async fn lane_detail(
         return not_found();
     };
     let (val_features, val_bugs, val_security) = validator_report_view(&lane);
+    // #3: viewing a lane also triggers the lazy screenshot render.
+    if let Some(url) = lane.impl_url.clone() {
+        let current = lane.screenshot_state.clone().unwrap_or_default();
+        if current.is_empty() || current == "pending" || current == "queued" {
+            let queue = state.screenshots.clone();
+            let rid = run_id.clone();
+            let i = idx;
+            tokio::spawn(async move {
+                queue.request(&rid, i, &url).await;
+            });
+        }
+    }
     let lane_tpl = LaneTemplate {
         run_id: run.id.clone(),
         idx: lane.idx,
@@ -356,6 +368,18 @@ async fn thumb(
     let Some(lane) = state.store.get_lane(&run_id, idx).await.ok().flatten() else {
         return not_found();
     };
+    // #3: first view triggers the lazy render for lanes that have not been
+    // rendered yet (pending or failed-before-render).
+    if let Some(url) = lane.impl_url.clone() {
+        let current = lane.screenshot_state.clone().unwrap_or_default();
+        if current.is_empty() || current == "pending" || current == "queued" {
+            let queue = state.screenshots.clone();
+            let rid = run_id.clone();
+            tokio::spawn(async move {
+                queue.request(&rid, idx, &url).await;
+            });
+        }
+    }
     let Some(state_str) = lane.screenshot_state else {
         return not_found();
     };
