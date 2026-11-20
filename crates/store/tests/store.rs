@@ -153,3 +153,47 @@ async fn lane_events_are_monotonic_and_auditable() {
 fn generated_ids_are_distinct() {
     assert_ne!(new_run_id(), new_run_id());
 }
+
+#[tokio::test]
+async fn full_validator_report_persists_and_replaces() {
+    let store = Store::connect_in_memory().await.unwrap();
+    store.migrate().await.unwrap();
+    let run = store.create_run("brief", 2, 100).await.unwrap();
+    store.insert_lane(&run.id, 0, "{}").await.unwrap();
+    store.insert_lane(&run.id, 1, "{}").await.unwrap();
+
+    let report = serde_json::json!({
+        "verdict": "pass",
+        "features": ["game loop", "two-player mode"],
+        "bugs": ["sprite flickers on level 2"],
+        "security": "no secrets, no eval",
+        "quality_score": 88.5,
+        "summary": "detailed report"
+    })
+    .to_string();
+    store
+        .set_val_report(&run.id, 0, &report, 500)
+        .await
+        .unwrap();
+    // upsert replaces an earlier report
+    let replaced = serde_json::json!({
+        "verdict": "fail", "features": [], "bugs": ["worse"],
+        "security": "", "quality_score": 10.0, "summary": "second"
+    })
+    .to_string();
+    store
+        .set_val_report(&run.id, 0, &replaced, 600)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store.val_report(&run.id, 0).await.unwrap().as_deref(),
+        Some(replaced.as_str())
+    );
+    assert!(store.val_report(&run.id, 1).await.unwrap().is_none());
+    assert!(store.val_report("missing", 0).await.unwrap().is_none());
+
+    let all = store.val_reports_for_run(&run.id).await.unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all.get(&0).map(String::as_str), Some(replaced.as_str()));
+}
