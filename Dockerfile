@@ -23,7 +23,7 @@ COPY --from=builder /usr/local/cargo/bin/tokei /usr/local/bin/tokei
 COPY crates/swarm/static /app/static
 
 ENV PORT=3000 \
-    DATABASE_URL=/data/swarm.db \
+    DATABASE_URL=sqlite:/data/swarm.db?mode=rwc \
     DATA_DIR=/data \
     SWARM_STATIC_DIR=/app/static \
     CHROMIUM_BIN=/usr/bin/chromium
