@@ -1,19 +1,45 @@
 {% extends "base.html" %}
-{% block title %}sprite swarm — run {{ run_id }}{% endblock %}
+{% block title %}Squadron — run {{ run_id }}{% endblock %}
 {% block content %}
-<div class="flex flex-wrap items-center gap-3 mb-4">
-  <h1 class="text-2xl font-bold text-primary font-mono">{{ run_id }}</h1>
-  <span class="badge badge-sm badge-ghost">{{ status }}</span>
-  <div class="flex-1"></div>
-  <a href="/runs" class="btn btn-ghost btn-sm text-base-content/60">&larr; all runs</a>
-</div>
-<div id="island" data-run-id="{{ run_id }}" data-events-url="{{ events_url }}">
-  <div class="flex items-center gap-3 text-base-content/40 py-12 justify-center">
-    <span class="loading loading-spinner"></span> connecting to run events...
+<div class="bg-base-200 border-b border-base-300">
+  <div class="max-w-7xl mx-auto px-4 py-4 flex flex-wrap items-center gap-3">
+    <a href="/runs" class="text-sm text-base-content/55 hover:text-base-content">&larr; Runs</a>
+    <span class="text-base-content/25">/</span>
+    <h1 class="font-mono text-[15px] font-semibold">{{ run_id }}</h1>
+    {% if status == "judged" %}<span class="chip chip-success">judged</span>
+    {% else if status == "promoted" %}<span class="chip chip-winner">promoted</span>
+    {% else if status == "running" %}<span class="chip chip-info chip-pulse">running</span>
+    {% else if status == "failed" %}<span class="chip chip-error">failed</span>
+    {% else %}<span class="chip chip-neutral">{{ status }}</span>{% endif %}
   </div>
 </div>
+
+<div class="max-w-7xl mx-auto px-4 py-8">
+  <div id="island" data-run-id="{{ run_id }}" data-events-url="{{ events_url }}">
+    <div class="flex items-center gap-3 mb-6">
+      <span class="chip chip-neutral chip-pulse">connecting</span>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+      {% for _i in 0..3 %}
+      <div class="card bg-base-100 border border-base-300 rounded-xl p-0 overflow-hidden">
+        <div class="skeleton aspect-[16/10] rounded-none bg-base-200"></div>
+        <div class="p-4 flex flex-col gap-3">
+          <div class="flex items-center justify-between">
+            <div class="skeleton h-4 w-32 bg-base-200"></div>
+            <div class="skeleton h-5 w-16 rounded-full bg-base-200"></div>
+          </div>
+          <div class="skeleton h-3 w-24 bg-base-200"></div>
+          <div class="skeleton h-3 w-full bg-base-200"></div>
+          <div class="skeleton h-3 w-2/3 bg-base-200"></div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
 <dialog id="tokei-dialog" class="modal">
-  <div class="modal-box bg-base-100"></div>
+  <div class="modal-box bg-base-100 max-w-2xl p-0 overflow-hidden"></div>
   <form method="dialog" class="modal-backdrop"><button>close</button></form>
 </dialog>
 {% endblock %}
