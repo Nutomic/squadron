@@ -112,6 +112,7 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
                     .await;
             }
             publish(&ctx_bg, &run_id).await;
+            drop_hub(&ctx_bg, &run_id).await;
         }
     });
 
@@ -216,7 +217,22 @@ async fn execute_run(
     }
 
     publish(&ctx, &run_id).await;
+    // The run is terminal (judged or failed): drop its hub from the registry
+    // so the per-run broadcast channel is not leaked (audit R3 finding 5).
+    // Subscribers already holding a receiver still drain the final snapshot
+    // before the channel closes.
+    drop_hub(&ctx, &run_id).await;
     Ok(())
+}
+
+/// Remove the run's hub from the registry once the run cannot change anymore.
+/// The terminal snapshot was already broadcast by `publish`; dropping the
+/// sender closes the channel for late subscribers, and the web layer falls
+/// back to the DB snapshot path for them.
+async fn drop_hub(ctx: &PipelineCtx, run_id: &str) {
+    if let Some(reg) = &ctx.hub_registry {
+        reg.write().await.remove(run_id);
+    }
 }
 
 async fn run_lane(
@@ -348,7 +364,13 @@ async fn run_lane_attempt(
             .map_err(|e| e.to_string())?;
     }
     let _ = ctx.sprite.set_url_auth_public().await; // best effort; may fail in mock - mock handles it
-    let impl_url = format!("https://{sprite_name}.sprites.app");
+                                                    // URL derivation: prefer the CLI-reported public URL (`sprite info`), so
+                                                    // the recorded lane URL is what the platform actually serves; fall back to
+                                                    // the deterministic sprite-name form when the CLI does not expose `info`.
+    let impl_url = match ctx.sprite.info(&sprite_name).await {
+        Ok(url) if !url.is_empty() => url,
+        _ => format!("https://{sprite_name}.sprites.app"),
+    };
 
     let started = now_ms();
     let deadline = ms_after(started, ctx.config.impl_deadline);

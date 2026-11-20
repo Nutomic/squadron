@@ -8,6 +8,10 @@ use tokio::sync::{mpsc, Notify, RwLock};
 
 use store::{now_ms, Store};
 
+/// Shared hub registry: run_id -> SSE hub. Wired into the screenshot queue so
+/// thumbnail state changes reach live SSE subscribers (audit R3 finding 3).
+pub type HubRegistry = Arc<tokio::sync::RwLock<HashMap<String, crate::sse::SseHub>>>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScreenshotState {
     Pending,
@@ -43,6 +47,20 @@ pub fn render_dest(data_dir: &std::path::Path, run_id: &str, lane_idx: i64) -> P
         .join("screenshots")
         .join(run_id)
         .join(format!("lane-{lane_idx}.png"))
+}
+
+/// Broadcast a screenshot state change to the run's SSE hub (audit R3
+/// finding 3): the gallery island only sees thumbnails when the snapshot with
+/// the updated screenshot state reaches the live subscriber.
+async fn publish_state_change(store: &Store, hubs: &Option<HubRegistry>, run_id: &str) {
+    if let Some(reg) = hubs {
+        let hub = reg.read().await.get(run_id).cloned();
+        if let Some(hub) = hub {
+            if let Some(snap) = crate::snapshot::build_snapshot(store, run_id).await {
+                hub.publish(snap);
+            }
+        }
+    }
 }
 
 /// 1x1 transparent PNG used as the test-mode placeholder so test thumbnails
@@ -115,6 +133,7 @@ pub struct ScreenshotQueue {
     store: Store,
     pending: Arc<RwLock<HashMap<(String, i64), String>>>, // value: terminal state string
     notify: Arc<Notify>,
+    hubs: Option<HubRegistry>,
 }
 
 impl ScreenshotQueue {
@@ -129,6 +148,18 @@ impl ScreenshotQueue {
     }
 
     pub fn with_data_dir(store: Store, test_mode: bool, data_dir: PathBuf) -> Self {
+        Self::with_data_dir_hubs(store, test_mode, data_dir, None)
+    }
+
+    /// `hubs`: the run -> SseHub registry. When present, every screenshot
+    /// state change is broadcast as a full snapshot to the run's hub so live
+    /// SSE subscribers see thumbnails without a reload (audit R3 finding 3).
+    pub fn with_data_dir_hubs(
+        store: Store,
+        test_mode: bool,
+        data_dir: PathBuf,
+        hubs: Option<HubRegistry>,
+    ) -> Self {
         let (tx, mut rx) = mpsc::channel::<ScreenshotJob>(128);
         let store_worker = store.clone();
         let data_dir_worker = data_dir.clone();
@@ -137,6 +168,7 @@ impl ScreenshotQueue {
         let notify = Arc::new(Notify::new());
         let pending_worker = pending.clone();
         let notify_worker = notify.clone();
+        let hubs_worker = hubs.clone();
         tokio::spawn(async move {
             // serial: one-at-a-time by nature of single consumer loop
             while let Some(job) = rx.recv().await {
@@ -159,6 +191,7 @@ impl ScreenshotQueue {
                 let _ = store_worker
                     .set_screenshot_state(&job.run_id, job.lane_idx, "rendering", None)
                     .await;
+                publish_state_change(&store_worker, &hubs_worker, &job.run_id).await;
 
                 let (state, path_opt) = if test_mode {
                     // Test mode: same path convention as real renders, and a
@@ -204,6 +237,7 @@ impl ScreenshotQueue {
                         .await
                         .insert((job.run_id.clone(), job.lane_idx), state.clone());
                 }
+                publish_state_change(&store_worker, &hubs_worker, &job.run_id).await;
                 notify_worker.notify_waiters();
             }
         });
@@ -212,6 +246,7 @@ impl ScreenshotQueue {
             store,
             pending,
             notify,
+            hubs,
         }
     }
 
@@ -260,6 +295,11 @@ impl ScreenshotQueue {
 
     pub fn notify(&self) -> Arc<Notify> {
         self.notify.clone()
+    }
+
+    /// The shared hub registry (None when the queue was built without one).
+    pub fn hub_registry(&self) -> Option<HubRegistry> {
+        self.hubs.clone()
     }
 
     fn is_terminal_state(state: &str) -> bool {
