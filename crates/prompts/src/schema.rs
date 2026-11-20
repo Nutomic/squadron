@@ -288,6 +288,19 @@ pub fn injection_markers(value: &Value) -> Vec<String> {
     found
 }
 
+/// Pipeline integration point (#21): call this instead of a bare `gate` after
+/// every role output so `[INJECTION?]` markers reported by agents are surfaced
+/// instead of silently dropped. Returns the JSON paths containing markers.
+pub fn gate_and_scan_injections(
+    role: Role,
+    raw: &str,
+    options: &GateOptions,
+) -> Result<(Value, Vec<String>), SchemaError> {
+    let value = gate_with_options(role, raw, options)?;
+    let markers = injection_markers(&value);
+    Ok((value, markers))
+}
+
 fn collect_markers(value: &Value, path: &str, found: &mut Vec<String>) {
     match value {
         Value::String(text) if text.contains("[INJECTION?]") => found.push(path.to_owned()),
