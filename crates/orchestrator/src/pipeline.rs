@@ -483,8 +483,11 @@ async fn run_lane_attempt(
     // #10: the sprite URL must answer with 200 before the lane can be Done.
     // Test mode uses fake URLs, so the probe is skipped to stay deterministic;
     // the 127.0.0.1 self-probe fallback is gone (a passing orchestrator is not
-    // a passing lane).
-    if !ctx.config.test_mode && !artifacts::check_http_200(&impl_url).await {
+    // a passing lane). F2: the probe is SSRF-safe (shared net.rs machinery);
+    // the loopback escape is config-driven and test-only.
+    if !ctx.config.test_mode
+        && !artifacts::check_http_200_policy(&impl_url, ctx.config.probe_allow_loopback).await
+    {
         return Err(format!(
             "implementer: live URL did not answer 200: {impl_url}"
         ));
@@ -962,7 +965,9 @@ async fn ensure_judge_renders(ctx: &PipelineCtx, run_id: &str, validated: &[stor
         let Some(url) = lane.impl_url.clone() else {
             continue;
         };
-        if !ctx.config.test_mode && !artifacts::check_http_200(&url).await {
+        if !ctx.config.test_mode
+            && !artifacts::check_http_200_policy(&url, ctx.config.probe_allow_loopback).await
+        {
             tracing::warn!(
                 run_id,
                 lane = lane.idx,

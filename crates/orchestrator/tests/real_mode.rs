@@ -139,6 +139,8 @@ async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
         impl_deadline: Duration::from_secs(30),
         val_deadline: Duration::from_secs(30),
         judge_deadline: Duration::from_secs(15),
+        // F2 test-only escape: the tunnel URL is loopback.
+        probe_allow_loopback: true,
         ..PipelineConfig::default()
     };
     std::fs::create_dir_all(&config.data_dir).unwrap();

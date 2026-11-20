@@ -150,18 +150,20 @@ fn walkdir(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
     Ok(out)
 }
 
+/// Review F2: the 200-oracle now runs through the shared net.rs SSRF
+/// machinery (manual validated redirects, resolved-IP pinning, `is_public_ip`
+/// on every hop). Raw reqwest with default redirect-following let a lane site
+/// 302 the orchestrator at internal/metadata endpoints; only public
+/// destinations count as passing now.
 pub async fn check_http_200(url: &str) -> bool {
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    match client.get(url).send().await {
-        Ok(resp) => resp.status().as_u16() == 200,
-        Err(_) => false,
-    }
+    check_http_200_policy(url, false).await
+}
+
+/// Same oracle with the test-only loopback escape hatch (integration tests
+/// point lane URLs at a local server). Production callers use
+/// `check_http_200`.
+pub async fn check_http_200_policy(url: &str, allow_loopback: bool) -> bool {
+    crate::net::fetch_public_200(url, allow_loopback).await
 }
 
 /// #4: collect artifacts FROM the sprite, not from the orchestrator's local
