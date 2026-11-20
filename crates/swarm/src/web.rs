@@ -310,6 +310,8 @@ async fn serve_static(State(state): State<SharedState>, Path(path): Path<String>
         Some("ico") => "image/x-icon",
         Some("html") => "text/html",
         Some("json") => "application/json",
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
         _ => "application/octet-stream",
     };
     match tokio::fs::read(&full).await {
