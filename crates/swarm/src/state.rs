@@ -25,7 +25,11 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(store: Store, sprite: SpriteClient, config: PipelineConfig) -> Self {
-        let screenshots = ScreenshotQueue::new(store.clone(), config.test_mode);
+        let screenshots = ScreenshotQueue::with_data_dir(
+            store.clone(),
+            config.test_mode,
+            config.data_dir.clone(),
+        );
         let slots = SlotSemaphore::new(config.max_running_slots);
         Self {
             store,

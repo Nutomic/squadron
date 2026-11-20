@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use base64::Engine;
 use futures::StreamExt;
 use tokio::sync::{mpsc, Notify, RwLock};
 
@@ -36,11 +37,32 @@ struct ScreenshotJob {
     url: String,
 }
 
-pub fn render_dest(run_id: &str, lane_idx: i64) -> PathBuf {
-    PathBuf::from("/data")
+/// #36: single path convention shared by the real renderer and test mode,
+/// derived from the configured data dir (never hardcoded /data).
+pub fn render_dest(data_dir: &std::path::Path, run_id: &str, lane_idx: i64) -> PathBuf {
+    data_dir
         .join("screenshots")
         .join(run_id)
         .join(format!("lane-{lane_idx}.png"))
+}
+
+/// 1x1 transparent PNG used as the test-mode placeholder so test thumbnails
+/// are actually servable instead of 404ing on a fabricated path.
+const TEST_PNG_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+async fn write_test_png(dest: &std::path::Path) -> Result<(), String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(TEST_PNG_BASE64)
+        .map_err(|e| format!("test png decode: {e}"))?;
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+    tokio::fs::write(dest, bytes)
+        .await
+        .map_err(|e| format!("write {}: {e}", dest.display()))
 }
 
 /// Render a lane's live URL to a PNG with headless Chromium (chromiumoxide).
@@ -97,9 +119,20 @@ pub struct ScreenshotQueue {
 }
 
 impl ScreenshotQueue {
+    /// Compat constructor: resolves the data dir from DATA_DIR (matching
+    /// PipelineConfig's default). Prefer `with_data_dir` when a config is at
+    /// hand so the queue always agrees with the pipeline.
     pub fn new(store: Store, test_mode: bool) -> Self {
+        let data_dir = std::env::var_os("DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/data"));
+        Self::with_data_dir(store, test_mode, data_dir)
+    }
+
+    pub fn with_data_dir(store: Store, test_mode: bool, data_dir: PathBuf) -> Self {
         let (tx, mut rx) = mpsc::channel::<ScreenshotJob>(128);
         let store_worker = store.clone();
+        let data_dir_worker = data_dir.clone();
         let pending: Arc<RwLock<HashMap<(String, i64), String>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let notify = Arc::new(Notify::new());
@@ -129,13 +162,21 @@ impl ScreenshotQueue {
                     .await;
 
                 let (state, path_opt) = if test_mode {
-                    let fake = format!("/data/{}/lane-{}.png", job.run_id, job.lane_idx);
-                    ("done".to_owned(), Some(fake))
+                    // Test mode: same path convention as real renders, and a
+                    // real placeholder file so /{run}/thumb/{idx} serves it.
+                    let dest = render_dest(&data_dir_worker, &job.run_id, job.lane_idx);
+                    match write_test_png(&dest).await {
+                        Ok(()) => ("done".to_owned(), Some(dest.to_string_lossy().into_owned())),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "test-mode screenshot write failed");
+                            ("failed".to_owned(), None)
+                        }
+                    }
                 } else {
                     // Real Chromium rendering: serial worker (this loop is the
                     // only consumer). Requires CHROMIUM_BIN; without it the
                     // screenshot fails honestly instead of blocking.
-                    let dest = render_dest(&job.run_id, job.lane_idx);
+                    let dest = render_dest(&data_dir_worker, &job.run_id, job.lane_idx);
                     match render_chromium(&job.url, &dest).await {
                         Ok(()) => ("done".to_owned(), Some(dest.to_string_lossy().into_owned())),
                         Err(e) => {

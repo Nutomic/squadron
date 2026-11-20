@@ -3,8 +3,14 @@ use std::time::Duration;
 use crate::types::DEFAULT_REASONING_EFFORT;
 use crate::{ChatRequest, LlmError, MessageContent, USER_AGENT};
 
-pub const GATEWAY_ENDPOINT: &str =
-    "https://api.sprites.dev/v1/gateway/custom_api/sanCSEiLn9Np-G_Y5q2jKA/chat/completions";
+/// #34: canonical connector id; the endpoint URL is derived from it so the
+/// id lives in exactly one place (shared with orchestrator's config default).
+pub const GATEWAY_CONNECTOR_ID: &str = "sanCSEiLn9Np-G_Y5q2jKA";
+pub const GATEWAY_API_BASE: &str = "https://api.sprites.dev/v1/gateway/custom_api";
+
+pub fn gateway_endpoint() -> String {
+    format!("{GATEWAY_API_BASE}/{GATEWAY_CONNECTOR_ID}/chat/completions")
+}
 pub const SESSION_HEADER: &str = "x-opencode-session";
 pub const DIVERSITY_MODEL: &str = "glm-5.3";
 pub const JUDGE_MODEL: &str = "glm-5.3";
@@ -30,7 +36,7 @@ impl SpriteRecipe {
 
     pub fn for_model(lane_id: impl AsRef<str>, model: impl Into<String>) -> Self {
         Self {
-            endpoint: GATEWAY_ENDPOINT.to_owned(),
+            endpoint: gateway_endpoint(),
             model: model.into(),
             session_id: session_id(lane_id.as_ref()),
             timeout: Duration::from_secs(180),

@@ -30,9 +30,9 @@ impl PipelineConfig {
     }
 }
 
-/// #33: single canonical connector id used by both config defaults and the
-/// test-only HarnessMode default.
-pub const DEFAULT_GATEWAY_CONNECTOR_ID: &str = "sanCSEiLn9Np-G_Y5q2jKA";
+/// #34: re-export of the canonical connector id; llm-gateway owns it and
+/// derives the gateway endpoint from the same const.
+pub const DEFAULT_GATEWAY_CONNECTOR_ID: &str = llm_gateway::sprites_gateway::GATEWAY_CONNECTOR_ID;
 
 impl Default for PipelineConfig {
     fn default() -> Self {
