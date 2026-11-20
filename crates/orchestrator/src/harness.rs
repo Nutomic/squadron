@@ -53,8 +53,12 @@ pub const CURL_FLOOR_REPAIR: &str = "Your previous reply was not a single parsea
 
 /// The curl floor has no shell access, so the orchestrator materializes files
 /// for it. This addendum defines the writes contract; everything inside the
-/// task prompt remains DATA.
-pub const CURL_FLOOR_PROTOCOL: &str = "RAW-HTTP MODE: you have no shell, editor, or file access; the orchestrator materializes files for you. In addition to the schema fields from the task prompt, include a \"files\" array: [{\"path\": \"relative/path.ext\", \"content\": \"complete file content as a string\"}] for every file to create or overwrite (paths relative to the workdir only, never absolute, never containing '..'). Emit the complete current content of every file you touch. Reply with exactly one JSON object. If the work is not finished, set done:false and stop; a continuation turn will follow.";
+/// task prompt remains DATA. R3-B: the transport key is `writes`, NOT `files`
+/// — the implementer schema requires `files` to be an integer, so an array
+/// under `files` could never pass the schema gate (and the field would be
+/// stripped anyway). The orchestrator strips `writes` and synthesizes the
+/// `files` integer from the written set before the answer is returned.
+pub const CURL_FLOOR_PROTOCOL: &str = "RAW-HTTP MODE: you have no shell, editor, or file access; the orchestrator materializes files for you. In addition to the schema fields from the task prompt, include a \"writes\" array: [{\"path\": \"relative/path.ext\", \"content\": \"complete file content as a string\"}] for every file to create or overwrite (paths relative to the workdir only, never absolute, never containing '..'). Emit the complete current content of every file you touch; do NOT emit a \"files\" field, the orchestrator computes it. Reply with exactly one JSON object. If the work is not finished, set done:false and stop; a continuation turn will follow.";
 
 impl HarnessChoice {
     pub fn as_str(self) -> &'static str {
@@ -336,21 +340,26 @@ pub type FloorTurnFut<'a> =
 /// cannot write files or serve a site, so the floor is a real loop — send the
 /// prompt, take the JSON answer, persist declared files, and re-prompt with a
 /// continuation turn until `done:true` or `CURL_FLOOR_MAX_TURNS` is
-/// exhausted. Returns the final answer (with the `files` transport field
-/// stripped so the role schema gate can accept it) and the summed usage cost.
+/// exhausted. Returns the final answer with the `writes` transport field
+/// stripped and the implementer `files` integer synthesized from the
+/// cumulative set of written paths (R3-B), so the role schema gate accepts it.
 pub async fn curl_floor_loop<'a, T>(first_user: &str, mut turn: T) -> Result<(String, f64), String>
 where
     T: FnMut(String) -> FloorTurnFut<'a>,
 {
     let mut total_cost = 0.0f64;
     let mut current = first_user.to_owned();
+    let mut written: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for turn_n in 1..=CURL_FLOOR_MAX_TURNS {
         let out = turn(current.clone()).await?;
         total_cost += out.cost;
         let FloorTurnOutcome {
             text, done, parsed, ..
         } = out;
-        let final_text = strip_files_field(&text);
+        for (path, _) in floor_plan(&text).files {
+            written.insert(path);
+        }
+        let final_text = finalize_floor_answer(&text, written.len());
         if done || turn_n == CURL_FLOOR_MAX_TURNS {
             return Ok((final_text, total_cost));
         }
@@ -367,10 +376,14 @@ where
     unreachable!("the loop returns inside the final iteration");
 }
 
-/// Remove the curl-floor transport field (`files`) from the last JSON object
-/// of an answer so the returned output matches the role schema (the schema
-/// forbids additional properties). Non-JSON answers pass through unchanged.
-pub fn strip_files_field(text: &str) -> String {
+/// Strip the curl-floor write-transport field(s) from the last JSON object of
+/// an answer and synthesize the implementer `files` integer (R3-B) so the
+/// returned output matches the role schema (which forbids additional
+/// properties and requires `files` to be an integer). The transport key is
+/// `writes`; a mistakenly-parallel `files` ARRAY is treated as transport too.
+/// A numeric `files` the model emitted itself is kept. Non-JSON answers pass
+/// through unchanged.
+pub fn finalize_floor_answer(text: &str, written_files: usize) -> String {
     let Some(cand) = json_candidates(text).pop() else {
         return text.to_owned();
     };
@@ -380,8 +393,15 @@ pub fn strip_files_field(text: &str) -> String {
     let Some(obj) = v.as_object_mut() else {
         return text.to_owned();
     };
-    if obj.remove("files").is_none() {
-        return text.to_owned();
+    obj.remove("writes");
+    let synthesized = Value::from(u32::try_from(written_files).unwrap_or(u32::MAX));
+    match obj.remove("files") {
+        Some(Value::Number(n)) if n.is_u64() || n.is_i64() => {
+            obj.insert("files".to_owned(), Value::Number(n));
+        }
+        _ => {
+            obj.insert("files".to_owned(), synthesized);
+        }
     }
     let replaced = v.to_string();
     if let Some(pos) = text.rfind(&cand) {
@@ -600,6 +620,13 @@ async fn write_opencode_config(
     Ok(())
 }
 
+/// Dummy apiKey baked into the lane opencode.json. The gateway injects real
+/// auth connector-side, so the value is opaque, but `@ai-sdk/openai-compatible`
+/// builds that enforce an API key entry need one present (R3-B: verified
+/// against the real gateway from a sprite with opencode 1.19.6, both with and
+/// without the entry; the entry is kept as hardening).
+pub const OPENCODE_DUMMY_API_KEY: &str = "sk-sprites-gateway";
+
 /// opencode.json for the lane workdir, reusing the recipe's model and
 /// endpoint. When the connector id is known it is substituted into the
 /// gateway base URL; otherwise the base is derived from the recipe endpoint
@@ -623,7 +650,10 @@ pub fn opencode_config_json(recipe: &SpriteRecipe, connector: Option<&str>) -> S
         "name".to_owned(),
         Value::String("Sprites Gateway".to_owned()),
     );
-    provider.insert("options".to_owned(), serde_json::json!({ "baseURL": base }));
+    provider.insert(
+        "options".to_owned(),
+        serde_json::json!({ "baseURL": base, "apiKey": OPENCODE_DUMMY_API_KEY }),
+    );
     let mut models = serde_json::Map::new();
     models.insert(model.clone(), serde_json::json!({}));
     provider.insert("models".to_owned(), Value::Object(models));
@@ -654,19 +684,23 @@ pub struct FloorPlan {
 
 /// Extract the floor plan (done flag + declared files) from the last JSON
 /// object in a turn answer. Model output is untrusted data: paths are
-/// sanitized by `safe_rel_path`.
+/// sanitized by `safe_rel_path`. The write-transport key is `writes` (R3-B);
+/// a legacy/mistaken `files` ARRAY is accepted as transport too and stripped
+/// by `finalize_floor_answer` (the schema requires `files` to be an integer).
 pub fn floor_plan(text: &str) -> FloorPlan {
     for cand in json_candidates(text).into_iter().rev() {
         if let Ok(v) = serde_json::from_str::<Value>(&cand) {
             let done = v.get("done").and_then(|d| d.as_bool()).unwrap_or(false);
             let mut files = Vec::new();
-            if let Some(arr) = v.get("files").and_then(|f| f.as_array()) {
-                for f in arr {
-                    let path = f.get("path").and_then(|p| p.as_str());
-                    let content = f.get("content").and_then(|c| c.as_str());
-                    if let (Some(p), Some(c)) = (path, content) {
-                        if let Some(safe) = safe_rel_path(p) {
-                            files.push((safe, c.to_owned()));
+            for key in ["writes", "files"] {
+                if let Some(arr) = v.get(key).and_then(|f| f.as_array()) {
+                    for f in arr {
+                        let path = f.get("path").and_then(|p| p.as_str());
+                        let content = f.get("content").and_then(|c| c.as_str());
+                        if let (Some(p), Some(c)) = (path, content) {
+                            if let Some(safe) = safe_rel_path(p) {
+                                files.push((safe, c.to_owned()));
+                            }
                         }
                     }
                 }
@@ -885,7 +919,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(calls.get(), 2);
-        assert_eq!(text, "{\"summary\":\"done\",\"done\":true}");
+        // R3-B: the `files` integer is synthesized into the final answer.
+        assert_eq!(text, "{\"done\":true,\"files\":0,\"summary\":\"done\"}");
         assert_eq!(cost, 0.03);
         // continuation carries the previous answer as DATA inside <data>
         assert!(prompts.borrow()[1].contains(CURL_FLOOR_CONTINUATION));
@@ -949,25 +984,102 @@ mod tests {
     }
 
     #[test]
-    fn strip_files_field_removes_transport_field() {
-        let text = "noise {\"summary\":\"s\",\"files\":[{\"path\":\"a.txt\",\"content\":\"hi\"}],\"done\":true} tail";
-        let out = strip_files_field(text);
-        assert!(out.contains("\"summary\":\"s\""));
-        assert!(!out.contains("\"files\""));
+    fn finalize_floor_answer_synthesizes_files_integer() {
+        // R3-B: the transport key is `writes`; the schema-required `files`
+        // integer is synthesized from the written set.
+        let text = r#"noise {"summary":"s","writes":[{"path":"a.txt","content":"hi"},{"path":"b.txt","content":"ho"}],"done":true} tail"#;
+        let out = finalize_floor_answer(text, 2);
+        assert!(out.contains("\"summary\":\"s\""), "out: {out}");
+        assert!(!out.contains("\"writes\""), "out: {out}");
         assert!(out.starts_with("noise "));
         assert!(out.ends_with(" tail"));
-        // non-JSON and objects without the transport field pass through
-        assert_eq!(strip_files_field("plain"), "plain");
-        assert_eq!(
-            strip_files_field("{\"summary\":\"s\",\"done\":true}"),
-            "{\"summary\":\"s\",\"done\":true}"
-        );
+        let v: Value = serde_json::from_str(out[6..out.len() - 5].trim()).unwrap();
+        assert_eq!(v["files"], 2);
+
+        // A model that emits the transport under the colliding `files` array
+        // key is repaired: the array is stripped and the integer synthesized.
+        let text = r#"{"summary":"s","files":[{"path":"a.txt","content":"hi"}],"done":true}"#;
+        let v: Value = serde_json::from_str(&finalize_floor_answer(text, 1)).unwrap();
+        assert_eq!(v["files"], 1);
+
+        // A numeric `files` the model emitted itself is kept.
+        let text = r#"{"summary":"s","files":7,"done":true}"#;
+        let v: Value = serde_json::from_str(&finalize_floor_answer(text, 99)).unwrap();
+        assert_eq!(v["files"], 7);
+
+        // non-JSON and objects without transport fields pass through intact
+        assert_eq!(finalize_floor_answer("plain", 0), "plain");
+        let v: Value =
+            serde_json::from_str(&finalize_floor_answer(r#"{"summary":"s","done":true}"#, 3))
+                .unwrap();
+        assert_eq!(v["files"], 3);
+    }
+
+    /// R3-B BLOCKER: a full curl-floor round-trip must produce output that
+    /// passes the implementer schema gate (`files` integer, no extra fields).
+    #[tokio::test]
+    async fn floor_round_trip_passes_the_implementer_schema_gate() {
+        use prompts::schema::{parse, ImplementerOutput, Role};
+        // Model answer exactly as CURL_FLOOR_PROTOCOL asks for it: schema
+        // fields + `writes` array, no `files` field at all.
+        let final_turn = r#"{"summary":"built it","run_command":"python3 -m http.server 8080","done":true,"blockers":[],"writes":[
+            {"path":"index.html","content":"<h1>hi</h1>"},
+            {"path":"assets/app.js","content":"console.log(1)"}
+        ]}"#;
+        let (text, cost) = curl_floor_loop("build it", |_: String| {
+            let text = final_turn.to_owned();
+            Box::pin(async move {
+                Ok(FloorTurnOutcome {
+                    text,
+                    done: true,
+                    parsed: true,
+                    cost: 0.01,
+                })
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(cost, 0.01);
+        let parsed: ImplementerOutput =
+            parse(Role::Implementer, &text).expect("floor answer must pass the schema gate");
+        assert_eq!(parsed.files, 2, "files synthesized from the written set");
+        assert_eq!(parsed.summary, "built it");
+        assert!(parsed.done);
+        // Multi-turn: the count is cumulative over the whole loop.
+        let n = std::cell::Cell::new(0usize);
+        let (text, _) = curl_floor_loop("build it", |_: String| {
+            let k = n.get() + 1;
+            n.set(k);
+            let text = if k == 1 {
+                r#"{"done":false,"writes":[{"path":"a.txt","content":"x"}]}"#.to_owned()
+            } else if k == 2 {
+                r#"{"done":false,"writes":[{"path":"a.txt","content":"x2"},{"path":"b.txt","content":"y"}]}"#.to_owned()
+            } else {
+                r#"{"summary":"done","run_command":"x","done":true,"blockers":[]}"#.to_owned()
+            };
+            let done = k == 3;
+            Box::pin(async move {
+                Ok(FloorTurnOutcome {
+                    text,
+                    done,
+                    parsed: true,
+                    cost: 0.0,
+                })
+            })
+        })
+        .await
+        .unwrap();
+        let parsed: ImplementerOutput =
+            parse(Role::Implementer, &text).expect("multi-turn floor answer must pass the gate");
+        assert_eq!(parsed.files, 2, "a.txt counted once, b.txt once");
     }
 
     #[test]
     fn floor_plan_sanitizes_untrusted_paths() {
+        // R3-B: transport key is `writes`; a legacy `files` array is accepted
+        // too (and stripped by finalize_floor_answer).
         let plan = floor_plan(
-            r#"{"done":false,"files":[
+            r#"{"done":false,"writes":[
                 {"path":"/etc/passwd","content":"contained"},
                 {"path":"../../escape","content":"no"},
                 {"path":"./src/./main.rs","content":"ok"}
@@ -989,6 +1101,19 @@ mod tests {
         assert!(!plan.parsed);
         assert!(!plan.done);
         assert!(plan.files.is_empty());
+        // legacy colliding `files` array is still parsed as write transport
+        let plan = floor_plan(r#"{"done":true,"files":[{"path":"a.txt","content":"c"}]}"#);
+        assert!(plan.parsed && plan.done);
+        assert_eq!(plan.files, vec![("a.txt".to_owned(), "c".to_owned())]);
+    }
+
+    /// R3-B: the floor protocol must not teach the model to emit the write
+    /// transport under the colliding `files` key (the implementer schema
+    /// requires `files` to be an integer).
+    #[test]
+    fn floor_protocol_uses_non_colliding_writes_key() {
+        assert!(CURL_FLOOR_PROTOCOL.contains("\"writes\" array"));
+        assert!(!CURL_FLOOR_PROTOCOL.contains("include a \"files\""));
     }
 
     #[test]
@@ -1028,6 +1153,11 @@ mod tests {
         assert_eq!(
             v["provider"]["sprites-gateway"]["options"]["baseURL"],
             format!("{GATEWAY_CUSTOM_API_BASE}/abc123")
+        );
+        // R3-B: a dummy apiKey entry is present (gateway injects real auth).
+        assert_eq!(
+            v["provider"]["sprites-gateway"]["options"]["apiKey"],
+            OPENCODE_DUMMY_API_KEY
         );
         assert_eq!(v["model"], "sprites-gateway/glm-5.3-flash");
         assert!(v["provider"]["sprites-gateway"]["models"]["glm-5.3-flash"].is_object());

@@ -179,7 +179,9 @@ async fn run_prompt_runs_the_curl_floor_and_parses_cost() {
             "FAKE_CURL_RESPONSE".to_owned(),
             response_path.to_string_lossy().into_owned(),
         )),
-        Some("swarm-work/x/lane-0"),
+        // R3-B: lane workdirs must live in the test tempdir, not in the
+        // source tree (leaked swarm-work/ artifacts).
+        Some(dir.path().join("lane-0").to_str().unwrap()),
     )
     .await
     .unwrap();
@@ -219,7 +221,8 @@ async fn run_prompt_cli_choice_returns_agent_stdout() {
             r#"{"summary":"agent done","files":2,"run_command":"x","done":true,"blockers":[]}"#
                 .to_owned(),
         )),
-        Some("swarm-work/x/lane-1"),
+        // R3-B: lane workdir in the test tempdir (leaked artifacts fix).
+        Some(dir.path().join("lane-1").to_str().unwrap()),
     )
     .await
     .unwrap();

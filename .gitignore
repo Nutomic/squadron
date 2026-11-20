@@ -8,3 +8,7 @@ crates/swarm/island/package-lock.json
 
 # R2-3#6: test artifact must not be tracked
 mock-sprites.json*
+
+# R3-B: harness/integration tests write lane workdirs through the mock sprite
+# CLI; those must live in a tempdir, never in the source tree
+crates/orchestrator/swarm-work/
