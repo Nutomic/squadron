@@ -389,12 +389,25 @@ async fn run_lane_attempt(
     transition(&ctx, &run_id, idx, LaneState::Done).await?;
     publish(&ctx, &run_id).await;
 
-    // artifacts at lane completion (after impl, before validation)
-    let workdir = lane_workdir(&ctx, &run_id, idx);
+    // artifacts at lane completion (after impl, before validation).
+    // Real mode pulls them FROM the sprite (`sprite exec` tar + tokei);
+    // test mode collects the local lane workdir to stay deterministic.
+    let artifacts_dir = artifacts::lane_artifacts_dir(&ctx.config, &run_id, idx);
     let console_tail = impl_out.console_tail.clone();
-    if let Ok((tarball, tokei_json, files_n, _loc_n)) =
+    let collected = if ctx.config.test_mode {
+        let workdir = lane_workdir(&ctx, &run_id, idx);
         artifacts::collect_artifacts(&ctx.config, &run_id, idx, &workdir, &console_tail).await
-    {
+    } else {
+        artifacts::collect_artifacts_from_sprite(
+            &ctx.sprite,
+            &sprite_name,
+            &sprite_workdir(&run_id, idx),
+            &artifacts_dir,
+            &console_tail,
+        )
+        .await
+    };
+    if let Ok((tarball, tokei_json, files_n, _loc_n)) = collected {
         let files_store = files_n.or(Some(impl_out.files as i64));
         let _ = ctx
             .store

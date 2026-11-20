@@ -161,3 +161,132 @@ pub async fn check_http_200(url: &str) -> bool {
         Err(_) => false,
     }
 }
+
+/// #4: collect artifacts FROM the sprite, not from the orchestrator's local
+/// disk: `sprite exec` a `tar -C workdir -czf - . | base64` pull plus a remote
+/// `tokei --output json`, then write both under the data dir.
+pub async fn collect_artifacts_from_sprite(
+    sprite: &sprites_client::SpriteClient,
+    sprite_name: &str,
+    workdir: &str,
+    dest_dir: &Path,
+    console_tail: &str,
+) -> Result<(String, String, Option<i64>, Option<i64>), String> {
+    tokio::fs::create_dir_all(dest_dir)
+        .await
+        .map_err(|e| format!("artifacts dir: {e}"))?;
+    let tarball_path = dest_dir.join("source.tar.gz");
+
+    let cd = |cmd: &str| format!("mkdir -p \"$SWARM_WORKDIR\" && cd \"$SWARM_WORKDIR\" && {cmd}");
+    let opts = sprites_client::ExecOptions::default().with_env("SWARM_WORKDIR", workdir);
+
+    // Stream the lane workdir back as base64 (binary-safe over the CLI).
+    let tar_out = sprite
+        .exec(sprite_name, &cd("tar -czf - . | base64"), &opts)
+        .await
+        .map_err(|e| format!("sprite tar pull: {e}"))?;
+    let b64: String = tar_out
+        .stdout
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let bytes = decode_base64(&b64).map_err(|e| format!("sprite tar pull decode: {e}"))?;
+    if bytes.is_empty() {
+        return Err("sprite tar pull: empty archive".to_owned());
+    }
+    tokio::fs::write(&tarball_path, &bytes)
+        .await
+        .map_err(|e| format!("write tarball: {e}"))?;
+
+    // Run tokei on the sprite itself.
+    let tokei_json = match sprite
+        .exec(sprite_name, &cd("tokei --output json ."), &opts)
+        .await
+    {
+        Ok(out) if out.exit_code == 0 && !out.stdout.trim().is_empty() => {
+            out.stdout.trim().to_owned()
+        }
+        _ => String::new(),
+    };
+    let (files_count, loc_count) = parse_tokei_totals(&tokei_json);
+
+    // Persist console tail alongside.
+    let tail_path = dest_dir.join("console_tail.txt");
+    let tail_trunc: String = console_tail
+        .chars()
+        .rev()
+        .take(4096)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    let _ = tokio::fs::write(&tail_path, &tail_trunc).await;
+
+    if files_count.is_none() {
+        return Err("sprite tokei produced no totals".to_owned());
+    }
+    Ok((
+        tarball_path.to_string_lossy().to_string(),
+        tokei_json,
+        files_count,
+        loc_count,
+    ))
+}
+
+/// Decode standard base64 (with or without padding) without pulling in an
+/// external base64 crate: 6-bit groups assembled into bytes.
+fn decode_base64(s: &str) -> Result<Vec<u8>, String> {
+    fn val(b: u8) -> Result<u8, String> {
+        match b {
+            b'A'..=b'Z' => Ok(b - b'A'),
+            b'a'..=b'z' => Ok(b - b'a' + 26),
+            b'0'..=b'9' => Ok(b - b'0' + 52),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            _ => Err(format!("invalid base64 byte {b}")),
+        }
+    }
+    let trimmed: Vec<u8> = s
+        .bytes()
+        .filter(|b| !b.is_ascii_whitespace() && *b != b'=')
+        .collect();
+    let mut out = Vec::with_capacity(trimmed.len() / 4 * 3);
+    for chunk in trimmed.chunks(4) {
+        if chunk.len() == 1 {
+            return Err("truncated base64".to_owned());
+        }
+        let mut n: u32 = 0;
+        for (i, b) in chunk.iter().enumerate() {
+            n |= (val(*b)? as u32) << (18 - 6 * i);
+        }
+        out.push((n >> 16) as u8);
+        if chunk.len() > 2 {
+            out.push((n >> 8) as u8);
+        }
+        if chunk.len() > 3 {
+            out.push(n as u8);
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_decode_round_trips() {
+        for sample in ["aGVsbG8=", "aGVsbG8gd29ybGQ=", "YQ==", ""] {
+            let expected: &[u8] = match sample {
+                "aGVsbG8=" => b"hello",
+                "aGVsbG8gd29ybGQ=" => b"hello world",
+                "YQ==" => b"a",
+                _ => b"",
+            };
+            assert_eq!(decode_base64(sample).unwrap(), expected);
+        }
+        // whitespace and missing padding tolerated
+        assert_eq!(decode_base64("aGVs bG8\n").unwrap(), b"hello");
+        assert!(decode_base64("!!!").is_err());
+    }
+}
