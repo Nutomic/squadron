@@ -67,6 +67,23 @@ impl AppState {
         }
     }
 
+    /// R2 finding 1: construct the machine judge client when OPENCODE_KEY is
+    /// set. Without the key, log a clear warning and keep the deterministic
+    /// fallback judge (dev/test only); production must never fabricate
+    /// verdicts, so it requires the key.
+    pub fn machine_llm_from_env() -> Option<llm_gateway::MachineLlmClient> {
+        match llm_gateway::MachineLlmClient::from_env() {
+            Ok(llm) => Some(llm),
+            Err(_) => {
+                tracing::warn!(
+                    "OPENCODE_KEY not set; judge will use the deterministic fallback (dev/test only). \
+                     Set OPENCODE_KEY to enable the real machine judge."
+                );
+                None
+            }
+        }
+    }
+
     pub async fn get_hub(&self, run_id: &str) -> Option<SseHub> {
         self.hubs.read().await.get(run_id).cloned()
     }
@@ -118,5 +135,26 @@ impl AppState {
                 .map_err(|e| e.to_string())?;
         }
         Ok(run)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static ENV_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
+    /// R2 finding 1: the machine judge is only constructed when OPENCODE_KEY is
+    /// present; without it the deterministic fallback stays in place.
+    #[test]
+    fn machine_llm_from_env_requires_opencode_key() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("OPENCODE_KEY");
+        assert!(AppState::machine_llm_from_env().is_none());
+        std::env::set_var("OPENCODE_KEY", "test-only-key");
+        assert!(AppState::machine_llm_from_env().is_some());
+        std::env::remove_var("OPENCODE_KEY");
+        assert!(AppState::machine_llm_from_env().is_none());
     }
 }

@@ -27,9 +27,15 @@ async fn main() {
     }
     config.test_mode = std::env::var("SWARM_TEST_MODE").as_deref() == Ok("1");
 
-    let state = AppState::new(store, SpriteClient::from_env(), config)
+    let mut state = AppState::new(store, SpriteClient::from_env(), config)
         .with_fixtures(std::env::var("SWARM_FIXTURES").as_deref() == Ok("1"))
         .with_static_dir(static_dir());
+    // R2 finding 1: the real machine judge when OPENCODE_KEY is set; otherwise
+    // machine_llm_from_env logs a warning and the deterministic fallback (only
+    // acceptable in dev/test) stays in place.
+    if let Some(llm) = swarm::AppState::machine_llm_from_env() {
+        state = state.with_machine_llm(llm);
+    }
     let app = router(Arc::new(state));
 
     let addr = match std::env::var("BIND") {
