@@ -209,7 +209,7 @@ async fn slot_exhaustion_queues_lanes_and_completes() {
     let final_run = wait_run(&store, &run.id, 60).await;
     assert_eq!(final_run.status, "judged");
     for lane in store.list_lanes(&run.id).await.unwrap() {
-        assert_eq!(lane.state, "validated", "lane {:?}", lane.idx);
+        assert_eq!(lane.state, "judged", "lane {:?}", lane.idx);
     }
     assert_eq!(ctx.slots.available(), 1, "permits released after the run");
 }
@@ -257,5 +257,131 @@ async fn run_fails_when_fewer_than_two_lanes_validate() {
     assert_eq!(final_run.winner_lane, None);
     for lane in store.list_lanes(&run.id).await.unwrap() {
         assert_eq!(lane.state, "failed", "lane {:?}", lane.idx);
+    }
+}
+
+fn canned_fail() -> String {
+    serde_json::json!({
+        "verdict": "fail",
+        "features": [],
+        "bugs": ["page does not render"],
+        "security": "ok",
+        "quality_score": 20.0,
+        "summary": "Detailed validation: implementation does not meet the brief."
+    })
+    .to_string()
+}
+
+/// Per-lane validator output: the listed lanes report fail, the rest pass. The
+/// mock exec runs the command with the lane workdir as cwd, so $PWD selects it.
+fn per_lane_val_command(fail_lanes: &[i64], fail_json: &str, pass_json: &str) -> String {
+    let fail = fail_json.replace('\'', "'\\''");
+    let pass = pass_json.replace('\'', "'\\''");
+    let patterns = fail_lanes
+        .iter()
+        .map(|i| format!("*lane-{i}*"))
+        .collect::<Vec<_>>()
+        .join("|");
+    format!("case \"$PWD\" in {patterns}) echo '{fail}' ;; *) echo '{pass}' ;; esac")
+}
+
+/// #24 (round 2): a validator fail verdict excludes the lane from the judge
+/// set: the run is judged over the passing lanes only, and the failing lane
+/// never becomes the winner.
+#[tokio::test(flavor = "multi_thread")]
+async fn validator_fail_verdict_excludes_lane_from_judge_set() {
+    let _env = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("MOCK_SPRITE_STATE", dir.path().join("mock-state.json"));
+    std::env::set_var("MOCK_COLD_START_MS", "0");
+    std::env::set_var("MOCK_CREATE_MS", "0");
+    std::env::set_var("MOCK_EXEC_MS", "0");
+
+    let (ctx, store) = test_ctx(dir.path(), 10, Duration::from_secs(30)).await;
+
+    let harness = HarnessMode::Command {
+        impl_command: format!("echo '{}'", canned_impl().replace('\'', "'\\''")),
+        val_command: per_lane_val_command(&[0], &canned_fail(), &canned_val()),
+    };
+    let run = orchestrator::start_run(
+        ctx.clone(),
+        RunRequest {
+            brief: "Build a 90s arcade game".to_owned(),
+            n_lanes: 3,
+            harness,
+        },
+    )
+    .await
+    .unwrap();
+
+    let final_run = wait_run(&store, &run.id, 30).await;
+    assert_eq!(
+        final_run.status, "judged",
+        "two passing lanes can be judged"
+    );
+    // The judge set is {1, 2}: the fallback judge crowns the first passing lane.
+    assert_eq!(
+        final_run.winner_lane,
+        Some(1),
+        "winner must be a passing lane"
+    );
+
+    let mut seen_fail_excluded = false;
+    for lane in store.list_lanes(&run.id).await.unwrap() {
+        if lane.idx == 0 {
+            // Excluded from the judge set: never judged, never the winner.
+            assert_eq!(lane.val_verdict.as_deref(), Some("fail"), "lane 0");
+            assert_eq!(lane.state, "validated", "lane 0 not judged");
+            seen_fail_excluded = true;
+        } else {
+            assert_eq!(
+                lane.val_verdict.as_deref(),
+                Some("pass"),
+                "lane {}",
+                lane.idx
+            );
+            assert_eq!(lane.state, "judged", "lane {}", lane.idx);
+        }
+    }
+    assert!(seen_fail_excluded, "lane 0 must carry the fail verdict");
+}
+
+/// #24 (round 2): with fewer than two passing verdicts there is no judge set,
+/// so the run fails even though every lane reached validation.
+#[tokio::test(flavor = "multi_thread")]
+async fn single_pass_verdict_fails_run_without_judging() {
+    let _env = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("MOCK_SPRITE_STATE", dir.path().join("mock-state.json"));
+    std::env::set_var("MOCK_COLD_START_MS", "0");
+    std::env::set_var("MOCK_CREATE_MS", "0");
+    std::env::set_var("MOCK_EXEC_MS", "0");
+
+    let (ctx, store) = test_ctx(dir.path(), 10, Duration::from_secs(30)).await;
+
+    let harness = HarnessMode::Command {
+        impl_command: format!("echo '{}'", canned_impl().replace('\'', "'\\''")),
+        val_command: per_lane_val_command(&[1, 2], &canned_fail(), &canned_val()),
+    };
+    let run = orchestrator::start_run(
+        ctx.clone(),
+        RunRequest {
+            brief: "Build a 90s arcade game".to_owned(),
+            n_lanes: 3,
+            harness,
+        },
+    )
+    .await
+    .unwrap();
+
+    let final_run = wait_run(&store, &run.id, 30).await;
+    assert_eq!(
+        final_run.status, "failed",
+        "only one passing lane: no judge"
+    );
+    assert_eq!(final_run.winner_lane, None);
+    for lane in store.list_lanes(&run.id).await.unwrap() {
+        assert_eq!(lane.state, "validated", "lane {:?}", lane.idx);
+        assert!(lane.val_verdict.is_some(), "verdict recorded");
     }
 }

@@ -3,10 +3,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use tokio::sync::{mpsc, Notify, RwLock};
+use tokio::sync::{mpsc, RwLock};
 
-use crate::config::now_ms;
-use store::Store;
+use store::{now_ms, Store};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScreenshotState {
@@ -93,7 +92,6 @@ pub struct ScreenshotQueue {
     tx: mpsc::Sender<ScreenshotJob>,
     store: Store,
     pending: Arc<RwLock<HashMap<(String, i64), String>>>, // value: terminal state string
-    notify: Arc<Notify>,
 }
 
 impl ScreenshotQueue {
@@ -102,9 +100,7 @@ impl ScreenshotQueue {
         let store_worker = store.clone();
         let pending: Arc<RwLock<HashMap<(String, i64), String>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        let notify = Arc::new(Notify::new());
         let pending_worker = pending.clone();
-        let notify_worker = notify.clone();
         tokio::spawn(async move {
             // serial: one-at-a-time by nature of single consumer loop
             while let Some(job) = rx.recv().await {
@@ -164,15 +160,9 @@ impl ScreenshotQueue {
                         .await
                         .insert((job.run_id.clone(), job.lane_idx), state.clone());
                 }
-                notify_worker.notify_waiters();
             }
         });
-        Self {
-            tx,
-            store,
-            pending,
-            notify,
-        }
+        Self { tx, store, pending }
     }
 
     /// Lazy request: enqueue if not already done/queued/rendering. Returns current state string.
@@ -216,9 +206,5 @@ impl ScreenshotQueue {
             return "failed".to_owned();
         }
         "queued".to_owned()
-    }
-
-    pub fn notify(&self) -> Arc<Notify> {
-        self.notify.clone()
     }
 }

@@ -105,7 +105,7 @@ impl AppState {
     }
 
     async fn create_queued_run(&self, brief: &str, n_lanes: usize) -> Result<Run, String> {
-        let now = crate::snapshot::now_ms();
+        let now = store::now_ms();
         let run = self
             .store
             .create_run(brief, n_lanes as i64, now)

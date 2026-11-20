@@ -134,10 +134,10 @@ async fn lane_retry_destroys_sprite_and_recovers() {
     );
 
     // At least one lane hit the transient failure, logged the attempt, and
-    // recovered; every lane ends validated.
+    // recovered; every lane ends judged (validated -> judged after the winner).
     let mut saw_retry = false;
     for lane in store.list_lanes(&run.id).await.unwrap() {
-        assert_eq!(lane.state, "validated", "lane {} recovered", lane.idx);
+        assert_eq!(lane.state, "judged", "lane {} recovered", lane.idx);
         let events = store.list_lane_events(&run.id, lane.idx).await.unwrap();
         if events
             .iter()

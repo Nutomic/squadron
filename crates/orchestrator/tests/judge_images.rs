@@ -137,3 +137,64 @@ async fn judge_without_images_uses_text_only_request() {
     let bodies = captured.lock().await;
     assert!(bodies[0]["messages"][1]["content"].is_string());
 }
+
+/// #24: the judge may only crown a winner from the validated lane set; a
+/// verdict naming a lane outside the reports is rejected by the gate.
+#[tokio::test(flavor = "multi_thread")]
+async fn judge_winner_outside_validated_lanes_is_rejected() {
+    async fn rogue_stub(Json(_body): Json<Value>) -> (StatusCode, Json<Value>) {
+        (
+            StatusCode::OK,
+            Json(json!({
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": json!({
+                    "ranking": [0, 9], "winner": 9,
+                    "verdict_card": "Lane 9 wins; criteria met.",
+                    "reasons": "rogue lane"
+                }).to_string()}}],
+                "usage": {"opencode": {"allowance": {"usd": 0.01}}}
+            })),
+        )
+    }
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().route("/chat/completions", post(rogue_stub));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let client = MachineLlmClient::new("test-key", format!("http://{addr}/chat/completions"));
+
+    let reports: Vec<prompts::LaneJudgeReport> = [0usize, 1]
+        .iter()
+        .map(|idx| {
+            prompts::LaneJudgeReport::new(
+                *idx,
+                prompts::ValidatorOutput {
+                    verdict: prompts::Verdict::Pass,
+                    summary: "ok".to_owned(),
+                    features: prompts::TextOrList::Text("feature".to_owned()),
+                    bugs: prompts::TextOrList::Text(String::new()),
+                    security: prompts::TextOrList::Text(String::new()),
+                    quality_score: 8.0,
+                },
+            )
+        })
+        .collect();
+    let extracts = vec!["<extract>".to_owned(), "<extract>".to_owned()];
+    let images = vec![None, None];
+
+    let err = judge::run_judge(
+        &client,
+        &reports,
+        &extracts,
+        &images,
+        std::time::Duration::from_secs(10),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.contains("permutation"),
+        "rejection must name the permutation gate, got: {err}"
+    );
+}

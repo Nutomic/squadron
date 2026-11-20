@@ -1331,7 +1331,6 @@ dependencies = [
  "base64 0.22.1",
  "chromiumoxide",
  "chromiumoxide_cdp",
- "chrono",
  "flate2",
  "futures",
  "llm-gateway",

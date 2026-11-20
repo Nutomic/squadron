@@ -9,10 +9,10 @@ use prompts::{
 };
 use serde_json::Value;
 use sprites_client::{ExecOptions, SpriteClient};
-use store::{Run, Store};
+use store::{now_ms, Run, Store};
 
 use crate::artifacts;
-use crate::config::{ms_after, now_ms, PipelineConfig};
+use crate::config::{ms_after, PipelineConfig};
 use crate::harness::{self, HarnessCache};
 use crate::judge;
 use crate::lane::LaneState;
@@ -179,7 +179,8 @@ async fn execute_run(
         let _ = h.await;
     }
 
-    // Judge if >=2 succeeded (validated lanes)
+    // Judge if >=2 lanes passed validation (validator fail verdicts and
+    // failed lanes are excluded from the judge set).
     let lanes = ctx
         .store
         .list_lanes(&run_id)
@@ -187,7 +188,7 @@ async fn execute_run(
         .map_err(|e| e.to_string())?;
     let validated: Vec<_> = lanes
         .iter()
-        .filter(|l| l.state == "validated")
+        .filter(|l| l.state == "validated" && l.val_verdict.as_deref() == Some("pass"))
         .cloned()
         .collect();
     if validated.len() >= 2 {
@@ -768,6 +769,10 @@ async fn run_judge_phase(
         )
         .await
         .map_err(|e| e.to_string())?;
+    // Judged lanes leave the validated state once the winner is crowned.
+    for l in validated {
+        let _ = transition(ctx, run_id, l.idx, LaneState::Judged).await;
+    }
     for l in &lanes {
         let _ = ctx
             .store
@@ -817,11 +822,9 @@ async fn transition(
 }
 
 pub async fn publish(ctx: &PipelineCtx, run_id: &str) {
-    if let (Ok(Some(run)), Ok(lanes)) = (
-        ctx.store.get_run(run_id).await,
-        ctx.store.list_lanes(run_id).await,
-    ) {
-        let snap = snapshot::snapshot_for(&run, &lanes, now_ms());
+    // #7: the hub payload is the single source for live subscribers; the web
+    // layer only rebuilds from the DB as a late-subscriber fallback.
+    if let Some(snap) = snapshot::build_snapshot(&ctx.store, run_id).await {
         ctx.sse.publish(snap);
     }
 }
@@ -916,24 +919,13 @@ async fn gate_injection_free(
 }
 
 /// Parse a cost figure out of the harness output when the gateway reported
-/// usage.opencode.allowance inline; 0.0 when absent.
+/// usage.opencode.allowance inline; 0.0 when absent. Reuses the single cost
+/// parser in harness.rs over the JSON candidates found in the agent output.
 fn cost_from_output(text: &str) -> Option<f64> {
     harness::json_candidates(text)
         .iter()
         .rev()
-        .find_map(|cand| {
-            let v: Value = serde_json::from_str(cand).ok()?;
-            let usage = v.get("usage")?;
-            let oc = usage.get("opencode")?;
-            match oc {
-                Value::Number(n) => n.as_f64(),
-                Value::String(s) => s.parse().ok(),
-                Value::Object(o) => ["allowance", "cost", "cost_usd", "total"]
-                    .iter()
-                    .find_map(|k| o.get(*k).and_then(|x| x.as_f64())),
-                _ => None,
-            }
-        })
+        .find_map(|cand| harness::chat_response_cost(cand))
 }
 
 /// #20: lanes.error is a fixed class plus a short, ASCII-safe excerpt — raw

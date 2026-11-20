@@ -133,38 +133,11 @@ async fn sprite_recipe_uses_gateway_headers_without_auth() {
         .iter()
         .any(|(k, _)| k.eq_ignore_ascii_case("authorization")));
 
-    let capture = Capture::default();
-    let seen = capture.clone();
-    let router = Router::new().route(
-        "/chat/completions",
-        post(move |headers: HeaderMap, Json(body): Json<Value>| {
-            let seen = seen.clone();
-            async move {
-                seen.record(&headers, &body);
-                Json(response("report", json!({"usd": 0.01})))
-            }
-        }),
-    );
-    let port = serve(router).await;
-    let recipe = recipe.with_endpoint(format!("http://127.0.0.1:{port}/chat/completions"));
-    let result = recipe.chat(&recipe.build("system", "user")).await.unwrap();
-    assert_eq!(result.text().as_deref(), Some("report"));
-    assert_eq!(result.cost_usd(), Some(0.01));
-    assert_eq!(
-        capture.bodies.lock().unwrap()[0]["reasoning_effort"],
-        json!("low")
-    );
-    assert_eq!(
-        capture.header(SESSION_HEADER).as_deref(),
-        Some("swarm-lane-7")
-    );
-    assert_eq!(capture.header("user-agent").as_deref(), Some(USER_AGENT));
-    assert!(capture.header("authorization").is_none());
-
+    let recipe = recipe.with_endpoint("https://example.invalid/chat/completions");
     let curl = recipe
         .curl_command(&recipe.build("system", "user"))
         .unwrap();
-    assert!(curl.contains(GATEWAY_ENDPOINT) || curl.contains(&format!("127.0.0.1:{port}")));
+    assert!(curl.contains(GATEWAY_ENDPOINT) || curl.contains("example.invalid"));
     assert!(curl.contains(SESSION_HEADER));
     assert!(!curl.to_ascii_lowercase().contains("authorization"));
 }

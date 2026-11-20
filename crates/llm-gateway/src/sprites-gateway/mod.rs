@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::types::DEFAULT_REASONING_EFFORT;
-use crate::{ChatRequest, LlmError, MessageContent, USER_AGENT};
+use crate::{ChatRequest, LlmError, USER_AGENT};
 
 pub const GATEWAY_ENDPOINT: &str =
     "https://api.sprites.dev/v1/gateway/custom_api/sanCSEiLn9Np-G_Y5q2jKA/chat/completions";
@@ -78,28 +78,6 @@ impl SpriteRecipe {
             .system(system)
             .user(user)
             .reasoning_effort(self.reasoning_effort.clone())
-    }
-
-    pub fn build_with_parts(&self, system: &str, parts: Vec<crate::ContentPart>) -> ChatRequest {
-        ChatRequest::new(self.model.clone())
-            .system(system)
-            .message(crate::ChatMessage::new(
-                "user",
-                MessageContent::Parts(parts),
-            ))
-            .reasoning_effort(self.reasoning_effort.clone())
-    }
-
-    pub async fn chat(&self, request: &ChatRequest) -> Result<crate::ChatResponse, LlmError> {
-        let client = reqwest::Client::new();
-        crate::transport::post_chat(
-            &client,
-            &self.endpoint,
-            &self.headers(),
-            request,
-            self.timeout,
-        )
-        .await
     }
 
     pub fn curl_command(&self, request: &ChatRequest) -> Result<String, LlmError> {

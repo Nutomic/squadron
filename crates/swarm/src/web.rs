@@ -342,10 +342,15 @@ async fn events(State(state): State<SharedState>, Path(run_id): Path<String>) ->
                     tokio::select! {
                         _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
                         msg = hub_rx.recv() => {
-                            hub_closed = matches!(
-                                msg,
-                                Err(tokio::sync::broadcast::error::RecvError::Closed)
-                            );
+                            // #7: the hub payload is the live source; the DB
+                            // rebuild below is only the late-subscriber fallback.
+                            match msg {
+                                Ok(snap) => snapshot = Some(snap),
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                    hub_closed = true
+                                }
+                                Err(_) => {}
+                            }
                         }
                     }
                 }

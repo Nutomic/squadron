@@ -131,8 +131,8 @@ async fn smoke_pipeline_mock_sprite_n3_judged_and_persisted() {
     assert_eq!(lanes.len(), 3);
     for lane in &lanes {
         assert_eq!(
-            lane.state, "validated",
-            "lane {} should be validated, got {} err={:?}",
+            lane.state, "judged",
+            "lane {} should be judged after the winner is crowned, got {} err={:?}",
             lane.idx, lane.state, lane.error
         );
         assert_eq!(lane.val_verdict.as_deref(), Some("pass"));

@@ -50,10 +50,6 @@ impl Default for PipelineConfig {
     }
 }
 
-pub fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
-
 pub fn ms_after(base: i64, dur: Duration) -> i64 {
     base + dur.as_millis() as i64
 }

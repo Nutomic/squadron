@@ -413,15 +413,7 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         ensure_lane(result.rows_affected(), run_id, idx)?;
-        append_event_tx(
-            &mut tx,
-            run_id,
-            idx,
-            now_wall_ms(),
-            "cost",
-            &delta.to_string(),
-        )
-        .await?;
+        append_event_tx(&mut tx, run_id, idx, now_ms(), "cost", &delta.to_string()).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -522,7 +514,9 @@ async fn append_event_tx(
     Ok(assigned)
 }
 
-fn now_wall_ms() -> i64 {
+/// Single shared wall-clock millisecond helper for the whole workspace
+/// (pipelines, snapshots, and the store itself all stamp events with it).
+pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
