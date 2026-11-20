@@ -216,6 +216,7 @@ async fn run_lane(
             Ok(()) => return Ok(()),
             Err(e) => {
                 let transient = is_transient_error(&e);
+                let harness_failure = is_harness_error(&e);
                 let ts = now_ms();
                 let _ = ctx
                     .store
@@ -224,10 +225,17 @@ async fn run_lane(
                         idx,
                         ts,
                         "log",
-                        &format!("lane attempt {attempts} failed: {e}"),
+                        &format!(
+                            "lane attempt {attempts} failed{}: {e}",
+                            if harness_failure {
+                                " (harness escalation)"
+                            } else {
+                                ""
+                            }
+                        ),
                     )
                     .await;
-                if transient && attempts < max_attempts {
+                if (transient || harness_failure) && attempts < max_attempts {
                     // #8: a retry cannot succeed while the previous sprite
                     // still exists (deterministic name, real `sprite create`
                     // rejects duplicates). Destroy --force it and reset the
@@ -271,6 +279,15 @@ fn is_transient_error(e: &str) -> bool {
         || l.contains("503")
         || l.contains("connection")
         || l.contains("spawn")
+}
+
+/// R2-2: errors attributable to the coding-agent harness chain (agent exit,
+/// unusable schema output, curl-floor exhaustion). They escalate on retry:
+/// the failed choice is blacklisted and the next chain member is probed,
+/// within the existing per-lane retry budget.
+fn is_harness_error(e: &str) -> bool {
+    let l = e.to_lowercase();
+    l.contains("harness[") || l.contains("schema gate failed") || l.contains("curl floor")
 }
 
 async fn run_lane_attempt(
@@ -534,6 +551,7 @@ async fn run_implementer(
     variant_json: &str,
     harness: &HarnessMode,
 ) -> Result<ImplRunResult, String> {
+    let mut used_choice: Option<harness::HarnessChoice> = None;
     let stdout = match harness {
         HarnessMode::Command { impl_command, .. } => {
             let workdir = lane_workdir(ctx, run_id, idx);
@@ -581,19 +599,29 @@ async fn run_implementer(
                     &format!("harness choice: {}", run.choice.as_str()),
                 )
                 .await;
+            used_choice = Some(run.choice);
             run.output
         }
     };
     let stdout = stdout.trim().to_string();
     let parsed: ImplementerOutput =
-        gate_last_json(Role::Implementer, &stdout, &GateOptions::default()).map_err(|e| {
-            // the raw agent output is untrusted data: name the gate failure
-            // and its size, never echo the payload itself
-            format!(
-                "implementer: schema gate failed ({e}; output {} bytes, not stored)",
-                stdout.len()
-            )
-        })?;
+        match gate_last_json(Role::Implementer, &stdout, &GateOptions::default()) {
+            Ok(v) => v,
+            Err(e) => {
+                // R2-2: a schema-gate failure is harness-attributable (the agent
+                // produced unusable output); blacklist the choice so the retry
+                // probes the next chain member within the lane retry budget.
+                if let Some(c) = used_choice {
+                    ctx.harness_cache.invalidate_choice(c).await;
+                }
+                return Err(format!(
+                    // the raw agent output is untrusted data: name the gate failure
+                    // and its size, never echo the payload itself
+                    "implementer: schema gate failed ({e}; output {} bytes, not stored)",
+                    stdout.len()
+                ));
+            }
+        };
     // #13: honor the implementer's own report; a not-done or blocked claim is
     // a lane failure before artifacts/validation.
     if !parsed.done {
@@ -624,6 +652,7 @@ async fn run_validator(
     impl_summary: &str,
     harness: &HarnessMode,
 ) -> Result<ValRunResult, String> {
+    let mut used_choice: Option<harness::HarnessChoice> = None;
     let stdout = match harness {
         HarnessMode::Command { val_command, .. } => {
             let workdir = lane_workdir(ctx, run_id, idx);
@@ -665,12 +694,23 @@ async fn run_validator(
             )
             .await
             .map_err(|e| format!("validator: {e}"))?;
+            used_choice = Some(run.choice);
             run.output
         }
     };
     let stdout = stdout.trim().to_string();
-    let parsed: ValidatorOutput = gate_last_json(Role::Validator, &stdout, &GateOptions::default())
-        .map_err(|e| format!("validator: schema gate failed ({e})"))?;
+    let parsed: ValidatorOutput =
+        match gate_last_json(Role::Validator, &stdout, &GateOptions::default()) {
+            Ok(v) => v,
+            Err(e) => {
+                // R2-2: a schema-gate failure is harness-attributable; blacklist
+                // the choice so the retry probes the next chain member.
+                if let Some(c) = used_choice {
+                    ctx.harness_cache.invalidate_choice(c).await;
+                }
+                return Err(format!("validator: schema gate failed ({e})"));
+            }
+        };
     let _ = gate_injection_free(Role::Validator, &run_id, idx, &stdout, ctx).await;
     // Persist the full report (features/bugs/security) so the judge and the
     // lane detail view can be hydrated from the store.
@@ -978,6 +1018,29 @@ mod tests {
     #[test]
     fn tail_4k_short_strings_unchanged() {
         assert_eq!(tail_4k("short"), "short");
+    }
+
+    /// R2-2: harness-attributable failures escalate on retry; lane-level
+    /// verdicts and infra timeouts do not.
+    #[test]
+    fn is_harness_error_matches_harness_failures_only() {
+        assert!(is_harness_error(
+            "implementer: schema gate failed (missing field `summary`)"
+        ));
+        assert!(is_harness_error(
+            "validator: schema gate failed (invalid json)"
+        ));
+        assert!(is_harness_error(
+            "harness[opencode]: agent exited with failure: sprite CLI `...` exited with status 1"
+        ));
+        assert!(is_harness_error(
+            "harness[curl-loop]: no message text in response"
+        ));
+        assert!(!is_harness_error("implementer: deadline exceeded"));
+        assert!(!is_harness_error("implementer: reported done=false"));
+        assert!(!is_harness_error(
+            "implementer: live URL did not answer 200"
+        ));
     }
 
     #[test]
