@@ -1,14 +1,373 @@
 @import 'tailwindcss';
 @plugin 'daisyui' {
-  themes: dark --default;
+  themes: squadron --default;
 }
 @source '../../templates/**/*.html';
 @source './';
+@plugin 'daisyui/theme' {
+  name: 'squadron';
+  default: true;
+  preferslight: true;
+  color-scheme: light;
 
-html {
-  color-scheme: dark;
+  /* surfaces */
+  --color-base-100: #ffffff;
+  --color-base-200: #f7f7f8;
+  --color-base-300: #efeff1;
+  --color-base-content: #18181b;
+
+  /* brand */
+  --color-primary: #4f46e5;
+  --color-primary-content: #ffffff;
+  --color-secondary: #52525b;
+  --color-secondary-content: #ffffff;
+  --color-accent: #b45309;
+  --color-accent-content: #ffffff;
+  --color-neutral: #18181b;
+  --color-neutral-content: #ffffff;
+
+  /* semantic state */
+  --color-info: #2563eb;
+  --color-info-content: #ffffff;
+  --color-success: #16a34a;
+  --color-success-content: #ffffff;
+  --color-warning: #d97706;
+  --color-warning-content: #ffffff;
+  --color-error: #dc2626;
+  --color-error-content: #ffffff;
+
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
 }
 
+/* Two-font contract: Inter for human copy, JetBrains Mono for machine values. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/static/fonts/inter-var-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/static/fonts/inter-var-latin-italic.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('/static/fonts/jetbrains-mono-var-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: italic;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('/static/fonts/jetbrains-mono-var-latin-italic.woff2') format('woff2');
+}
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Machine facts: always mono, always tabular. */
+.mono-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* 12px uppercase meta label */
+.label-meta {
+  font-size: 11px;
+  line-height: 1.4;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #71717a;
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------
+   State/verdict chips: soft bg, 600-weight colored text, leading dot
+   --------------------------------------------------------------- */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 9999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.chip::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: currentColor;
+  flex: none;
+}
+.chip-no-dot::before {
+  display: none;
+}
+.chip-neutral {
+  background: #f4f4f5;
+  color: #71717a;
+}
+.chip-success {
+  background: #dcfce7;
+  color: #16a34a;
+}
+.chip-warning {
+  background: #fef3c7;
+  color: #d97706;
+}
+.chip-error {
+  background: #fee2e2;
+  color: #dc2626;
+}
+.chip-info {
+  background: #dbeafe;
+  color: #2563eb;
+}
+.chip-winner {
+  background: #fef3c7;
+  color: #b45309;
+}
+/* Pulsing dot for in-progress states (judge-pending, running) */
+.chip-pulse::before {
+  animation: chip-pulse 1.6s ease-in-out infinite;
+}
+@keyframes chip-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Sample-brief chips on the submission form */
+.chip-sample {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  border: 1px solid #e4e4e7;
+  background: #ffffff;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: #52525b;
+  transition:
+    border-color 150ms ease,
+    color 150ms ease,
+    background-color 150ms ease;
+  cursor: pointer;
+}
+.chip-sample:hover {
+  border-color: #4f46e5;
+  color: #4f46e5;
+  background: #eef2ff;
+}
+
+/* ---------------------------------------------------------------
+   Lane identity hues: dot / left border / sparkline stroke only
+   --------------------------------------------------------------- */
+.lane-hue-0 {
+  --lane-hue: #0d9488;
+}
+.lane-hue-1 {
+  --lane-hue: #7c3aed;
+}
+.lane-hue-2 {
+  --lane-hue: #f59e0b;
+}
+.lane-hue-3 {
+  --lane-hue: #f43f5e;
+}
+.lane-hue-4 {
+  --lane-hue: #0284c7;
+}
+.lane-hue-5 {
+  --lane-hue: #65a30d;
+}
+.lane-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--lane-hue, #71717a);
+  flex: none;
+}
+.lane-edge {
+  border-left: 3px solid var(--lane-hue, transparent);
+}
+
+/* ---------------------------------------------------------------
+   Winner ribbon: slim gold banner, the only gold on the card
+   --------------------------------------------------------------- */
+.win-ribbon {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #b45309;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 4px 12px;
+  border-bottom-right-radius: 8px;
+}
+.lane-card-winner {
+  border-top: 2px solid #b45309;
+}
+
+/* ---------------------------------------------------------------
+   Cursor-style browser-chrome frame for live previews
+   --------------------------------------------------------------- */
+.browser-frame {
+  border: 1px solid #e4e4e7;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #ffffff;
+}
+.browser-frame-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #f7f7f8;
+  border-bottom: 1px solid #efeff1;
+}
+.browser-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  flex: none;
+}
+.browser-url {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #ffffff;
+  border: 1px solid #efeff1;
+  border-radius: 9999px;
+  padding: 3px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #3f3f46;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------------------------------------------------------------
+   Console tail: dark block, mono, quiet green-on-dark text
+   --------------------------------------------------------------- */
+.console-block {
+  background: #18181b;
+  color: #a1a1aa;
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow: auto;
+}
+.console-block strong {
+  color: #4ade80;
+  font-weight: 500;
+}
+
+/* ---------------------------------------------------------------
+   Checkly-grammar runs table: hairline separators, ~44px rows
+   --------------------------------------------------------------- */
+.runs-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.runs-table th {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: #71717a;
+  text-align: left;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e4e4e7;
+  background: #ffffff;
+}
+.runs-table td {
+  height: 44px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #efeff1;
+  vertical-align: middle;
+}
+.runs-table tbody tr {
+  transition: background-color 150ms ease;
+  cursor: pointer;
+}
+.runs-table tbody tr:hover {
+  background: #fafafa;
+}
+
+/* Indeterminate thin progress bar for running lanes */
+.progress-thin {
+  position: relative;
+  height: 2px;
+  border-radius: 9999px;
+  background: #efeff1;
+  overflow: hidden;
+}
+.progress-thin::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  border-radius: 9999px;
+  background: #4f46e5;
+  animation: progress-slide 1.4s ease-in-out infinite;
+}
+@keyframes progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+
+/* Dialog / popover elevation only — hierarchy stays 1px borders */
+.modal-box {
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.08);
+}
+
+/* htmx swap indicator */
 .htmx-indicator {
   opacity: 0;
   transition: opacity 200ms ease-in;

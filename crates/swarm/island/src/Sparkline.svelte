@@ -14,11 +14,30 @@
       })
       .join(' ');
   });
+
+  let area = $derived.by(() => {
+    if (!points) return '';
+    return `0,20 ${points} 100,20`;
+  });
+
+  let total = $derived(series.length ? series[series.length - 1] : null);
 </script>
 
 {#if points}
-  <svg viewBox="0 0 100 20" preserveAspectRatio="none" class="w-full h-5" aria-hidden="true">
-    <polyline {points} fill="none" stroke="currentColor" stroke-width="1.5" class="text-accent/70" vector-effect="non-scaling-stroke" />
-  </svg>
-  <div class="text-[10px] text-base-content/40">cost over time</div>
+  <div class="flex items-center gap-2 mt-0.5">
+    <svg viewBox="0 0 100 20" preserveAspectRatio="none" class="w-full h-5" aria-hidden="true">
+      <polygon points={area} fill="var(--lane-hue, #71717A)" opacity="0.1" />
+      <polyline
+        {points}
+        fill="none"
+        stroke="var(--lane-hue, #71717A)"
+        stroke-width="1.5"
+        vector-effect="non-scaling-stroke"
+      />
+    </svg>
+    {#if total != null}
+      <span class="mono-num !text-[11px] text-base-content/50 whitespace-nowrap">${total.toFixed(2)}</span>
+    {/if}
+  </div>
+  <div class="label-meta !text-[10px] -mt-1">cost over time</div>
 {/if}

@@ -1,23 +1,51 @@
-<table class="table table-zebra bg-base-100 rounded-lg">
-  <thead>
-    <tr>
-      <th>run</th>
-      <th>status</th>
-      <th>brief</th>
-      <th>created</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for row in rows %}
-    <tr>
-      <td><a class="link link-primary" href="/{{ row.id }}">{{ row.id }}</a></td>
-      <td><span class="badge badge-sm {% if row.status == "judged" %}badge-success{% else if row.status == "failed" %}badge-error{% else if row.status == "running" %}badge-warning{% else if row.status == "promoted" %}badge-accent{% else %}badge-ghost{% endif %}">{{ row.status }}</span></td>
-      <td class="max-w-md truncate text-base-content/70">{{ row.brief }}</td>
-      <td class="text-base-content/50 whitespace-nowrap">{{ row.created }}</td>
-    </tr>
-    {% endfor %}
-    {% if rows.len() == 0 %}
-    <tr><td colspan="4" class="text-base-content/40 text-center py-8">no runs yet — <a class="link link-primary" href="/">launch one</a></td></tr>
-    {% endif %}
-  </tbody>
-</table>
+<div id="runs-table" class="bg-base-100 border border-base-300 rounded-xl overflow-x-auto" hx-get="/runs/table" hx-trigger="every 5s, refresh from:body" hx-swap="outerHTML">
+  <table class="runs-table w-full min-w-[720px]">
+    <thead>
+      <tr>
+        <th>Run</th>
+        <th>Status</th>
+        <th class="!text-right">Started</th>
+        <th class="w-10"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>
+          <a href="/{{ row.id }}" class="font-mono text-[13px] font-medium text-base-content hover:text-primary">{{ row.id }}</a>
+          <span class="block text-[13px] text-base-content/55 truncate max-w-md mt-0.5">{{ row.brief }}</span>
+        </td>
+        <td>
+          {% if row.status == "judged" %}<span class="chip chip-success">judged</span>
+          {% else if row.status == "promoted" %}<span class="chip chip-winner">promoted</span>
+          {% else if row.status == "running" %}<span class="chip chip-info chip-pulse">running</span>
+          {% else if row.status == "failed" %}<span class="chip chip-error">failed</span>
+          {% else %}<span class="chip chip-neutral">{{ row.status }}</span>{% endif %}
+        </td>
+        <td class="!text-right mono-num text-base-content/60 whitespace-nowrap" title="{{ row.created_full }}">{{ row.created }}</td>
+        <td class="!text-right">
+          <a href="/{{ row.id }}" class="text-base-content/35 hover:text-primary text-lg leading-none px-2" aria-label="Open run {{ row.id }}">&rarr;</a>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if rows.len() == 0 %}
+      <tr>
+        <td colspan="4" class="!h-auto py-12">
+          <div class="flex flex-col items-center gap-3 text-center">
+            <div class="browser-frame w-40 pointer-events-none">
+              <div class="browser-frame-bar !py-1.5">
+                <span class="browser-dot bg-[#E4E4E7]"></span><span class="browser-dot bg-[#E4E4E7]"></span><span class="browser-dot bg-[#E4E4E7]"></span>
+                <span class="browser-url !border-dashed !py-1">https://</span>
+              </div>
+              <div class="h-16 border border-dashed border-base-300 m-2 rounded"></div>
+            </div>
+            <p class="text-base font-medium text-base-content">No runs yet</p>
+            <p class="text-sm text-base-content/50">Submit a brief and the agents get to work.</p>
+            <a href="/" class="btn btn-primary btn-sm rounded-full px-5 font-semibold border-0">Launch one</a>
+          </div>
+        </td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>

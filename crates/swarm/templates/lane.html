@@ -1,89 +1,128 @@
 {% extends "base.html" %}
-{% block title %}sprite swarm — lane {{ idx }}{% endblock %}
+{% block title %}Squadron — lane {{ idx }}{% endblock %}
 {% block content %}
-<div class="flex flex-wrap items-center gap-3 mb-4">
-  <h1 class="text-2xl font-bold text-primary">lane {{ idx }}</h1>
-  <span class="badge badge-sm badge-ghost font-mono">{{ run_id }}</span>
-  <span class="badge badge-sm {% if state == "validated" %}badge-success{% else if state == "failed" %}badge-error{% else if state == "running" %}badge-warning{% else %}badge-ghost{% endif %}">{{ state }}</span>
-  <div class="flex-1"></div>
-  <a href="/{{ run_id }}" class="btn btn-ghost btn-sm text-base-content/60">&larr; gallery</a>
+<div class="bg-base-200 border-b border-base-300">
+  <div class="max-w-7xl mx-auto px-4 py-4 flex flex-wrap items-center gap-3">
+    <a href="/{{ run_id }}" class="text-sm text-base-content/55 hover:text-base-content">&larr; Gallery</a>
+    <span class="text-base-content/25">/</span>
+    <h1 class="text-[15px] font-semibold flex items-center gap-2.5">
+      <span class="lane-dot lane-hue-{{ idx % 6 }}"></span>Lane {{ idx }}
+    </h1>
+    {% if model.len() > 0 %}<span class="mono-num text-base-content/50">{{ model }}</span>{% endif %}
+    {% if state == "validated" %}<span class="chip chip-success">verified</span>
+    {% else if state == "failed" %}<span class="chip chip-error">failed</span>
+    {% else if state == "running" %}<span class="chip chip-info chip-pulse">running</span>
+    {% else %}<span class="chip chip-neutral">{{ state }}</span>{% endif %}
+    <div class="flex-1"></div>
+    <span class="mono-num text-base-content/40">{{ run_id }}</span>
+  </div>
 </div>
 
-{% if let Some(url) = impl_url %}
-<section class="mb-6">
-  <div class="flex flex-wrap items-center gap-2 mb-2">
-    <span class="text-sm text-base-content/60">live preview</span>
-    <a class="link link-primary link-hover text-sm" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ url }}</a>
-  </div>
-  <iframe
-    src="{{ url }}"
-    sandbox="allow-scripts"
-    referrerpolicy="no-referrer"
-    class="w-full h-[560px] rounded-lg border border-base-content/10 bg-base-100"></iframe>
-</section>
-{% endif %}
+<div class="max-w-7xl mx-auto px-4 py-8 grid gap-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] items-start">
+  <div class="flex flex-col gap-6 min-w-0">
+    {% if let Some(url) = impl_url %}
+    <section>
+      <div class="browser-frame">
+        <div class="browser-frame-bar">
+          <span class="browser-dot bg-[#FECACA]"></span>
+          <span class="browser-dot bg-[#FEF3C7]"></span>
+          <span class="browser-dot bg-[#DCFCE7]"></span>
+          <a class="browser-url hover:border-primary hover:text-primary" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ url }}</a>
+        </div>
+        <iframe
+          src="{{ url }}"
+          sandbox="allow-scripts"
+          referrerpolicy="no-referrer"
+          class="w-full h-[560px] bg-white border-0"></iframe>
+      </div>
+      <p class="text-[12px] text-base-content/45 mt-2">If the preview stays blank, the lane may have expired — open the live URL from the address bar above.</p>
+    </section>
+    {% endif %}
 
-<div class="grid gap-6 lg:grid-cols-2">
-  <section class="card bg-base-100 border border-base-content/10">
-    <div class="card-body">
-      <h2 class="card-title text-primary">validator report</h2>
-      {% if let Some(v) = val_verdict %}
-      <p class="text-sm">verdict: <span class="badge badge-sm {% if v == "pass" %}badge-success{% else %}badge-error{% endif %}">{{ v }}</span>{% if let Some(q) = val_quality %} &middot; quality {{ q }}{% endif %}</p>
-      {% else %}
-      <p class="text-sm text-base-content/40">validation not complete.</p>
-      {% endif %}
-      {% if val_summary.len() > 0 %}
-      <pre class="whitespace-pre-wrap text-xs leading-relaxed bg-base-200 rounded p-3 text-base-content/80">{{ val_summary }}</pre>
-      {% endif %}
-      {% if val_features.len() > 0 %}
-      <p class="text-xs mt-2"><span class="font-semibold text-base-content/70">features:</span> {{ val_features }}</p>
-      {% endif %}
-      {% if val_bugs.len() > 0 %}
-      <p class="text-xs mt-1"><span class="font-semibold text-base-content/70">bugs:</span> {{ val_bugs }}</p>
-      {% endif %}
-      {% if val_security.len() > 0 %}
-      <p class="text-xs mt-1"><span class="font-semibold text-base-content/70">security:</span> {{ val_security }}</p>
-      {% endif %}
-    </div>
-  </section>
-  <div class="flex flex-col gap-6">
-    <section class="card bg-base-100 border border-base-content/10">
-      <div class="card-body">
-        <h2 class="card-title text-primary">artifacts</h2>
-        <dl class="grid grid-cols-2 gap-2 text-sm">
-          <dt class="text-base-content/50">agent / model</dt><dd>{{ model }}</dd>
-          <dt class="text-base-content/50">build time</dt><dd>{{ build }}</dd>
-          <dt class="text-base-content/50">cost</dt><dd>{{ cost }}</dd>
-          <dt class="text-base-content/50">screenshot</dt><dd>{{ screenshot_state }}</dd>
+    <section class="card bg-base-100 border border-base-300 rounded-xl">
+      <div class="card-body p-6 gap-4">
+        <div class="flex items-center justify-between gap-3">
+          <h2 class="text-[17px] font-semibold tracking-tight">Validator report</h2>
+          {% if let Some(v) = val_verdict %}
+          <span class="chip {% if v == "pass" %}chip-success{% else %}chip-error{% endif %}">{{ v }}</span>
+          {% else %}
+          <span class="chip chip-neutral">pending</span>
+          {% endif %}
+        </div>
+        {% if let Some(v) = val_verdict %}
+        {% if let Some(q) = val_quality %}
+        <p class="mono-num text-base-content/70">quality {{ q }} / 10</p>
+        {% endif %}
+        {% else %}
+        <p class="text-sm text-base-content/45">Validation has not run yet.</p>
+        {% endif %}
+        {% if val_features.len() == 0 and val_bugs.len() == 0 and val_security.len() == 0 %}
+        {# Older runs store one prose blob — show it only when no structured rows exist #}
+        {% if val_summary.len() > 0 %}
+        <pre class="whitespace-pre-wrap font-sans text-[13px] leading-relaxed text-base-content/75 bg-base-200 rounded-lg p-4">{{ val_summary }}</pre>
+        {% endif %}
+        {% endif %}
+        {% if val_features.len() > 0 %}
+        <div class="grid gap-2 text-[13px] leading-relaxed">
+          <div class="flex gap-2"><span class="label-meta w-16 flex-none pt-0.5">Features</span><span class="text-base-content/75">{{ val_features }}</span></div>
+          {% if val_bugs.len() > 0 %}
+          <div class="flex gap-2"><span class="label-meta w-16 flex-none pt-0.5">Bugs</span><span class="text-base-content/75">{{ val_bugs }}</span></div>
+          {% endif %}
+          {% if val_security.len() > 0 %}
+          <div class="flex gap-2"><span class="label-meta w-16 flex-none pt-0.5">Security</span><span class="text-base-content/75">{{ val_security }}</span></div>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+    </section>
+
+    {% if console_tail.len() > 0 %}
+    <section class="card bg-base-100 border border-base-300 rounded-xl">
+      <div class="card-body p-6 gap-3">
+        <div class="flex items-center justify-between gap-3">
+          <h2 class="text-[17px] font-semibold tracking-tight">Console</h2>
+          <span class="mono-num text-base-content/40">tail &middot; last 200 lines</span>
+        </div>
+        <pre class="console-block max-h-72 whitespace-pre-wrap">{{ console_tail }}</pre>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if let Some(err) = error %}
+    <section class="card bg-base-100 border border-error/30 rounded-xl">
+      <div class="card-body p-6 gap-2">
+        <h2 class="text-[17px] font-semibold tracking-tight text-error">Lane error</h2>
+        <pre class="console-block !bg-[#FEF2F2] !text-error/80 whitespace-pre-wrap">{{ err }}</pre>
+      </div>
+    </section>
+    {% endif %}
+  </div>
+
+  <aside class="flex flex-col gap-6 min-w-0">
+    <section class="card bg-base-100 border border-base-300 rounded-xl">
+      <div class="card-body p-6 gap-3">
+        <h2 class="text-[17px] font-semibold tracking-tight">Properties</h2>
+        <dl class="text-[13px] divide-y divide-base-300">
+          <div class="flex items-center justify-between gap-3 py-2"><dt class="text-base-content/50">Agent / model</dt><dd class="mono-num text-right">{{ model }}</dd></div>
+          <div class="flex items-center justify-between gap-3 py-2"><dt class="text-base-content/50">Build time</dt><dd class="mono-num text-right">{{ build }}</dd></div>
+          <div class="flex items-center justify-between gap-3 py-2"><dt class="text-base-content/50">Cost</dt><dd class="mono-num text-right">{{ cost }}</dd></div>
+          <div class="flex items-center justify-between gap-3 py-2"><dt class="text-base-content/50">Screenshot</dt><dd class="mono-num text-right">{{ screenshot_state }}</dd></div>
         </dl>
         {% if tokei_json.len() > 0 %}
-        <details class="mt-2">
-          <summary class="text-sm text-base-content/70 cursor-pointer">tokei output</summary>
-          <pre class="whitespace-pre-wrap text-xs bg-base-200 rounded p-3 mt-2 text-base-content/80">{{ tokei_json }}</pre>
+        <details class="mt-1">
+          <summary class="text-[13px] text-base-content/60 cursor-pointer hover:text-base-content">Code size (tokei)</summary>
+          <pre class="whitespace-pre-wrap mono-num bg-base-200 rounded-lg p-3 mt-2 max-h-64 overflow-auto text-base-content/70">{{ tokei_json }}</pre>
         </details>
         {% endif %}
-        <div class="card-actions mt-2">
-          <a href="/{{ run_id }}/source/{{ idx }}" class="btn btn-sm btn-outline">download source (.tar.gz)</a>
-          <a href="/{{ run_id }}/thumb/{{ idx }}" class="btn btn-sm btn-outline" {% if screenshot_state != "done" %}disabled{% endif %}>screenshot</a>
+        <div class="card-actions mt-2 flex-wrap gap-2">
+          <a href="/{{ run_id }}/source/{{ idx }}" class="btn btn-outline btn-sm rounded-full border-base-300 hover:border-primary hover:text-primary">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 2v8m0 0L5 7m3 3l3-3M3 12v1.5A.5.5 0 003.5 14h9a.5.5 0 00.5-.5V12"/></svg>
+            source (.tar.gz)
+          </a>
+          <a href="/{{ run_id }}/thumb/{{ idx }}" class="btn btn-outline btn-sm rounded-full border-base-300 hover:border-primary hover:text-primary" {% if screenshot_state != "done" %}disabled{% endif %}>screenshot</a>
         </div>
       </div>
     </section>
-    {% if console_tail.len() > 0 %}
-    <section class="card bg-base-100 border border-base-content/10">
-      <div class="card-body">
-        <h2 class="card-title text-primary">console</h2>
-        <pre class="whitespace-pre-wrap text-xs leading-relaxed bg-base-200 rounded p-3 text-base-content/80 max-h-64 overflow-auto">{{ console_tail }}</pre>
-      </div>
-    </section>
-    {% endif %}
-    {% if let Some(err) = error %}
-    <section class="card bg-base-100 border border-error/30">
-      <div class="card-body">
-        <h2 class="card-title text-error">lane error</h2>
-        <pre class="whitespace-pre-wrap text-xs text-error/80">{{ err }}</pre>
-      </div>
-    </section>
-    {% endif %}
-  </div>
+  </aside>
 </div>
 {% endblock %}

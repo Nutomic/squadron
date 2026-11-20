@@ -1,26 +1,52 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="squadron">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="htmx-config" content='{"includeIndicatorStyles": false}'>
-  <title>{% block title %}sprite swarm{% endblock %}</title>
+  <title>{% block title %}Squadron{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/island.css">
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script type="module" src="/static/island.js"></script>
 </head>
-<body class="min-h-screen bg-base-200 text-base-content font-mono">
-  <nav class="navbar bg-base-300 border-b border-base-content/10 px-4">
-    <a href="/" class="btn btn-ghost text-primary font-bold tracking-tight">sprite&nbsp;swarm</a>
-    <div class="flex-1"></div>
-    <a href="/runs" class="btn btn-ghost btn-sm text-base-content/70">runs</a>
-  </nav>
-  <main class="max-w-7xl mx-auto px-4 py-6">
+<body class="min-h-screen flex flex-col bg-base-100 text-base-content font-sans antialiased">
+  <header class="sticky top-0 z-40 bg-white/85 backdrop-blur border-b border-base-300">
+    <div class="h-16 max-w-7xl mx-auto px-4 flex items-center gap-6">
+      <a href="/" class="flex items-center gap-2.5 text-[15px] font-semibold tracking-tight text-base-content whitespace-nowrap">
+        <svg class="w-5 h-5 text-primary flex-none" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path d="M10 1.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8L10 14.9l-5.3 2.7 1-5.8L1.5 7.7l5.9-.9L10 1.5z" />
+        </svg>
+        Squadron
+      </a>
+      <nav class="hidden sm:flex items-center gap-1 text-sm" aria-label="Main">
+        <a href="/runs" class="px-3 py-1.5 rounded-full whitespace-nowrap {% block nav_runs %}text-base-content/70 hover:text-base-content{% endblock %}">Runs</a>
+      </nav>
+      <div class="flex-1"></div>
+      {% block header_cta %}
+      <a href="/" class="btn btn-primary btn-sm rounded-full px-5 font-semibold border-0 whitespace-nowrap">New run</a>
+      {% endblock %}
+    </div>
+  </header>
+
+  <main class="flex-1">
     {% block content %}{% endblock %}
   </main>
-  <footer class="max-w-7xl mx-auto px-4 pb-8 text-xs text-base-content/40">
-    agents build on sprites &middot; judge crowns the winner
+
+  <footer class="bg-base-200 border-t border-base-300">
+    <div class="max-w-7xl mx-auto px-4 py-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px] text-base-content/55">
+      <nav class="flex items-center gap-x-4 gap-y-1" aria-label="Footer">
+        <a href="/" class="hover:text-base-content">New run</a>
+        <a href="/runs" class="hover:text-base-content">Runs</a>
+        <span>One brief, N agents in parallel</span>
+      </nav>
+      <div class="flex-1"></div>
+      <span class="mono-num !text-[11px] text-base-content/40 flex items-center gap-2">
+        <span class="inline-block w-1.5 h-1.5 rounded-full bg-success"></span>
+        squadron v1.4 &middot; all systems normal
+      </span>
+    </div>
   </footer>
 </body>
 </html>
