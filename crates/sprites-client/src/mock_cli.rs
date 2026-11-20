@@ -160,10 +160,29 @@ fn sprite_url(name: &str) -> String {
         .unwrap_or_else(|| format!("https://{name}-{}.sprites.app", url_suffix(name)))
 }
 
+/// Real CLI contract: sprite names must contain only lowercase letters,
+/// numbers, and hyphens, and start/end with a letter or number.
+pub fn valid_sprite_name(name: &str) -> bool {
+    let chars: Vec<char> = name.chars().collect();
+    !chars.is_empty()
+        && chars
+            .iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+        && chars.first().unwrap().is_ascii_alphanumeric()
+        && chars.last().unwrap().is_ascii_alphanumeric()
+}
+
 fn create(args: &[String]) -> Result<String, (i32, String)> {
     let name = args
         .get(1)
         .ok_or_else(|| (2, "create: missing name".to_owned()))?;
+    if !valid_sprite_name(name) {
+        return Err((
+            2,
+            "create: sprite name must contain only lowercase letters, numbers, and hyphens, and start/end with a letter or number"
+                .to_owned(),
+        ));
+    }
     if !args.iter().any(|a| a == "--skip-console") {
         return Err((2, "create: --skip-console required".to_owned()));
     }

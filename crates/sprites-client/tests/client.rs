@@ -226,6 +226,35 @@ async fn mock_cli_create_rejects_existing_sprite_until_destroyed() {
     std::env::remove_var("MOCK_SPRITE_STATE");
 }
 
+/// Real CLI contract (first real run rejection): `sprite create` refuses
+/// names with uppercase characters — run-id short hashes are capability
+/// tokens with mixed case, so callers must lowercase before naming.
+#[tokio::test]
+async fn mock_cli_create_rejects_uppercase_names() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state.json");
+    std::env::set_var("MOCK_SPRITE_STATE", &state);
+
+    let args = |v: Vec<&str>| v.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    let err = mock_cli::execute(&args(vec![
+        "create",
+        "swarm-oHplwdUQ-impl-0",
+        "--skip-console",
+    ]))
+    .unwrap_err();
+    assert_eq!(err.0, 2, "uppercase name is rejected");
+    assert!(err.1.contains("lowercase"), "message: {}", err.1);
+
+    let name = "swarm-ohplwdu-impl-0";
+    assert!(mock_cli::valid_sprite_name(name));
+    mock_cli::execute(&args(vec!["create", name, "--skip-console"])).unwrap();
+    let listing = mock_cli::execute(&args(vec!["list"])).unwrap();
+    assert!(listing.contains(name));
+
+    std::env::remove_var("MOCK_SPRITE_STATE");
+}
+
 #[tokio::test]
 async fn client_drives_mock_cli_binary_end_to_end() {
     let _guard = ENV_LOCK.lock().await;

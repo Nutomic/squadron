@@ -380,8 +380,7 @@ async fn run_lane_attempt(
         .ok_or_else(|| format!("lane {idx} missing"))?;
     let variant_json = lane.variant_json.clone();
 
-    let short = short_run_id(&run_id);
-    let sprite_name = format!("swarm-{short}-impl-{idx}");
+    let sprite_name = lane_sprite_name(&run_id, idx);
     // create sprite; if a stale sprite still holds the deterministic name,
     // destroy --force it once and retry the create.
     if let Err(e) = ctx.sprite.create(&sprite_name).await {
@@ -1085,6 +1084,24 @@ fn short_run_id(run_id: &str) -> String {
         .collect()
 }
 
+/// Sprite names embed the run-id short hash, but run IDs are capability
+/// tokens that keep their case while the sprite CLI only accepts
+/// `^[a-z0-9][a-z0-9-]*$` ("sprite name must contain only lowercase letters,
+/// numbers, and hyphens, and start/end with a letter or number"). The segment
+/// is lowercased and stripped of anything outside [a-z0-9-]; the length cap of
+/// `short_run_id` keeps the name short.
+fn sprite_run_segment(run_id: &str) -> String {
+    short_run_id(run_id)
+        .chars()
+        .map(|c| c.to_ascii_lowercase())
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+        .collect()
+}
+
+fn lane_sprite_name(run_id: &str, idx: i64) -> String {
+    format!("swarm-{}-impl-{idx}", sprite_run_segment(run_id))
+}
+
 fn lane_workdir(ctx: &PipelineCtx, run_id: &str, idx: i64) -> PathBuf {
     ctx.config
         .data_dir
@@ -1210,6 +1227,40 @@ mod tests {
         assert!(!is_harness_error(
             "implementer: live URL did not answer 200"
         ));
+    }
+
+    /// The run-id short hash is a capability token that keeps its case, but
+    /// the sprite CLI only accepts `^[a-z0-9][a-z0-9-]*$` sprite names: the
+    /// embedded segment must be lowercased (and stripped) before it reaches
+    /// `sprite create`. The mock CLI models the same contract, so the produced
+    /// name must also pass its check.
+    #[test]
+    fn lane_sprite_name_lowercases_the_run_id_segment() {
+        let run_id = "swarm-oHplwdUQ-AbCdEf01";
+        let name = lane_sprite_name(run_id, 0);
+        assert_eq!(name, "swarm-swarmohp-impl-0", "name: {name}");
+        assert!(
+            name.starts_with('s')
+                && name.ends_with('0')
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+            "name must match ^[a-z0-9][a-z0-9-]*$: {name}"
+        );
+        assert_eq!(name, name.to_lowercase());
+        assert!(
+            sprites_client::mock_cli::valid_sprite_name(&name),
+            "mock CLI (real CLI contract) must accept the name: {name}"
+        );
+        // higher lane indexes stay lowercase too
+        let val = lane_sprite_name(run_id, 2);
+        assert!(
+            val.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+            "name must match ^[a-z0-9][a-z0-9-]*$: {val}"
+        );
+        // deterministic per run id
+        assert_eq!(lane_sprite_name(run_id, 0), lane_sprite_name(run_id, 0));
     }
 
     #[test]
