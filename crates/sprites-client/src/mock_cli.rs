@@ -123,8 +123,19 @@ pub fn execute(args: &[String]) -> Result<String, (i32, String)> {
         Some("checkpoint") => checkpoint(args),
         Some("config") => config_update(args),
         Some("list") => list(),
+        Some("info") => info(args),
         _ => Err((2, format!("mock-sprite-cli: unsupported command: {args:?}"))),
     }
+}
+
+/// URL a created sprite reports: `MOCK_URL_TEMPLATE` (with a `{name}`
+/// placeholder) lets tests point sprites at a local server; otherwise the
+/// deterministic platform form.
+fn sprite_url(name: &str) -> String {
+    std::env::var("MOCK_URL_TEMPLATE")
+        .ok()
+        .map(|t| t.replace("{name}", name))
+        .unwrap_or_else(|| format!("https://{name}.sprites.app"))
 }
 
 fn create(args: &[String]) -> Result<String, (i32, String)> {
@@ -149,7 +160,7 @@ fn create(args: &[String]) -> Result<String, (i32, String)> {
                 cold_started: false,
                 exec_count: 0,
                 http_200: false,
-                url: format!("https://{name}.sprites.app"),
+                url: sprite_url(name),
                 ..MockSprite::default()
             },
         );
@@ -363,6 +374,19 @@ fn list() -> Result<String, (i32, String)> {
         ));
     }
     Ok(text)
+}
+
+/// `info <name>`: print the sprite's public URL (one token, http(s)).
+fn info(args: &[String]) -> Result<String, (i32, String)> {
+    let name = args
+        .get(1)
+        .ok_or_else(|| (2, "info: missing name".to_owned()))?;
+    let state = read_state();
+    let sprite = state
+        .sprites
+        .get(name)
+        .ok_or_else(|| (3, format!("info: unknown sprite {name}")))?;
+    Ok(format!("sprite {}  running  {}\n", sprite.name, sprite.url))
 }
 
 fn probe_http_200() -> bool {

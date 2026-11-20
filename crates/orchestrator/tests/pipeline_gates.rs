@@ -60,7 +60,8 @@ async fn test_ctx(
     config.impl_deadline = impl_deadline;
     config.val_deadline = Duration::from_secs(30);
     config.judge_deadline = Duration::from_secs(15);
-    let screenshots = ScreenshotQueue::new(store.clone(), true);
+    // Audit R3 finding 4: data dir comes from the config (never /data).
+    let screenshots = ScreenshotQueue::with_data_dir(store.clone(), true, config.data_dir.clone());
     let ctx = Arc::new(PipelineCtx {
         store: store.clone(),
         sprite,

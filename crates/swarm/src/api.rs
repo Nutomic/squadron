@@ -39,7 +39,13 @@ async fn create_run(
     Json(body): Json<CreateRunBody>,
 ) -> Result<(StatusCode, Json<CreateRunResponse>), (StatusCode, Json<serde_json::Value>)> {
     // R2-3#5: validation failures are client errors (400 + JSON), not 500.
-    if body.brief.chars().count() > MAX_BRIEF_CHARS {
+    // Audit R3 finding: web-form parity — an empty or whitespace-only brief is
+    // a 400, not a run (brief is DATA; only whitespace normalization happens).
+    let brief = body.brief.trim().to_owned();
+    if brief.is_empty() {
+        return Err(bad_request("brief must not be empty"));
+    }
+    if brief.chars().count() > MAX_BRIEF_CHARS {
         return Err(bad_request(&format!(
             "brief exceeds {MAX_BRIEF_CHARS} characters"
         )));
@@ -49,7 +55,7 @@ async fn create_run(
         return Err(bad_request(&e));
     }
     let run = state
-        .start_pipeline(body.brief, n, state.real_harness())
+        .start_pipeline(brief, n, state.real_harness())
         .await
         .map_err(|e| {
             (

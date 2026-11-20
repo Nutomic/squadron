@@ -52,7 +52,8 @@ async fn test_ctx(dir: &std::path::Path) -> (Arc<PipelineCtx>, Store) {
     config.impl_deadline = Duration::from_secs(30);
     config.val_deadline = Duration::from_secs(30);
     config.judge_deadline = Duration::from_secs(15);
-    let screenshots = ScreenshotQueue::new(store.clone(), true);
+    // Audit R3 finding 4: data dir comes from the config (never /data).
+    let screenshots = ScreenshotQueue::with_data_dir(store.clone(), true, config.data_dir.clone());
     let slots = SlotSemaphore::new(config.max_running_slots);
     let ctx = Arc::new(PipelineCtx {
         store: store.clone(),
