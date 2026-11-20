@@ -1,5 +1,4 @@
 use serde::Serialize;
-use serde_json::Value;
 use store::{Lane, Run, Store};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -85,17 +84,8 @@ pub fn lane_snapshot(run: &Run, lane: &Lane, cost_series: Option<Vec<f64>>) -> L
 }
 
 fn tokei_totals(json: Option<&str>) -> (Option<i64>, Option<i64>) {
-    let Some(json) = json else {
-        return (None, None);
-    };
-    let Ok(v) = serde_json::from_str::<Value>(json) else {
-        return (None, None);
-    };
-    let total = v.get("Total");
-    (
-        total.and_then(|t| t.get("files")).and_then(Value::as_i64),
-        total.and_then(|t| t.get("code")).and_then(Value::as_i64),
-    )
+    // #16: single canonical tokei parser shared with the orchestrator.
+    orchestrator::artifacts::parse_tokei_totals(json.unwrap_or_default())
 }
 
 pub fn now_ms() -> i64 {

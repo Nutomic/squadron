@@ -35,27 +35,7 @@ pub struct LaneView {
 }
 
 pub fn lane_loc(tokei_json: &Option<String>) -> Option<i64> {
-    let s = tokei_json.as_deref()?;
-    let v: serde_json::Value = serde_json::from_str(s).ok()?;
-    // Try common shapes: {"loc":N} or {"Total":{"code":N}} or number
-    if let Some(n) = v.get("loc").and_then(|x| x.as_i64()) {
-        return Some(n);
-    }
-    if let Some(n) = v.get("code").and_then(|x| x.as_i64()) {
-        return Some(n);
-    }
-    if let Some(total) = v.get("Total").or_else(|| v.get("total")) {
-        if let Some(n) = total.get("code").and_then(|x| x.as_i64()) {
-            return Some(n);
-        }
-        if let Some(n) = total.get("loc").and_then(|x| x.as_i64()) {
-            return Some(n);
-        }
-    }
-    if let Some(n) = v.as_i64() {
-        return Some(n);
-    }
-    None
+    crate::artifacts::parse_tokei_totals(tokei_json.as_deref().unwrap_or_default()).1
 }
 
 pub fn snapshot_for(run: &Run, lanes: &[Lane], ts: i64) -> RunSnapshot {
