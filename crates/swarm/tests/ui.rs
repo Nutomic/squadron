@@ -656,3 +656,165 @@ async fn api_post_run_creates_run_without_html_redirect() {
     assert_eq!(run.brief, "api created run");
     assert_eq!(store.list_lanes(&run_id).await.unwrap().len(), 4);
 }
+
+// ---------------------------------------------------------------------------
+// Finding #26: full CSP snapshot + escaping of agent-controlled content
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn security_headers_carry_the_complete_csp() {
+    let (app, store) = app().await;
+    let run = store
+        .create_run("csp snapshot", 3, 1_732_020_000_000)
+        .await
+        .unwrap();
+    store.insert_lane(&run.id, 0, "{}").await.unwrap();
+    for uri in [format!("/{}/lane/0", run.id), format!("/{}", run.id)] {
+        let res = app
+            .clone()
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "uri={uri}");
+        let csp = res
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        // snapshot the complete policy string; any drift fails the test
+        assert_eq!(
+            csp,
+            "default-src 'self'; frame-src 'self' https://*.sprites.app; \
+             img-src 'self' data: https://*.sprites.app; script-src 'self'; \
+             style-src 'self'; connect-src 'self'; form-action 'self'; \
+             base-uri 'self'; object-src 'none'; frame-ancestors 'self'",
+            "uri={uri}"
+        );
+        assert!(
+            csp.contains("script-src 'self'")
+                && csp.contains("frame-ancestors 'self'")
+                && csp.contains("object-src 'none'"),
+            "uri={uri}"
+        );
+        assert_eq!(
+            res.headers()
+                .get(header::X_CONTENT_TYPE_OPTIONS)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "nosniff",
+            "uri={uri}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn agent_supplied_inline_script_stays_escaped_in_templates() {
+    let (app, store) = app().await;
+    let run = store
+        .create_run("escaping test", 2, 1_732_020_000_000)
+        .await
+        .unwrap();
+    store.insert_lane(&run.id, 0, "{}").await.unwrap();
+    // agent-controlled fields carry inline script payloads
+    store
+        .set_lane_error(&run.id, 0, "<script>alert('pwned')</script> crashed")
+        .await
+        .unwrap();
+    store
+        .set_lane_console_tail(&run.id, 0, "<script>document.write('tail')</script> ok")
+        .await
+        .unwrap();
+    store
+        .finish_validation(
+            &run.id,
+            0,
+            "pass",
+            "<script>alert('validator')</script> Features: clean build.",
+            7.0,
+        )
+        .await
+        .unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/{}/lane/0", run.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+    // every payload must be entity-escaped, never executable inline script
+    assert!(html.contains("&lt;script&gt;alert"));
+    assert!(html.contains("&lt;script&gt;document"));
+    assert!(!html.contains("<script>alert"));
+    assert!(!html.contains("<script>document"));
+}
+
+// ---------------------------------------------------------------------------
+// Finding #31: the canonical 22-char run-id validator guards every route
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn malformed_run_ids_are_rejected_on_all_routes() {
+    let (app, store) = app().await;
+    let run = store
+        .create_run("id validation", 3, 1_732_020_000_000)
+        .await
+        .unwrap();
+    let too_short: String = std::iter::repeat('A').take(21).collect();
+    let too_long: String = std::iter::repeat('A').take(23).collect();
+    let bad_alphabet = "!!!!!!!!!!!!!!!!!!!!!!"; // 22 chars, not URL-safe base64
+    assert_eq!(bad_alphabet.len(), 22);
+    for bad in [too_short, too_long, bad_alphabet.to_owned()] {
+        // GET routes (read-only)
+        for uri in [
+            format!("/{bad}/events"),
+            format!("/{bad}/lane/0"),
+            format!("/{bad}/lane/0/tokei"),
+            format!("/{bad}/thumb/0"),
+            format!("/{bad}/source/0"),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "id={bad} uri={uri}");
+        }
+        // POST route
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/{bad}/promote"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "id={bad} uri=/{bad}/promote"
+        );
+    }
+    // sanity: the real id still works
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/{}/events", run.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
