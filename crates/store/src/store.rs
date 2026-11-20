@@ -408,6 +408,14 @@ impl Store {
         ensure_lane(result.rows_affected(), run_id, idx)
     }
 
+    /// Append a lane event with an atomically allocated timestamp.
+    ///
+    /// The `ts` column must be strictly increasing per (run, lane); the
+    /// allocation happens inside the single `INSERT .. SELECT .. RETURNING`
+    /// statement, so concurrent writers can never observe the same MAX(ts) and
+    /// collide on the (run_id, lane_idx, ts) primary key. The supplied `ts`
+    /// acts as a floor (wall clock), never a rollback: allocated ts is at
+    /// least `max(existing ts + 1, ts)`.
     pub async fn append_lane_event(
         &self,
         run_id: &str,
@@ -416,26 +424,22 @@ impl Store {
         kind: &str,
         payload: &str,
     ) -> Result<i64, StoreError> {
-        let max = sqlx::query!(
-            "SELECT COALESCE(MAX(ts), 0) AS max_ts FROM lane_events WHERE run_id = ? AND lane_idx = ?",
-            run_id,
-            lane_idx
-        )
-        .fetch_one(&self.pool)
-        .await?
-        .max_ts;
-        let ts = ts.max(max + 1);
-        sqlx::query!(
-            "INSERT INTO lane_events (run_id, lane_idx, ts, kind, payload) VALUES (?, ?, ?, ?, ?)",
+        let row = sqlx::query!(
+            "INSERT INTO lane_events (run_id, lane_idx, ts, kind, payload) \
+             SELECT ?, ?, max(COALESCE(max(ts + 1), 0), ?), ?, ? \
+             FROM lane_events WHERE run_id = ? AND lane_idx = ? \
+             RETURNING ts",
             run_id,
             lane_idx,
             ts,
             kind,
-            payload
+            payload,
+            run_id,
+            lane_idx
         )
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(ts)
+        Ok(row.ts)
     }
 
     pub async fn list_lane_events(

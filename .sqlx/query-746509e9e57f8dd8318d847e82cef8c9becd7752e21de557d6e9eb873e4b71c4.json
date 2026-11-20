@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO lane_events (run_id, lane_idx, ts, kind, payload) SELECT ?, ?, max(COALESCE(max(ts + 1), 0), ?), ?, ? FROM lane_events WHERE run_id = ? AND lane_idx = ? RETURNING ts",
+  "describe": {
+    "columns": [
+      {
+        "name": "ts",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "746509e9e57f8dd8318d847e82cef8c9becd7752e21de557d6e9eb873e4b71c4"
+}
