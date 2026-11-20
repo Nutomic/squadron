@@ -6,7 +6,7 @@ use axum::extract::Json;
 use axum::http::HeaderMap;
 use axum::routing::post;
 use axum::Router;
-use llm_gateway::sprites_gateway::{GATEWAY_ENDPOINT, SESSION_HEADER};
+use llm_gateway::sprites_gateway::{gateway_endpoint, GATEWAY_CONNECTOR_ID, SESSION_HEADER};
 use llm_gateway::{
     lane_model, parse_allowance, ChatMessage, ChatRequest, ContentPart, LlmError, MachineLlmClient,
     MessageContent, SpriteRecipe, DIVERSITY_MODEL, JUDGE_MODEL, USER_AGENT,
@@ -114,9 +114,10 @@ async fn machine_client_sends_key_and_user_agent_and_parses_cost() {
 #[tokio::test]
 async fn sprite_recipe_uses_gateway_headers_without_auth() {
     assert_eq!(
-        GATEWAY_ENDPOINT,
+        gateway_endpoint(),
         "https://api.sprites.dev/v1/gateway/custom_api/sanCSEiLn9Np-G_Y5q2jKA/chat/completions"
     );
+    assert_eq!(GATEWAY_CONNECTOR_ID, "sanCSEiLn9Np-G_Y5q2jKA");
     assert_eq!(JUDGE_MODEL, "glm-5.3");
     assert_eq!(lane_model(0), "glm-5.3-flash");
     assert_eq!(lane_model(1), "deepseek-v4.1-flash");
@@ -164,7 +165,9 @@ async fn sprite_recipe_uses_gateway_headers_without_auth() {
     let curl = recipe
         .curl_command(&recipe.build("system", "user"))
         .unwrap();
-    assert!(curl.contains(GATEWAY_ENDPOINT) || curl.contains(&format!("127.0.0.1:{port}")));
+    assert!(
+        curl.contains(gateway_endpoint().as_str()) || curl.contains(&format!("127.0.0.1:{port}"))
+    );
     assert!(curl.contains(SESSION_HEADER));
     assert!(!curl.to_ascii_lowercase().contains("authorization"));
 }

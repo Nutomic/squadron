@@ -657,6 +657,110 @@ async fn api_post_run_creates_run_without_html_redirect() {
     assert_eq!(store.list_lanes(&run_id).await.unwrap().len(), 4);
 }
 
+/// R2-3#5: out-of-range n_lanes is a client error (400 + JSON), never a 500.
+#[tokio::test]
+async fn api_post_run_rejects_bad_n_lanes_with_400_json() {
+    let (app, store) = app().await;
+    for n in [2, 11] {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/runs")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"brief":"api brief","n_lanes":{n}}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "n_lanes={n}");
+        let value: serde_json::Value =
+            serde_json::from_str(&body_string(res.into_body()).await).unwrap();
+        assert!(value.get("error").is_some(), "error field expected");
+    }
+    assert!(store.list_runs().await.unwrap().is_empty());
+}
+
+/// R2-3#5: briefs are capped at 4000 chars on both the API and the web form.
+#[tokio::test]
+async fn api_and_form_reject_overlong_brief() {
+    let (app, store) = app().await;
+    let long = "x".repeat(4001);
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(r#"{{"brief":"{}"}}"#, long)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    let res = post_run(&app, &long, None).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // Boundary: exactly 4000 chars is accepted.
+    let ok = "x".repeat(4000);
+    let res = post_run(&app, &ok, Some("3")).await;
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    assert_eq!(store.list_runs().await.unwrap().len(), 1);
+}
+
+/// R2-3#3: malformed run ids 404 on the gallery page and the API route.
+#[tokio::test]
+async fn invalid_run_id_is_404_on_gallery_and_api() {
+    let (app, _) = app().await;
+    let bad = "z".repeat(30); // right length class of chars, wrong length
+    for uri in [
+        format!("/{bad}"),
+        format!("/api/runs/{bad}"),
+        "/runs/x".to_owned(),
+    ] {
+        let res = app
+            .clone()
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "GET {uri}");
+    }
+}
+
+/// R2-3#2: static assets keep their max-age; everything else stays no-store.
+#[tokio::test]
+async fn static_assets_keep_max_age_while_pages_no_store() {
+    let (app, _) = app().await;
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/static/island.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get(header::CACHE_CONTROL).unwrap(),
+        "max-age=300"
+    );
+    let res = app
+        .clone()
+        .oneshot(Request::builder().uri("/runs").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        res.headers().get(header::CACHE_CONTROL).unwrap(),
+        "no-store, max-age=0"
+    );
+}
 /// #26: full CSP snapshot (script-src, frame-ancestors, object-src,
 /// X-Content-Type-Options) plus a negative test that raw inline script in lane
 /// data is HTML-escaped, never emitted.

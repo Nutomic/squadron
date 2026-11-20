@@ -692,13 +692,14 @@ async fn run_validator(
 /// as a data-URL image part, aligned with the report order. Missing renders map
 /// to None so the judge degrades to text-only for that lane.
 async fn collect_lane_screenshot_images(
+    data_dir: &std::path::Path,
     run_id: &str,
     lanes: &[store::Lane],
 ) -> Vec<Option<String>> {
     let mut out = Vec::with_capacity(lanes.len());
     for lane in lanes {
         let path = lane.screenshot_path.clone().unwrap_or_else(|| {
-            crate::screenshot::render_dest(run_id, lane.idx)
+            crate::screenshot::render_dest(data_dir, run_id, lane.idx)
                 .to_string_lossy()
                 .into_owned()
         });
@@ -734,7 +735,7 @@ async fn run_judge_phase(
         }
     }
     let (verdict, cost) = if let Some(llm) = &ctx.machine_llm {
-        let images = collect_lane_screenshot_images(run_id, validated).await;
+        let images = collect_lane_screenshot_images(&ctx.config.data_dir, run_id, validated).await;
         judge::run_judge(llm, &reports, &extracts, &images, ctx.config.judge_deadline).await?
     } else {
         // fallback deterministic judge (should not happen in proper runs; but keep safe)

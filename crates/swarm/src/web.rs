@@ -76,6 +76,17 @@ async fn submit(State(state): State<SharedState>, Form(form): Form<SubmitForm>) 
     else {
         return (StatusCode::BAD_REQUEST, "brief must not be empty").into_response();
     };
+    // R2-3#5: the form brief is capped like the API (brief is DATA).
+    if !valid_brief_len(&brief) {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "brief must be at most {} characters",
+                crate::api::MAX_BRIEF_CHARS
+            ),
+        )
+            .into_response();
+    }
     let n = form.n.unwrap_or(state.config.n_lanes as i64).clamp(3, 10) as usize;
     match state.start_pipeline(brief, n, state.real_harness()).await {
         Ok(run) => Redirect::to(&format!("/{}", run.id)).into_response(),
@@ -309,6 +320,10 @@ async fn serve_static(State(state): State<SharedState>, Path(path): Path<String>
 }
 
 async fn gallery(State(state): State<SharedState>, Path(run_id): Path<String>) -> Response {
+    // R2-3#3: gallery now gates the run id like every other {run_id} route.
+    if !valid_id(&run_id) {
+        return not_found();
+    }
     let Some(run) = get_run(&state, &run_id).await else {
         return not_found();
     };
@@ -534,9 +549,16 @@ async fn get_run(state: &AppState, run_id: &str) -> Option<Run> {
     state.store.get_run(run_id).await.ok()?
 }
 
-fn valid_id(id: &str) -> bool {
-    // #31: canonical ID validation shared with the store layer.
+/// R2-3#5: single helper every `{run_id}` extractor routes through (web + API).
+pub(crate) fn valid_id(id: &str) -> bool {
+    // #31: canonical ID validation shared with the store layer; also used by
+    // the API routes so every {run_id} extractor goes through one helper.
     store::is_valid_run_id(id)
+}
+
+/// R2-3#5: shared brief cap for the web form and the JSON API.
+pub(crate) fn valid_brief_len(brief: &str) -> bool {
+    brief.chars().count() <= crate::api::MAX_BRIEF_CHARS
 }
 
 fn truncate(s: &str, max: usize) -> String {
