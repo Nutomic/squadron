@@ -53,7 +53,10 @@ fn role_prompts_include_schema_and_untrusted_data_rule() {
         quality_score: 80.0,
         summary: "good".into(),
     };
-    let judge = judge_prompt(&[report], &["sanitized page text".to_owned()]);
+    let judge = judge_prompt(
+        &[prompts::LaneJudgeReport::new(0, report)],
+        &["sanitized page text".to_owned()],
+    );
     assert!(judge.system.contains("\"verdict_card\""));
     assert!(judge.user.contains("sanitized page text"));
     assert!(!judge.user.contains("https://"));

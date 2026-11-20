@@ -51,7 +51,7 @@ pub fn validator_prompt(summary: &str, live_url: &str, workdir: &str) -> Prompt 
     )
 }
 
-pub fn judge_prompt(reports: &[ValidatorOutput], extracts: &[String]) -> Prompt {
+pub fn judge_prompt(reports: &[crate::schema::LaneJudgeReport], extracts: &[String]) -> Prompt {
     let reports_json = serde_json::to_string_pretty(reports).unwrap_or_default();
     let mut data = data_block("validator-reports", &reports_json);
     for (index, extract) in extracts.iter().enumerate() {

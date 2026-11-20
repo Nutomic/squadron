@@ -128,6 +128,7 @@ async fn generate_variants(ctx: &PipelineCtx, brief: &str, n: usize) -> Vec<Valu
                 let opts = GateOptions {
                     expected_variants: Some(n),
                     max_verdict_sentences: None,
+                    expected_lane_indices: None,
                 };
                 if gate_with_options(Role::Diversity, &text, &opts).is_ok() {
                     if let Ok(parsed) = parse::<DiversityOutput>(Role::Diversity, &text) {
@@ -568,7 +569,7 @@ async fn run_judge_phase(
         }
     }
     let (verdict, cost) = if let Some(llm) = &ctx.machine_llm {
-        judge::run_judge(llm, &reports, &extracts).await?
+        judge::run_judge(llm, &reports, &extracts, ctx.config.judge_deadline).await?
     } else {
         // fallback deterministic judge (should not happen in proper runs; but keep safe)
         let winner = validated.first().map(|l| l.idx as usize).unwrap_or(0);

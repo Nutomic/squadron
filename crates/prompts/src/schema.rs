@@ -144,6 +144,21 @@ pub struct ValidatorOutput {
     pub summary: String,
 }
 
+/// A validator report paired with the lane index it belongs to, so the judge
+/// can crown winners by explicit lane identity instead of report position.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LaneJudgeReport {
+    pub lane_idx: usize,
+    #[serde(flatten)]
+    pub report: ValidatorOutput,
+}
+
+impl LaneJudgeReport {
+    pub fn new(lane_idx: usize, report: ValidatorOutput) -> Self {
+        Self { lane_idx, report }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JudgeOutput {
@@ -157,6 +172,9 @@ pub struct JudgeOutput {
 pub struct GateOptions {
     pub expected_variants: Option<usize>,
     pub max_verdict_sentences: Option<usize>,
+    /// Judge only: the exact set of lane indices the judge may rank/crown.
+    /// When set, `ranking` must be a permutation of these indices.
+    pub expected_lane_indices: Option<Vec<usize>>,
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -221,6 +239,13 @@ pub fn gate_with_options(
                 if !parsed.ranking.contains(&parsed.winner) {
                     return Err("winner must appear in ranking".to_owned());
                 }
+                if let Some(expected) = &options.expected_lane_indices {
+                    if !is_permutation(&parsed.ranking, expected) {
+                        return Err(format!(
+                            "ranking must be a permutation of lane indices {expected:?}"
+                        ));
+                    }
+                }
                 let limit = options.max_verdict_sentences.unwrap_or(2);
                 if sentence_count(&parsed.verdict_card) > limit {
                     return Err(format!("verdict_card must be at most {limit} sentences"));
@@ -248,6 +273,13 @@ pub fn sentence_count(text: &str) -> usize {
     text.split(['.', '!', '?'])
         .filter(|piece| !piece.trim().is_empty())
         .count()
+}
+
+fn is_permutation(actual: &[usize], expected: &[usize]) -> bool {
+    actual.len() == expected.len()
+        && expected
+            .iter()
+            .all(|idx| actual.iter().filter(|a| **a == *idx).count() == 1)
 }
 
 pub fn injection_markers(value: &Value) -> Vec<String> {
