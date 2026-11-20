@@ -3,6 +3,10 @@ use serde_json::Value;
 
 pub const USER_AGENT: &str = "sprite-swarm/0.1";
 
+/// Default thinking effort for ALL outbound LLM calls (Felix finding: low
+/// thinking). Verified accepted by the gateway; suppresses reasoning_content.
+pub const DEFAULT_REASONING_EFFORT: &str = "low";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatRequest {
     pub model: String,
@@ -11,6 +15,8 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 impl ChatRequest {
@@ -20,6 +26,7 @@ impl ChatRequest {
             messages: Vec::new(),
             temperature: None,
             max_tokens: None,
+            reasoning_effort: Some(DEFAULT_REASONING_EFFORT.to_owned()),
         }
     }
 
@@ -50,6 +57,11 @@ impl ChatRequest {
 
     pub fn max_tokens(mut self, value: u32) -> Self {
         self.max_tokens = Some(value);
+        self
+    }
+
+    pub fn reasoning_effort(mut self, value: impl Into<String>) -> Self {
+        self.reasoning_effort = Some(value.into());
         self
     }
 }

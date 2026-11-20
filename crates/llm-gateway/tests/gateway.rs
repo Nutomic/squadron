@@ -107,6 +107,7 @@ async fn machine_client_sends_key_and_user_agent_and_parses_cost() {
     assert_eq!(body["model"], json!(DIVERSITY_MODEL));
     assert_eq!(body["messages"][0]["role"], json!("system"));
     assert_eq!(body["messages"][1]["content"], json!("user prompt"));
+    assert_eq!(body["reasoning_effort"], json!("low"));
     assert_eq!(capture.attempts(), 1);
 }
 
@@ -149,6 +150,10 @@ async fn sprite_recipe_uses_gateway_headers_without_auth() {
     let result = recipe.chat(&recipe.build("system", "user")).await.unwrap();
     assert_eq!(result.text().as_deref(), Some("report"));
     assert_eq!(result.cost_usd(), Some(0.01));
+    assert_eq!(
+        capture.bodies.lock().unwrap()[0]["reasoning_effort"],
+        json!("low")
+    );
     assert_eq!(
         capture.header(SESSION_HEADER).as_deref(),
         Some("swarm-lane-7")

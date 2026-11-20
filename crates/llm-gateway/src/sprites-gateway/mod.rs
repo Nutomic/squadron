@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::types::DEFAULT_REASONING_EFFORT;
 use crate::{ChatRequest, LlmError, MessageContent, USER_AGENT};
 
 pub const GATEWAY_ENDPOINT: &str =
@@ -19,6 +20,7 @@ pub struct SpriteRecipe {
     model: String,
     session_id: String,
     timeout: Duration,
+    reasoning_effort: String,
 }
 
 impl SpriteRecipe {
@@ -32,6 +34,7 @@ impl SpriteRecipe {
             model: model.into(),
             session_id: session_id(lane_id.as_ref()),
             timeout: Duration::from_secs(180),
+            reasoning_effort: DEFAULT_REASONING_EFFORT.to_owned(),
         }
     }
 
@@ -42,6 +45,12 @@ impl SpriteRecipe {
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Config knob for the thinking effort; defaults to low.
+    pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Self {
+        self.reasoning_effort = effort.into();
         self
     }
 
@@ -68,6 +77,7 @@ impl SpriteRecipe {
         ChatRequest::new(self.model.clone())
             .system(system)
             .user(user)
+            .reasoning_effort(self.reasoning_effort.clone())
     }
 
     pub fn build_with_parts(&self, system: &str, parts: Vec<crate::ContentPart>) -> ChatRequest {
@@ -77,6 +87,7 @@ impl SpriteRecipe {
                 "user",
                 MessageContent::Parts(parts),
             ))
+            .reasoning_effort(self.reasoning_effort.clone())
     }
 
     pub async fn chat(&self, request: &ChatRequest) -> Result<crate::ChatResponse, LlmError> {
