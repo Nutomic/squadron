@@ -335,7 +335,7 @@ async fn tokei_fragment_renders_plain_text() {
     store.insert_lane(&run.id, 1, "{}").await.unwrap();
     let tokei = r#"{"Total":{"files":9,"code":1204}}"#;
     store
-        .set_artifacts(&run.id, 1, "t.tar.gz", tokei, None, "pending", "log")
+        .set_artifacts(&run.id, 1, "t.tar.gz", tokei, "log")
         .await
         .unwrap();
     let res = app
@@ -376,15 +376,11 @@ async fn thumb_gated_on_done_state() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
     store
-        .set_artifacts(
-            &run.id,
-            0,
-            "t.tar.gz",
-            "{}",
-            Some(png.to_str().unwrap()),
-            "done",
-            "log",
-        )
+        .set_artifacts(&run.id, 0, "t.tar.gz", "{}", "log")
+        .await
+        .unwrap();
+    store
+        .set_screenshot_state(&run.id, 0, "done", Some(png.to_str().unwrap()))
         .await
         .unwrap();
     let res = app
@@ -412,15 +408,7 @@ async fn source_download_serves_tarball_attachment() {
     let tar = std::env::temp_dir().join(format!("swarm-test-{}.tar.gz", std::process::id()));
     std::fs::write(&tar, b"fake gzip bytes").unwrap();
     store
-        .set_artifacts(
-            &run.id,
-            0,
-            tar.to_str().unwrap(),
-            "{}",
-            None,
-            "pending",
-            "log",
-        )
+        .set_artifacts(&run.id, 0, tar.to_str().unwrap(), "{}", "log")
         .await
         .unwrap();
     let res = app

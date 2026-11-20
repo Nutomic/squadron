@@ -514,15 +514,9 @@ async fn run_lane_attempt(
         let files_store = files_n.or(Some(impl_out.files as i64));
         let _ = ctx
             .store
-            .set_artifacts(
-                &run_id,
-                idx,
-                &tarball,
-                &tokei_json,
-                None,
-                "pending",
-                &console_tail,
-            )
+            // F1: the screenshot columns are owned by the queue; a pre-render
+            // made during the long impl session must survive completion.
+            .set_artifacts(&run_id, idx, &tarball, &tokei_json, &console_tail)
             .await;
         if let Some(f) = files_store {
             let _ = ctx
@@ -535,15 +529,7 @@ async fn run_lane_attempt(
         let tokei_json = serde_json::json!({"loc": 0, "files": impl_out.files}).to_string();
         let _ = ctx
             .store
-            .set_artifacts(
-                &run_id,
-                idx,
-                "",
-                &tokei_json,
-                None,
-                "pending",
-                &console_tail,
-            )
+            .set_artifacts(&run_id, idx, "", &tokei_json, &console_tail)
             .await;
     }
 
