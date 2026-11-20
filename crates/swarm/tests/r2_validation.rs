@@ -2,6 +2,7 @@
 
 //! R2-3 gate tests: API validation (400s), brief cap, run-id gating (404),
 //! and static-asset Cache-Control preservation.
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -16,13 +17,39 @@ use swarm::{router, AppState};
 
 const STATIC_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/static");
 
+/// The F3 per-IP rate limit reads the socket address through ConnectInfo;
+/// oneshot tests mock it (production uses into_make_service_with_connect_info).
+const MOCK_CONNECT_INFO: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 1234);
+
 async fn app() -> axum::Router {
     let store = store::Store::connect_in_memory().await.unwrap();
     store.migrate().await.unwrap();
     let state = AppState::new(store, SpriteClient::from_env(), PipelineConfig::default())
         .with_static_dir(PathBuf::from(STATIC_DIR))
         .without_pipeline();
-    router(Arc::new(state))
+    router(Arc::new(state)).layer(axum::extract::connect_info::MockConnectInfo(
+        MOCK_CONNECT_INFO,
+    ))
+}
+
+/// Review F3 #3: fetch a fresh double-submit token from a form GET.
+async fn csrf_token(app: &axum::Router) -> String {
+    let res = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    res.headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .expect("GET / must set swarm_csrf")
+        .strip_prefix("swarm_csrf=")
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned()
 }
 
 async fn body_string(body: Body) -> String {
@@ -81,12 +108,17 @@ async fn brief_over_cap_rejected_on_api_and_form() {
     .await;
     assert_eq!(res.status(), StatusCode::CREATED);
 
-    // web form rejects over-cap too
+    // web form rejects over-cap too (with a valid CSRF pair, review F3 #3)
+    let token = csrf_token(&app).await;
     let req = Request::builder()
         .method("POST")
         .uri("/runs")
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .body(Body::from(format!("brief={}", "x".repeat(4001))))
+        .header(header::COOKIE, format!("swarm_csrf={token}"))
+        .body(Body::from(format!(
+            "brief={}&csrf_token={token}",
+            "x".repeat(4001)
+        )))
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
@@ -120,14 +152,16 @@ async fn invalid_run_id_is_404_everywhere() {
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND, "GET {uri}");
     }
-    // promote is POST; it must also gate
+    // promote is POST; it must also gate (the form extractor must succeed for
+    // the handler's valid_id gate to run, so send a well-formed body)
     let res = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(format!("/{bad}/promote"))
-                .body(Body::empty())
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from("csrf_token=x"))
                 .unwrap(),
         )
         .await
@@ -201,11 +235,13 @@ async fn empty_brief_rejected_on_api_and_form() {
         );
     }
 
+    let token = csrf_token(&app).await;
     let req = Request::builder()
         .method("POST")
         .uri("/runs")
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .body(Body::from("brief="))
+        .header(header::COOKIE, format!("swarm_csrf={token}"))
+        .body(Body::from(format!("brief=&csrf_token={token}")))
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);

@@ -9,7 +9,8 @@ if (el) {
     target: el,
     props: {
       runId: el.dataset.runId,
-      eventsUrl: el.dataset.eventsUrl
+      eventsUrl: el.dataset.eventsUrl,
+      csrfToken: el.dataset.csrfToken
     }
   });
 }

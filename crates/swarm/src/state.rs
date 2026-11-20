@@ -9,6 +9,8 @@ use sprites_client::SpriteClient;
 use store::{Run, Store};
 use tokio::sync::RwLock;
 
+use crate::ratelimit::{RunLimiter, RunLimits};
+
 #[derive(Clone)]
 pub struct AppState {
     pub store: Store,
@@ -21,6 +23,8 @@ pub struct AppState {
     pub fixtures: bool,
     pub static_dir: PathBuf,
     pub launch_pipeline: bool,
+    /// Review F3: bounded anonymous run creation (per-IP + process caps).
+    pub limiter: RunLimiter,
 }
 
 impl AppState {
@@ -46,6 +50,7 @@ impl AppState {
             fixtures: false,
             static_dir: crate::static_dir(),
             launch_pipeline: true,
+            limiter: RunLimiter::new(RunLimits::from_env()),
         }
     }
 

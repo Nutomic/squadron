@@ -1,16 +1,19 @@
 use askama::Template;
 use axum::body::Body;
-use axum::extract::{Form, Path, State};
-use axum::http::{header, StatusCode};
+use axum::extract::{ConnectInfo, Form, Path, State};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html as HtmlResponse, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::{TimeZone, Utc};
 use serde::Deserialize;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use store::{Lane, Run, Store};
 use tokio_stream::wrappers::ReceiverStream;
 
+use crate::csrf;
+use crate::ratelimit::Rejection;
 use crate::state::AppState;
 
 pub type SharedState = Arc<AppState>;
@@ -48,6 +51,8 @@ pub fn router(state: SharedState) -> Router {
 #[template(path = "index.html")]
 pub struct IndexTemplate {
     pub briefs: Vec<Brief>,
+    /// Review F3 #3: double-submit CSRF token, also set as a cookie.
+    pub csrf_token: String,
 }
 
 pub struct Brief {
@@ -55,7 +60,8 @@ pub struct Brief {
     pub short: String,
 }
 
-async fn index() -> HtmlResponse<String> {
+async fn index() -> Response {
+    let token = csrf::new_token();
     let tpl = IndexTemplate {
         briefs: SAMPLE_BRIEFS
             .iter()
@@ -64,17 +70,32 @@ async fn index() -> HtmlResponse<String> {
                 short: truncate(b, 34),
             })
             .collect(),
+        csrf_token: token.clone(),
     };
-    HtmlResponse(tpl.render().unwrap_or_default())
+    let mut res = HtmlResponse(tpl.render().unwrap_or_default()).into_response();
+    let (name, value) = csrf::set_cookie_header(&token);
+    res.headers_mut().insert(name, value);
+    res
 }
 
 #[derive(Deserialize)]
 pub struct SubmitForm {
     pub brief: Option<String>,
     pub n: Option<i64>,
+    /// Review F3 #3: double-submit token (must match the swarm_csrf cookie).
+    pub csrf_token: Option<String>,
 }
 
-async fn submit(State(state): State<SharedState>, Form(form): Form<SubmitForm>) -> Response {
+async fn submit(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    ConnectInfo(info): ConnectInfo<SocketAddr>,
+    Form(form): Form<SubmitForm>,
+) -> Response {
+    // Review F3 #3: CSRF first (fail closed), then the rate limits.
+    if !csrf::check(&headers, form.csrf_token.as_deref()) {
+        return (StatusCode::FORBIDDEN, "invalid or missing CSRF token").into_response();
+    }
     let Some(brief) = form
         .brief
         .map(|b| b.trim().to_owned())
@@ -94,10 +115,59 @@ async fn submit(State(state): State<SharedState>, Form(form): Form<SubmitForm>) 
             .into_response();
     }
     let n = form.n.unwrap_or(state.config.n_lanes as i64).clamp(3, 10) as usize;
+    // Review F3 #1/#2: per-IP and process-wide run-creation limits; the form
+    // gets a graceful (HTML) retry message instead of a JSON error.
+    let ip = client_ip(&headers, ConnectInfo(info));
+    if let Err(rejection) = state.limiter.check(&ip, &state.store).await {
+        return too_many_requests_html(&rejection);
+    }
     match state.start_pipeline(brief, n, state.real_harness()).await {
-        Ok(run) => Redirect::to(&format!("/{}", run.id)).into_response(),
+        Ok(run) => {
+            state.limiter.record(&ip, &run.id);
+            Redirect::to(&format!("/{}", run.id)).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
+}
+
+/// Review F3 #2: 429 + Retry-After with a human-facing HTML page for the form
+/// path (the JSON API wraps the same reason in a JSON error).
+fn too_many_requests_html(rejection: &Rejection) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::RETRY_AFTER, "60")],
+        HtmlResponse(format!(
+            "<!DOCTYPE html><html><body><h1>429 — too many runs right now</h1>\
+             <p>{}.</p><p><a href=\"/\">Back to the form</a></p></body></html>",
+            html_escape(&rejection.message())
+        )),
+    )
+        .into_response()
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Review F3 #1: best-effort client IP for the per-IP run-creation limit.
+/// Reverse-proxy headers first (Fly sets `Fly-Client-IP`), then the socket
+/// address when the service was made with connect info, else a shared
+/// "unknown" bucket.
+pub(crate) fn client_ip(headers: &HeaderMap, info: ConnectInfo<SocketAddr>) -> String {
+    for name in ["x-forwarded-for", "fly-client-ip"] {
+        if let Some(value) = headers.get(name).and_then(|v| v.to_str().ok()) {
+            if let Some(first) = value.split(',').next() {
+                let ip = first.trim();
+                if !ip.is_empty() {
+                    return ip.to_owned();
+                }
+            }
+        }
+    }
+    info.0.ip().to_string()
 }
 
 #[derive(Template)]
@@ -298,6 +368,9 @@ pub struct GalleryTemplate {
     pub run_id: String,
     pub events_url: String,
     pub status: String,
+    /// Review F3 #3: CSRF token for the island's promote form (also set as a
+    /// cookie on this GET).
+    pub csrf_token: String,
 }
 
 async fn serve_static(State(state): State<SharedState>, Path(path): Path<String>) -> Response {
@@ -349,12 +422,17 @@ async fn gallery(State(state): State<SharedState>, Path(run_id): Path<String>) -
             enqueue_pending_render(&state.screenshots, &run.id, lane);
         }
     }
+    let token = csrf::new_token();
     let tpl = GalleryTemplate {
         run_id: run.id.clone(),
         events_url: format!("/{}/events", run.id),
         status: run.status.clone(),
+        csrf_token: token.clone(),
     };
-    HtmlResponse(tpl.render().unwrap_or_default()).into_response()
+    let mut res = HtmlResponse(tpl.render().unwrap_or_default()).into_response();
+    let (name, value) = csrf::set_cookie_header(&token);
+    res.headers_mut().insert(name, value);
+    res
 }
 
 async fn events(State(state): State<SharedState>, Path(run_id): Path<String>) -> Response {
@@ -593,9 +671,25 @@ async fn source(
     }
 }
 
-async fn promote(State(state): State<SharedState>, Path(run_id): Path<String>) -> Response {
+/// Review F3 #3: the promote POST carries the double-submit token too (the
+/// island's promote form includes it; the token is also rendered as
+/// data-csrf-token on the island root).
+#[derive(Deserialize)]
+pub struct PromoteForm {
+    pub csrf_token: Option<String>,
+}
+
+async fn promote(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+    Form(form): Form<PromoteForm>,
+) -> Response {
     if !valid_id(&run_id) {
         return not_found();
+    }
+    if !csrf::check(&headers, form.csrf_token.as_deref()) {
+        return (StatusCode::FORBIDDEN, "invalid or missing CSRF token").into_response();
     }
     match get_run(&state, &run_id).await {
         Some(run) if run.status == "judged" => {

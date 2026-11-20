@@ -20,6 +20,7 @@ orchestrator = { path = "../orchestrator" }
 sprites-client = { path = "../sprites-client" }
 llm-gateway = { path = "../llm-gateway" }
 prompts = { path = "../prompts" }
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

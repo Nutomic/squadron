@@ -137,6 +137,17 @@ impl Store {
             .collect())
     }
 
+    /// Review F3 #2: number of non-terminal runs (queued/running), backing the
+    /// process-wide concurrent-run cap.
+    pub async fn count_active_runs(&self) -> Result<i64, StoreError> {
+        let n = sqlx::query_scalar!(
+            "SELECT COUNT(*) AS \"n: i64\" FROM runs WHERE status IN ('queued', 'running')"
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n)
+    }
+
     pub async fn update_run_status(&self, id: &str, status: &str) -> Result<(), StoreError> {
         let result = sqlx::query!("UPDATE runs SET status = ? WHERE id = ?", status, id)
             .execute(&self.pool)
