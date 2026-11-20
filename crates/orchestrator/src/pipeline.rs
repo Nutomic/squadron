@@ -587,7 +587,14 @@ async fn run_implementer(
     let stdout = stdout.trim().to_string();
     let parsed: ImplementerOutput =
         gate_last_json(Role::Implementer, &stdout, &GateOptions::default())
-            .map_err(|e| format!("implementer: schema gate failed ({e})"))?;
+            .map_err(|e| {
+                // the raw agent output is untrusted data: name the gate failure
+                // and its size, never echo the payload itself
+                format!(
+                    "implementer: schema gate failed ({e}; output {} bytes, not stored)",
+                    stdout.len()
+                )
+            })?;
     // #13: honor the implementer's own report; a not-done or blocked claim is
     // a lane failure before artifacts/validation.
     if !parsed.done {
