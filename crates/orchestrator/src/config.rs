@@ -15,8 +15,9 @@ pub struct PipelineConfig {
 
 impl PipelineConfig {
     pub fn validate_n(n: usize) -> Result<(), String> {
-        if !(3..=10).contains(&n) {
-            return Err("n_lanes must be in range 3..=10".to_owned());
+        // 2 is the validation mini-swarm size (spec: Defaults).
+        if !(2..=10).contains(&n) {
+            return Err("n_lanes must be in range 2..=10".to_owned());
         }
         Ok(())
     }

@@ -667,10 +667,11 @@ async fn api_post_run_creates_run_without_html_redirect() {
 }
 
 /// R2-3#5: out-of-range n_lanes is a client error (400 + JSON), never a 500.
+/// n_lanes=2 is valid now (spec: validation mini-swarm size).
 #[tokio::test]
 async fn api_post_run_rejects_bad_n_lanes_with_400_json() {
     let (app, store) = app().await;
-    for n in [2, 11] {
+    for n in [1, 11] {
         let res = app
             .clone()
             .oneshot(
@@ -691,6 +692,22 @@ async fn api_post_run_rejects_bad_n_lanes_with_400_json() {
         assert!(value.get("error").is_some(), "error field expected");
     }
     assert!(store.list_runs().await.unwrap().is_empty());
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"brief":"mini swarm","n_lanes":2}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED, "n_lanes=2 must be valid");
+    let value: serde_json::Value =
+        serde_json::from_str(&body_string(res.into_body()).await).unwrap();
+    assert_eq!(value.get("n_lanes").unwrap(), &2);
 }
 
 /// R2-3#5: briefs are capped at 4000 chars on both the API and the web form.

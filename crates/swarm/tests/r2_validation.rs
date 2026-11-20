@@ -39,12 +39,12 @@ async fn post_json(app: &axum::Router, json: &str) -> axum::http::Response<Body>
     app.clone().oneshot(req).await.unwrap()
 }
 
-/// R2-3#5: out-of-range n_lanes (valid range is 3..=10) is a 400 with a JSON
-/// error body, never a 500.
+/// R2-3#5: out-of-range n_lanes (valid range is 2..=10; 2 is the validation
+/// mini-swarm size) is a 400 with a JSON error body, never a 500.
 #[tokio::test]
 async fn api_rejects_out_of_range_n_lanes_with_400() {
     let app = app().await;
-    for n in [0usize, 2, 11] {
+    for n in [0usize, 1, 11] {
         let res = post_json(&app, &format!(r#"{{"brief":"x site","n_lanes":{n}}}"#)).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "n_lanes={n}");
         let value: serde_json::Value = serde_json::from_str(&body_string(res.into_body()).await)
