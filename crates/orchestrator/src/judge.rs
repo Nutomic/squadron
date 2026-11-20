@@ -280,8 +280,11 @@ fn strip_event_handlers_and_js(input: &str) -> String {
                                 .find(|c: char| c.is_ascii_whitespace() || c == '>')
                                 .unwrap_or(after_name.len()),
                         };
-                        // "on" (2) + name (name_len + 1) + "=" (1) + value
-                        i += 2 + (name_len + 1) + 1 + value_len;
+                        // "on" (2) + name (name_len + 1) + rest of after_name
+                        // (value_len counts from '=' inclusive: adding a
+                        // separate '=' term would double-count it and eat the
+                        // closing '>'.
+                        i += 2 + (name_len + 1) + value_len;
                         continue;
                     }
                 }
