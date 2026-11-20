@@ -459,10 +459,8 @@ async fn get_run(state: &AppState, run_id: &str) -> Option<Run> {
 }
 
 fn valid_id(id: &str) -> bool {
-    !id.is_empty()
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    // #31: canonical ID validation shared with the store layer.
+    store::is_valid_run_id(id)
 }
 
 fn truncate(s: &str, max: usize) -> String {

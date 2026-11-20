@@ -30,6 +30,10 @@ impl PipelineConfig {
     }
 }
 
+/// #33: single canonical connector id used by both config defaults and the
+/// test-only HarnessMode default.
+pub const DEFAULT_GATEWAY_CONNECTOR_ID: &str = "sanCSEiLn9Np-G_Y5q2jKA";
+
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
@@ -40,7 +44,7 @@ impl Default for PipelineConfig {
             judge_deadline: Duration::from_secs(15 * 60),
             retries_per_lane: 1,
             data_dir: std::path::PathBuf::from("/data"),
-            gateway_connector_id: "sanCSEiLn9Np-G_Y5q2jKA".to_owned(),
+            gateway_connector_id: DEFAULT_GATEWAY_CONNECTOR_ID.to_owned(),
             test_mode: false,
         }
     }

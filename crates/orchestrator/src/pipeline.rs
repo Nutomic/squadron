@@ -56,7 +56,7 @@ pub enum HarnessMode {
 impl Default for HarnessMode {
     fn default() -> Self {
         HarnessMode::Real {
-            gateway_connector_id: "sanCSEiLn9Np-G_Y5q2jKA".to_owned(),
+            gateway_connector_id: crate::config::DEFAULT_GATEWAY_CONNECTOR_ID.to_owned(),
         }
     }
 }
