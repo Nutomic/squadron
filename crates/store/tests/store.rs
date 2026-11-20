@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
+
 use store::{is_valid_run_id, new_run_id, Store, StoreError};
 
 #[tokio::test]

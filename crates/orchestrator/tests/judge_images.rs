@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
@@ -78,7 +80,7 @@ async fn judge_sends_screenshot_image_parts_when_available() {
 
     let (out, _cost) = judge::run_judge(
         &client,
-        &[report.clone()],
+        &[report],
         &["<extract>".to_owned()],
         &[Some(data_url.clone())],
         std::time::Duration::from_secs(10),

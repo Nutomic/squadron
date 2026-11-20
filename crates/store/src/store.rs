@@ -228,6 +228,9 @@ impl Store {
         ensure_lane(result.rows_affected(), run_id, idx)
     }
 
+    // Arguments mirror the lane columns of a single UPDATE; a parameter
+    // struct would not reduce coupling, only re-pack the same values.
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_impl(
         &self,
         run_id: &str,
@@ -314,6 +317,8 @@ impl Store {
         ensure_lane(result.rows_affected(), run_id, idx)
     }
 
+    // See start_impl above: arguments mirror the lane columns of one UPDATE.
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_artifacts(
         &self,
         run_id: &str,

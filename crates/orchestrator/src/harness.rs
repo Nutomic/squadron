@@ -204,7 +204,6 @@ impl HarnessCache {
         let skipped = self.skipped.read().await.clone();
         let skipped_ref = &skipped;
         let mut winner = select_harness(|choice| {
-            let sprite = sprite;
             let skipped = skipped_ref;
             async move {
                 if skipped.contains(&choice) {
@@ -408,17 +407,29 @@ enum HarnessError {
 /// Run one prompt through the probed harness inside the sprite and return the
 /// captured output text. When `workdir` is given, the command runs inside that
 /// (sprite-side, relative) directory, created on demand.
+pub struct HarnessPrompt<'a> {
+    pub system: &'a str,
+    pub user: &'a str,
+    pub recipe: &'a SpriteRecipe,
+    pub timeout: Duration,
+    pub connector_env: Option<(String, String)>,
+    pub workdir: Option<&'a str>,
+}
+
 pub async fn run_prompt(
     cache: &HarnessCache,
     sprite: &SpriteClient,
     name: &str,
-    system: &str,
-    user: &str,
-    recipe: &SpriteRecipe,
-    timeout: Duration,
-    connector_env: Option<(String, String)>,
-    workdir: Option<&str>,
+    prompt: HarnessPrompt<'_>,
 ) -> Result<HarnessRun, String> {
+    let HarnessPrompt {
+        system,
+        user,
+        recipe,
+        timeout,
+        connector_env,
+        workdir,
+    } = prompt;
     let prompt_text = format!("{system}\n\n{user}");
     let connector_id = connector_env.as_ref().map(|(_, v)| v.clone());
     let opts = ExecOptions {
@@ -447,12 +458,8 @@ pub async fn run_prompt(
                 // The floor's first turn carries the writes-contract addendum.
                 let floor_user = format!("{user}\n\n{CURL_FLOOR_PROTOCOL}");
                 match curl_floor_loop(&floor_user, |turn_user: String| {
-                    let sprite = sprite;
-                    let recipe = recipe;
-                    let system = system;
                     let opts = opts.clone();
                     let workdir = workdir.clone();
-                    let cd_prefix = cd_prefix.clone();
                     Box::pin(async move {
                         let request = recipe.build(system, &turn_user);
                         let curl = recipe
@@ -771,12 +778,10 @@ fn balanced_object(s: &str) -> Option<String> {
         match b {
             b'"' => in_str = true,
             b'{' => depth += 1,
-            b'}' => {
-                if depth > 0 {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(s[..i + 1].to_owned());
-                    }
+            b'}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(s[..i + 1].to_owned());
                 }
             }
             _ => {}
@@ -788,6 +793,8 @@ fn balanced_object(s: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
+
     use super::*;
 
     #[test]

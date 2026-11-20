@@ -70,7 +70,7 @@ pub struct RunRequest {
 
 pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, String> {
     let n = req.n_lanes;
-    PipelineConfig::validate_n(n).map_err(|e| e)?;
+    PipelineConfig::validate_n(n)?;
     let created = now_ms();
     let run = ctx
         .store
@@ -620,12 +620,14 @@ async fn run_implementer(
                 &ctx.harness_cache,
                 &ctx.sprite,
                 sprite_name,
-                &prompt.system,
-                &prompt.user,
-                &recipe,
-                ctx.config.impl_deadline,
-                Some(connector_env),
-                Some(&sprite_workdir(run_id, idx)),
+                harness::HarnessPrompt {
+                    system: &prompt.system,
+                    user: &prompt.user,
+                    recipe: &recipe,
+                    timeout: ctx.config.impl_deadline,
+                    connector_env: Some(connector_env),
+                    workdir: Some(&sprite_workdir(run_id, idx)),
+                },
             )
             .await
             .map_err(|e| format!("implementer: {e}"))?;
@@ -750,12 +752,14 @@ async fn run_validator(
                 &ctx.harness_cache,
                 &ctx.sprite,
                 sprite_name,
-                &prompt.system,
-                &prompt.user,
-                &recipe,
-                ctx.config.val_deadline,
-                Some(connector_env),
-                Some(&sprite_workdir(run_id, idx)),
+                harness::HarnessPrompt {
+                    system: &prompt.system,
+                    user: &prompt.user,
+                    recipe: &recipe,
+                    timeout: ctx.config.val_deadline,
+                    connector_env: Some(connector_env),
+                    workdir: Some(&sprite_workdir(run_id, idx)),
+                },
             )
             .await
             .map_err(|e| format!("validator: {e}"))?;
@@ -805,7 +809,7 @@ async fn run_validator(
     if let Ok(report_json) = serde_json::to_string(&parsed) {
         let _ = ctx
             .store
-            .set_validator_report(&run_id, idx, &report_json)
+            .set_validator_report(run_id, idx, &report_json)
             .await;
     }
     Ok(ValRunResult {
@@ -1087,12 +1091,14 @@ fn lane_error_message(e: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
+
     use super::*;
 
     #[test]
     fn tail_4k_cuts_on_char_boundary() {
         // Multi-byte characters must never be split mid-sequence (#9).
-        let s: String = std::iter::repeat("héllo\u{1F600}").take(2000).collect();
+        let s: String = "héllo\u{1F600}".repeat(2000);
         let tail = tail_4k(&s);
         assert!(tail.len() <= 4096);
         assert!(std::str::from_utf8(tail.as_bytes()).is_ok());

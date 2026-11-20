@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
+
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::Router;

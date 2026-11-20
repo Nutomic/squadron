@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
+
 use llm_gateway::sprites_gateway::SpriteRecipe;
 use llm_gateway::{
     lane_model, ChatMessage, ChatRequest, ContentPart, MachineLlmClient, DEFAULT_REASONING_EFFORT,

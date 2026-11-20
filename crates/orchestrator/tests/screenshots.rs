@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
+
 use std::time::Duration;
 
 use orchestrator::ScreenshotQueue;

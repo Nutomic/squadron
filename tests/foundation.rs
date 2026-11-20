@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
+
 use std::time::Duration;
 
 use axum::extract::Json;
