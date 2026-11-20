@@ -1,32 +1,44 @@
 {% extends "base.html" %}
-{% block title %}sprite swarm — new run{% endblock %}
+{% block title %}Squadron — new run{% endblock %}
+{% block nav_home %}text-primary font-medium bg-[#EEF2FF]{% endblock %}
 {% block content %}
-<section class="hero py-8">
-  <div class="w-full max-w-3xl mx-auto">
-    <h1 class="text-3xl font-bold text-primary mb-2">new run</h1>
-    <p class="text-base-content/60 mb-6">one brief, N agents build it in parallel on Sprites, a judge picks the winner.</p>
-    <form method="post" action="/runs" class="flex flex-col gap-4">
+<section class="bg-base-200 border-b border-base-300">
+  <div class="max-w-2xl mx-auto px-4 pt-10 pb-8">
+    <p class="label-meta">Squadron</p>
+    <h1 class="mt-2 text-3xl font-semibold tracking-tight leading-tight">Describe your project</h1>
+    <p class="mt-2 text-[15px] text-base-content/60">One brief, N agents build it in parallel on isolated VMs. A judge crowns the winner.</p>
+  </div>
+</section>
+
+<section class="max-w-2xl mx-auto px-4 py-8 w-full">
+  <form method="post" action="/runs" class="card bg-base-100 border border-base-300 rounded-xl p-6 flex flex-col gap-5">
+    <div>
+      <label class="label-meta" for="brief">Project brief</label>
       <textarea id="brief" name="brief" rows="6" required
-        class="textarea textarea-bordered w-full bg-base-100 text-base-content placeholder-base-content/30"
-        placeholder="describe the web project to build..."></textarea>
-      <div class="flex flex-wrap gap-2 items-center">
-        <span class="text-xs text-base-content/50 mr-1">samples:</span>
-        {% for brief in briefs %}
-        <button type="button" class="btn btn-outline btn-xs text-base-content/70" data-brief="{{ brief.text }}">{{ brief.short }}</button>
-        {% endfor %}
-      </div>
-      <div class="flex flex-wrap items-center gap-4">
-        <label class="text-sm text-base-content/60" for="n">lanes</label>
-        <select id="n" name="n" class="select select-bordered select-sm bg-base-100 w-24">
+        class="textarea textarea-bordered w-full mt-2 bg-base-100 border-[#E4E4E7] rounded-lg text-sm leading-relaxed placeholder:text-base-content/30 focus:border-primary focus:outline-none"
+        placeholder="Describe the web project to build — audience, features, tone."></textarea>
+    </div>
+
+    <div class="flex flex-wrap gap-2 items-center">
+      <span class="label-meta mr-1">Samples</span>
+      {% for brief in briefs %}
+      <button type="button" class="chip-sample" data-brief="{{ brief.text }}">{{ brief.short }}</button>
+      {% endfor %}
+    </div>
+
+    <div class="flex flex-wrap items-end gap-5 border-t border-base-300 pt-5">
+      <div>
+        <label class="label-meta" for="n">Agents</label>
+        <select id="n" name="n" class="select select-bordered mt-1.5 bg-base-100 border-base-300 rounded-lg font-mono text-sm focus:border-primary focus:outline-none">
           {% for i in 3..11 %}
           <option value="{{ i }}" {% if i == 8 %}selected{% endif %}>{{ i }}</option>
           {% endfor %}
         </select>
-        <span class="text-xs text-base-content/40">agents compete in parallel</span>
-        <div class="flex-1"></div>
-        <button type="submit" class="btn btn-primary">launch swarm</button>
       </div>
-    </form>
-  </div>
+      <div class="flex-1"></div>
+      <button type="submit" class="btn btn-primary rounded-full px-7 font-semibold border-0">Launch run</button>
+    </div>
+    <p class="mono-num text-base-content/40 -mt-2">Runs N agents on isolated VMs &middot; each lane judged on the live site</p>
+  </form>
 </section>
 {% endblock %}
