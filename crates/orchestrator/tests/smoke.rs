@@ -154,6 +154,26 @@ async fn smoke_pipeline_mock_sprite_n3_judged_and_persisted() {
             events.iter().any(|e| e.kind == "state"),
             "state events recorded"
         );
+        // #17: a `cost` lane event must be appended atomically with each cost
+        // update, so the dashboard sparkline can always render.
+        assert!(
+            events.iter().any(|e| e.kind == "cost"),
+            "cost events recorded for sparkline"
+        );
+        // #18: the full validator report (features/bugs/security) is persisted
+        // and hydratable.
+        assert!(
+            lane.val_report_json.is_some(),
+            "validator report persisted for lane {}",
+            lane.idx
+        );
+        let report: prompts::ValidatorOutput =
+            serde_json::from_str(lane.val_report_json.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&report.features).unwrap(),
+            serde_json::json!(["game loop", "score"]),
+            "features hydrate from persisted report"
+        );
     }
 
     // DB persisted and queryable

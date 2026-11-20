@@ -35,6 +35,15 @@
       {% if val_summary.len() > 0 %}
       <pre class="whitespace-pre-wrap text-xs leading-relaxed bg-base-200 rounded p-3 text-base-content/80">{{ val_summary }}</pre>
       {% endif %}
+      {% if val_features.len() > 0 %}
+      <p class="text-xs mt-2"><span class="font-semibold text-base-content/70">features:</span> {{ val_features }}</p>
+      {% endif %}
+      {% if val_bugs.len() > 0 %}
+      <p class="text-xs mt-1"><span class="font-semibold text-base-content/70">bugs:</span> {{ val_bugs }}</p>
+      {% endif %}
+      {% if val_security.len() > 0 %}
+      <p class="text-xs mt-1"><span class="font-semibold text-base-content/70">security:</span> {{ val_security }}</p>
+      {% endif %}
     </div>
   </section>
   <div class="flex flex-col gap-6">

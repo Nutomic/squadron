@@ -121,6 +121,9 @@ async fn fixture_lane(Path(idx): Path<i64>) -> Response {
             "PASS - verified against code and live site.\n\nFeatures: full arcade loop (paddle, ball, bricks, score, hiscore), CRT scanline overlay, keyboard + touch controls, pause/resume.\n\nBugs: none observed in 30 rounds of play.\n\nSecurity: no external calls, no eval, no inline event handlers; all assets local.\n\nQuality: 8.5/10 - clean game loop at fixed timestep, readable state machine, no build tooling needed."
                 .to_owned()
         }).unwrap_or_default(),
+        val_features: "full arcade loop (paddle, ball, bricks, score, hiscore), CRT scanline overlay, keyboard + touch controls, pause/resume".to_owned(),
+        val_bugs: "none observed in 30 rounds of play".to_owned(),
+        val_security: "no external calls, no eval, no inline event handlers; all assets local".to_owned(),
         tokei_json: r#"{"Total":{"bytes":44_320,"files":14,"code":1_832}}"#.to_owned(),
         console_tail: lane.console_tail.clone().unwrap_or_default(),
         error: lane.error.clone(),

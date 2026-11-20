@@ -7,5 +7,35 @@ pub fn preamble(role: &str) -> String {
 }
 
 pub fn data_block(label: &str, content: &str) -> String {
-    format!("<data label=\"{label}\">\n{content}\n</data>\n")
+    format!(
+        "<data label=\"{label}\">\n{}\n</data>\n",
+        neutralize_data_closers(content)
+    )
+}
+
+/// Neutralize any literal `</data` sequence inside untrusted content so it can
+/// never close the enclosing data block early. A zero-width space is inserted
+/// right after the `<`, case-insensitively.
+pub fn neutralize_data_closers(content: &str) -> String {
+    let needle = "</data";
+    let bytes = content.as_bytes();
+    let mut out = String::with_capacity(content.len() + 8);
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if i + needle.len() <= bytes.len()
+            && bytes[i..i + needle.len()]
+                .iter()
+                .zip(needle.as_bytes())
+                .all(|(h, n)| h.to_ascii_lowercase() == n.to_ascii_lowercase())
+        {
+            out.push('<');
+            out.push('\u{200B}');
+            i += 1;
+            continue;
+        }
+        let ch = content[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }

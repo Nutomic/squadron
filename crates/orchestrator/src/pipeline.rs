@@ -538,6 +538,14 @@ async fn run_validator(
     gate_with_options(Role::Validator, &text, &GateOptions::default())
         .map_err(|e| format!("val schema: {e}; out={text}"))?;
     let parsed: ValidatorOutput = parse(Role::Validator, &text).map_err(|e| e.to_string())?;
+    // Persist the full report (features/bugs/security) so the judge and the
+    // lane detail view can be hydrated from the store.
+    if let Ok(report_json) = serde_json::to_string(&parsed) {
+        let _ = ctx
+            .store
+            .set_validator_report(&run_id, idx, &report_json)
+            .await;
+    }
     Ok(ValRunResult {
         verdict: parsed.verdict,
         summary: parsed.summary,

@@ -23,6 +23,7 @@ macro_rules! lane_from_query_row {
             val_quality: $row.val_quality,
             val_started_at: $row.val_started_at,
             val_deadline: $row.val_deadline,
+            val_report_json: $row.val_report_json,
             tarball_path: $row.tarball_path,
             tokei_json: $row.tokei_json,
             screenshot_path: $row.screenshot_path,
@@ -188,7 +189,7 @@ impl Store {
 
     pub async fn get_lane(&self, run_id: &str, idx: i64) -> Result<Option<Lane>, StoreError> {
         let row = sqlx::query!(
-            "SELECT run_id, idx, variant_json, sprite_name, impl_url, state, impl_model, impl_summary, impl_files, impl_started_at, impl_deadline, val_model, val_verdict, val_summary, val_quality, val_started_at, val_deadline, tarball_path, tokei_json, screenshot_path, screenshot_state, console_tail, cost_usd, error FROM lanes WHERE run_id = ? AND idx = ?",
+            "SELECT run_id, idx, variant_json, sprite_name, impl_url, state, impl_model, impl_summary, impl_files, impl_started_at, impl_deadline, val_model, val_verdict, val_summary, val_quality, val_started_at, val_deadline, val_report_json, tarball_path, tokei_json, screenshot_path, screenshot_state, console_tail, cost_usd, error FROM lanes WHERE run_id = ? AND idx = ?",
             run_id,
             idx
         )
@@ -199,7 +200,7 @@ impl Store {
 
     pub async fn list_lanes(&self, run_id: &str) -> Result<Vec<Lane>, StoreError> {
         let rows = sqlx::query!(
-            "SELECT run_id, idx, variant_json, sprite_name, impl_url, state, impl_model, impl_summary, impl_files, impl_started_at, impl_deadline, val_model, val_verdict, val_summary, val_quality, val_started_at, val_deadline, tarball_path, tokei_json, screenshot_path, screenshot_state, console_tail, cost_usd, error FROM lanes WHERE run_id = ? ORDER BY idx ASC",
+            "SELECT run_id, idx, variant_json, sprite_name, impl_url, state, impl_model, impl_summary, impl_files, impl_started_at, impl_deadline, val_model, val_verdict, val_summary, val_quality, val_started_at, val_deadline, val_report_json, tarball_path, tokei_json, screenshot_path, screenshot_state, console_tail, cost_usd, error FROM lanes WHERE run_id = ? ORDER BY idx ASC",
             run_id
         )
         .fetch_all(&self.pool)
@@ -391,15 +392,46 @@ impl Store {
         ensure_lane(result.rows_affected(), run_id, idx)
     }
 
+    /// Add a cost delta and append the matching `cost` lane event in one
+    /// transaction, so the sparkline series can never miss an update.
     pub async fn add_lane_cost(
         &self,
         run_id: &str,
         idx: i64,
         delta: f64,
     ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query!(
             "UPDATE lanes SET cost_usd = COALESCE(cost_usd, 0) + ? WHERE run_id = ? AND idx = ?",
             delta,
+            run_id,
+            idx
+        )
+        .execute(&mut *tx)
+        .await?;
+        ensure_lane(result.rows_affected(), run_id, idx)?;
+        append_event_tx(
+            &mut tx,
+            run_id,
+            idx,
+            now_wall_ms(),
+            "cost",
+            &delta.to_string(),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn set_validator_report(
+        &self,
+        run_id: &str,
+        idx: i64,
+        report_json: &str,
+    ) -> Result<(), StoreError> {
+        let result = sqlx::query!(
+            "UPDATE lanes SET val_report_json = ? WHERE run_id = ? AND idx = ?",
+            report_json,
             run_id,
             idx
         )
@@ -408,6 +440,9 @@ impl Store {
         ensure_lane(result.rows_affected(), run_id, idx)
     }
 
+    /// Append a lane event with a monotonic per-lane timestamp. The read of the
+    /// current max and the insert happen inside one immediate transaction so
+    /// concurrent publishers on the same lane cannot collide on the PK.
     pub async fn append_lane_event(
         &self,
         run_id: &str,
@@ -416,26 +451,10 @@ impl Store {
         kind: &str,
         payload: &str,
     ) -> Result<i64, StoreError> {
-        let max = sqlx::query!(
-            "SELECT COALESCE(MAX(ts), 0) AS max_ts FROM lane_events WHERE run_id = ? AND lane_idx = ?",
-            run_id,
-            lane_idx
-        )
-        .fetch_one(&self.pool)
-        .await?
-        .max_ts;
-        let ts = ts.max(max + 1);
-        sqlx::query!(
-            "INSERT INTO lane_events (run_id, lane_idx, ts, kind, payload) VALUES (?, ?, ?, ?, ?)",
-            run_id,
-            lane_idx,
-            ts,
-            kind,
-            payload
-        )
-        .execute(&self.pool)
-        .await?;
-        Ok(ts)
+        let mut tx = self.pool.begin().await?;
+        let assigned = append_event_tx(&mut tx, run_id, lane_idx, ts, kind, payload).await?;
+        tx.commit().await?;
+        Ok(assigned)
     }
 
     pub async fn list_lane_events(
@@ -461,6 +480,47 @@ impl Store {
             })
             .collect())
     }
+}
+
+/// Insert a lane event inside an existing transaction, assigning the next
+/// monotonic per-lane timestamp. Concurrent publishers serialize on the
+/// immediate transaction, so the (run_id, lane_idx, ts) primary key can never
+/// collide.
+async fn append_event_tx(
+    tx: &mut sqlx::SqliteConnection,
+    run_id: &str,
+    lane_idx: i64,
+    ts: i64,
+    kind: &str,
+    payload: &str,
+) -> Result<i64, StoreError> {
+    let max = sqlx::query!(
+        "SELECT COALESCE(MAX(ts), 0) AS max_ts FROM lane_events WHERE run_id = ? AND lane_idx = ?",
+        run_id,
+        lane_idx
+    )
+    .fetch_one(&mut *tx)
+    .await?
+    .max_ts;
+    let assigned = ts.max(max + 1);
+    sqlx::query!(
+        "INSERT INTO lane_events (run_id, lane_idx, ts, kind, payload) VALUES (?, ?, ?, ?, ?)",
+        run_id,
+        lane_idx,
+        assigned,
+        kind,
+        payload
+    )
+    .execute(&mut *tx)
+    .await?;
+    Ok(assigned)
+}
+
+fn now_wall_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn ensure(rows_affected: u64, id: &str) -> Result<(), StoreError> {

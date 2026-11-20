@@ -32,6 +32,7 @@ pub struct Lane {
     pub val_quality: Option<f64>,
     pub val_started_at: Option<i64>,
     pub val_deadline: Option<i64>,
+    pub val_report_json: Option<String>,
     pub tarball_path: Option<String>,
     pub tokei_json: Option<String>,
     pub screenshot_path: Option<String>,

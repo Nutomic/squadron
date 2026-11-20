@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT run_id, idx, variant_json, sprite_name, impl_url, state, impl_model, impl_summary, impl_files, impl_started_at, impl_deadline, val_model, val_verdict, val_summary, val_quality, val_started_at, val_deadline, tarball_path, tokei_json, screenshot_path, screenshot_state, console_tail, cost_usd, error FROM lanes WHERE run_id = ? ORDER BY idx ASC",
+  "query": "SELECT run_id, idx, variant_json, sprite_name, impl_url, state, impl_model, impl_summary, impl_files, impl_started_at, impl_deadline, val_model, val_verdict, val_summary, val_quality, val_started_at, val_deadline, val_report_json, tarball_path, tokei_json, screenshot_path, screenshot_state, console_tail, cost_usd, error FROM lanes WHERE run_id = ? AND idx = ?",
   "describe": {
     "columns": [
       {
@@ -89,43 +89,48 @@
         "type_info": "Integer"
       },
       {
-        "name": "tarball_path",
+        "name": "val_report_json",
         "ordinal": 17,
         "type_info": "Text"
       },
       {
-        "name": "tokei_json",
+        "name": "tarball_path",
         "ordinal": 18,
         "type_info": "Text"
       },
       {
-        "name": "screenshot_path",
+        "name": "tokei_json",
         "ordinal": 19,
         "type_info": "Text"
       },
       {
-        "name": "screenshot_state",
+        "name": "screenshot_path",
         "ordinal": 20,
         "type_info": "Text"
       },
       {
-        "name": "console_tail",
+        "name": "screenshot_state",
         "ordinal": 21,
         "type_info": "Text"
       },
       {
-        "name": "cost_usd",
+        "name": "console_tail",
         "ordinal": 22,
+        "type_info": "Text"
+      },
+      {
+        "name": "cost_usd",
+        "ordinal": 23,
         "type_info": "Float"
       },
       {
         "name": "error",
-        "ordinal": 23,
+        "ordinal": 24,
         "type_info": "Text"
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 2
     },
     "nullable": [
       false,
@@ -151,8 +156,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "3f2c355d7125b9ac75d7ad298fc1521c337b8765628eef38a65215685007c16c"
+  "hash": "b24d0d8c93f4f9991a4e90d7283ed8518b25e080a810f63cb198fbc97d2db58b"
 }

@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 use crate::preamble::{data_block, preamble, DATA_RULE};
-use crate::schema::{Role, ValidatorOutput};
+use crate::schema::Role;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompt {

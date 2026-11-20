@@ -141,10 +141,36 @@ pub struct LaneTemplate {
     pub val_verdict: Option<String>,
     pub val_quality: Option<String>,
     pub val_summary: String,
+    pub val_features: String,
+    pub val_bugs: String,
+    pub val_security: String,
     pub tokei_json: String,
     pub console_tail: String,
     pub error: Option<String>,
     pub screenshot_state: String,
+}
+
+fn text_or_list_to_string(v: &prompts::TextOrList) -> String {
+    match v {
+        prompts::TextOrList::Text(s) => s.clone(),
+        prompts::TextOrList::List(items) => items.join("; "),
+    }
+}
+
+/// Hydrate the persisted validator report (features/bugs/security) for the
+/// lane detail view; falls back to empty strings when absent.
+fn validator_report_view(lane: &store::Lane) -> (String, String, String) {
+    lane.val_report_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<prompts::ValidatorOutput>(json).ok())
+        .map(|out| {
+            (
+                text_or_list_to_string(&out.features),
+                text_or_list_to_string(&out.bugs),
+                text_or_list_to_string(&out.security),
+            )
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Template)]
@@ -280,6 +306,7 @@ async fn lane_detail(
     let Some(lane) = state.store.get_lane(&run_id, idx).await.ok().flatten() else {
         return not_found();
     };
+    let (val_features, val_bugs, val_security) = validator_report_view(&lane);
     let lane_tpl = LaneTemplate {
         run_id: run.id.clone(),
         idx: lane.idx,
@@ -291,6 +318,9 @@ async fn lane_detail(
         val_verdict: lane.val_verdict.clone(),
         val_quality: lane.val_quality.map(|q| format!("{q:.2}")),
         val_summary: lane.val_summary.clone().unwrap_or_default(),
+        val_features,
+        val_bugs,
+        val_security,
         tokei_json: lane.tokei_json.clone().unwrap_or_default(),
         console_tail: lane.console_tail.clone().unwrap_or_default(),
         error: lane.error.clone(),
