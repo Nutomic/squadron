@@ -656,3 +656,78 @@ async fn api_post_run_creates_run_without_html_redirect() {
     assert_eq!(run.brief, "api created run");
     assert_eq!(store.list_lanes(&run_id).await.unwrap().len(), 4);
 }
+
+/// #26: full CSP snapshot (script-src, frame-ancestors, object-src,
+/// X-Content-Type-Options) plus a negative test that raw inline script in lane
+/// data is HTML-escaped, never emitted.
+#[tokio::test]
+async fn full_csp_snapshot_and_inline_script_escaped() {
+    let (app, store) = app().await;
+    let run = store
+        .create_run("csp test", 3, 1_732_020_000_000)
+        .await
+        .unwrap();
+    store.insert_lane(&run.id, 0, "{}").await.unwrap();
+    store
+        .set_lane_error(
+            &run.id,
+            0,
+            "gate: <script>alert(1)</script> <img src=x onerror=alert(1)>",
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/{}/lane/0", run.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let csp = res
+        .headers()
+        .get(header::CONTENT_SECURITY_POLICY)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    for directive in [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self'",
+        "connect-src 'self'",
+        "form-action 'self'",
+        "base-uri 'self'",
+        "object-src 'none'",
+        "frame-ancestors 'self'",
+    ] {
+        assert!(csp.contains(directive), "CSP missing `{directive}`: {csp}");
+    }
+    assert_eq!(
+        res.headers()
+            .get(header::X_CONTENT_TYPE_OPTIONS)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "nosniff"
+    );
+
+    let html = body_string(res.into_body()).await;
+    assert!(
+        !html.contains("<script>alert(1)"),
+        "raw inline script must not reach the HTML"
+    );
+    assert!(
+        html.contains("&lt;script&gt;"),
+        "escaped error text expected"
+    );
+    assert!(
+        !html.contains("<img src=x"),
+        "raw img tag must not reach the HTML"
+    );
+}
