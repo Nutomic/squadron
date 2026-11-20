@@ -731,3 +731,120 @@ async fn full_csp_snapshot_and_inline_script_escaped() {
         "raw img tag must not reach the HTML"
     );
 }
+
+/// R2 finding 6: a stream attached to an already-terminal run sends exactly
+/// one snapshot and ends — no perpetual DB polling.
+#[tokio::test]
+async fn sse_stream_ends_for_terminal_run() {
+    let (app, store) = app().await;
+    let run = store
+        .create_run("terminal sse test", 2, 1_732_020_000_000)
+        .await
+        .unwrap();
+    store
+        .finish_run(&run.id, "judged", "verdict card", 1, 1.0, 1_732_020_999_000)
+        .await
+        .unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/{}/events", run.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = res.into_body();
+    let frames = tokio::time::timeout(std::time::Duration::from_secs(5), async move {
+        let mut stream = body.into_data_stream();
+        let mut frames = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            frames.push(chunk.unwrap());
+        }
+        frames
+    })
+    .await
+    .expect("terminal SSE stream did not end");
+    assert!(
+        !frames.is_empty(),
+        "the final snapshot is still delivered once"
+    );
+    assert!(frames.iter().any(|f| {
+        let s = String::from_utf8_lossy(f);
+        s.starts_with("data: ") && s.contains("\"status\":\"judged\"")
+    }));
+    assert!(
+        !frames
+            .iter()
+            .any(|f| String::from_utf8_lossy(f).contains(": hb")),
+        "no heartbeats are needed for a terminal run"
+    );
+}
+
+/// R2 finding 6: the hub payload is the wake signal; when it reports a
+/// terminal status the stream delivers the final snapshot and ends.
+#[tokio::test]
+async fn sse_stream_ends_when_hub_reports_terminal_status() {
+    let store = Store::connect_in_memory().await.unwrap();
+    store.migrate().await.unwrap();
+    let state = AppState::new(
+        store.clone(),
+        SpriteClient::from_env(),
+        PipelineConfig::default(),
+    )
+    .with_fixtures(true)
+    .with_static_dir(PathBuf::from(STATIC_DIR))
+    .without_pipeline();
+    let run = store
+        .create_run("hub sse test", 2, 1_732_020_000_000)
+        .await
+        .unwrap();
+    store.insert_lane(&run.id, 0, "{}").await.unwrap();
+
+    // Register a hub for the run the way start_pipeline does.
+    let hub = orchestrator::SseHub::new(16);
+    state.hubs.write().await.insert(run.id.clone(), hub.clone());
+    let app = router(Arc::new(state));
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/{}/events", run.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = res.into_body();
+
+    // Wake the stream with a terminal hub payload.
+    hub.publish(orchestrator::snapshot::RunSnapshot {
+        run: orchestrator::snapshot::RunView {
+            id: run.id.clone(),
+            status: "judged".to_owned(),
+            judge_verdict: Some("winner card".to_owned()),
+            winner_lane: Some(0),
+        },
+        lanes: vec![],
+        ts: 1_732_021_000_000,
+    });
+
+    let frames = tokio::time::timeout(std::time::Duration::from_secs(5), async move {
+        let mut stream = body.into_data_stream();
+        let mut frames = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            frames.push(chunk.unwrap());
+        }
+        frames
+    })
+    .await
+    .expect("hub-driven SSE stream did not end");
+    assert!(
+        frames.len() >= 2,
+        "initial snapshot plus a wake-driven update expected"
+    );
+}
