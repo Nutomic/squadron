@@ -231,7 +231,7 @@ pub fn parse_info_url(text: &str) -> Option<String> {
         if trimmed.starts_with('|') || trimmed.starts_with('│') {
             let cells: Vec<String> = trimmed
                 .trim_matches(|c| c == '|' || c == '│')
-                .split(|c| c == '|' || c == '│')
+                .split(['|', '│'])
                 .map(|c| c.trim().to_owned())
                 .collect();
             for pair in cells.windows(2) {

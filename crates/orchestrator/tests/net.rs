@@ -1,6 +1,7 @@
 //! Audit R3 finding 2: server-initiated fetches of agent-controlled URLs must
 //! not follow unvalidated redirects or connect to non-public resolved IPs
 //! (link-local metadata endpoints, RFC1918, loopback).
+#![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
 
 use std::sync::Arc;
 

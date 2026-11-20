@@ -372,18 +372,22 @@ fn config_update(args: &[String]) -> Result<String, (i32, String)> {
     // R3-A #2: real CLI semantics require the sprite to be named explicitly;
     // `sprite config update --url-auth public` without `-s <name>` fails on
     // the Machine ("sprite name required"). The mock refuses too.
-    let name = args
-        .iter()
-        .position(|a| a == "-s")
-        .and_then(|i| args.get(i + 1))
-        .ok_or_else(|| {
-            (
+    let s_at = match args.iter().position(|a| a == "-s") {
+        Some(i) => i,
+        None => {
+            return Err((
                 2,
                 "config update: sprite name required (-s <name>)".to_owned(),
-            )
-        })?;
+            ))
+        }
+    };
+    let name = args.get(s_at + 1).ok_or_else(|| {
+        (
+            2,
+            "config update: sprite name required (-s <name>)".to_owned(),
+        )
+    })?;
     // argv shape: `config update -s <name> --url-auth public`
-    let s_at = args.iter().position(|a| a == "-s").unwrap();
     if args.get(s_at + 2).map(String::as_str) != Some("--url-auth")
         || args.get(s_at + 3).map(String::as_str) != Some("public")
     {

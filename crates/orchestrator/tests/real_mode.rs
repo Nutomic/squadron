@@ -7,6 +7,7 @@
 //!
 //! This file intentionally contains a single test: it mutates process env
 //! (PATH, cwd, MOCK_* vars) and must not race with a sibling test.
+#![allow(clippy::unwrap_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -129,16 +130,18 @@ async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
         ..SpriteConfig::default()
     });
 
-    let mut config = PipelineConfig::default();
-    config.n_lanes = 3;
-    config.max_running_slots = 10;
-    config.retries_per_lane = 0;
-    config.test_mode = false; // REAL MODE
-    config.data_dir = project.path().join("data");
+    let config = PipelineConfig {
+        n_lanes: 3,
+        max_running_slots: 10,
+        retries_per_lane: 0,
+        test_mode: false, // REAL MODE
+        data_dir: project.path().join("data"),
+        impl_deadline: Duration::from_secs(30),
+        val_deadline: Duration::from_secs(30),
+        judge_deadline: Duration::from_secs(15),
+        ..PipelineConfig::default()
+    };
     std::fs::create_dir_all(&config.data_dir).unwrap();
-    config.impl_deadline = Duration::from_secs(30);
-    config.val_deadline = Duration::from_secs(30);
-    config.judge_deadline = Duration::from_secs(15);
 
     let screenshots = ScreenshotQueue::with_data_dir(store.clone(), false, config.data_dir.clone());
     let slots = SlotSemaphore::new(config.max_running_slots);

@@ -193,7 +193,7 @@ fn client_for(url: &Url, addrs: &[SocketAddr]) -> Result<reqwest::Client, String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn is_public_ip_rejects_non_routable_targets() {
@@ -213,11 +213,17 @@ mod tests {
         assert!(is_public_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
         assert!(is_public_ip(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
         // IPv6: loopback, link-local, unique-local rejected; global accepted.
-        assert!(!is_public_ip(IpAddr::V6("::1".parse().unwrap())));
-        assert!(!is_public_ip(IpAddr::V6("fe80::1".parse().unwrap())));
-        assert!(!is_public_ip(IpAddr::V6("fc00::1".parse().unwrap())));
-        assert!(!is_public_ip(IpAddr::V6("::".parse().unwrap())));
-        assert!(is_public_ip(IpAddr::V6("2606:4700::1111".parse().unwrap())));
+        assert!(!is_public_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(!is_public_ip(IpAddr::V6(Ipv6Addr::new(
+            0xfe80, 0, 0, 0, 0, 0, 0, 1
+        ))));
+        assert!(!is_public_ip(IpAddr::V6(Ipv6Addr::new(
+            0xfc00, 0, 0, 0, 0, 0, 0, 1
+        ))));
+        assert!(!is_public_ip(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
+        assert!(is_public_ip(IpAddr::V6(Ipv6Addr::new(
+            0x2606, 0x4700, 0, 0, 0, 0, 0, 0x1111
+        ))));
     }
 
     #[tokio::test]

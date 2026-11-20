@@ -55,7 +55,7 @@ async fn judge_once(
         let mut parts = vec![llm_gateway::ContentPart::text(&prompt.user)];
         for (report, img) in reports.iter().zip(images.iter()) {
             if let Some(img) = img {
-                parts.push(llm_gateway::ContentPart::text(&format!(
+                parts.push(llm_gateway::ContentPart::text(format!(
                     "lane {}:",
                     report.lane_idx
                 )));
