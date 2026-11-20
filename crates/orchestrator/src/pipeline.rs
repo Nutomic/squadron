@@ -651,11 +651,8 @@ async fn transition(
 }
 
 pub async fn publish(ctx: &PipelineCtx, run_id: &str) {
-    if let (Ok(Some(run)), Ok(lanes)) = (
-        ctx.store.get_run(run_id).await,
-        ctx.store.list_lanes(run_id).await,
-    ) {
-        let snap = snapshot::snapshot_for(&run, &lanes, now_ms());
+    if let Ok(Some(run)) = ctx.store.get_run(run_id).await {
+        let snap = snapshot::snapshot_for(&ctx.store, &run).await;
         ctx.sse.publish(snap);
     }
 }

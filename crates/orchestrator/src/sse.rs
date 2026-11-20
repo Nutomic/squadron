@@ -1,10 +1,10 @@
 use tokio::sync::broadcast;
 
-use crate::snapshot::RunSnapshot;
+use crate::snapshot::Snapshot;
 
 #[derive(Debug, Clone)]
 pub struct SseHub {
-    tx: broadcast::Sender<RunSnapshot>,
+    tx: broadcast::Sender<Snapshot>,
 }
 
 impl SseHub {
@@ -13,11 +13,11 @@ impl SseHub {
         Self { tx }
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<RunSnapshot> {
+    pub fn subscribe(&self) -> broadcast::Receiver<Snapshot> {
         self.tx.subscribe()
     }
 
-    pub fn publish(&self, snapshot: RunSnapshot) {
+    pub fn publish(&self, snapshot: Snapshot) {
         let _ = self.tx.send(snapshot);
     }
 }

@@ -32,7 +32,7 @@ pub fn fixture_snapshot() -> Snapshot {
                 build_ms: None,
                 files: None,
                 loc: None,
-                screenshot_state: Some("pending".to_owned()),
+                screenshot_state: "pending".to_owned(),
                 val_verdict: None,
                 verdict_card: None,
                 console_tail: Some(
@@ -51,7 +51,7 @@ pub fn fixture_snapshot() -> Snapshot {
                 build_ms: Some(2_640_000),
                 files: Some(14),
                 loc: Some(1832),
-                screenshot_state: Some("done".to_owned()),
+                screenshot_state: "done".to_owned(),
                 val_verdict: Some("pass".to_owned()),
                 verdict_card: Some("Winner: crisp arcade loop, authentic CRT styling, zero dead links.".to_owned()),
                 console_tail: Some(
@@ -70,7 +70,7 @@ pub fn fixture_snapshot() -> Snapshot {
                 build_ms: None,
                 files: None,
                 loc: None,
-                screenshot_state: Some("pending".to_owned()),
+                screenshot_state: "pending".to_owned(),
                 val_verdict: None,
                 verdict_card: None,
                 console_tail: Some(
@@ -124,7 +124,7 @@ async fn fixture_lane(Path(idx): Path<i64>) -> Response {
         tokei_json: r#"{"Total":{"bytes":44_320,"files":14,"code":1_832}}"#.to_owned(),
         console_tail: lane.console_tail.clone().unwrap_or_default(),
         error: lane.error.clone(),
-        screenshot_state: lane.screenshot_state.clone().unwrap_or_default(),
+        screenshot_state: lane.screenshot_state.clone(),
     };
     Html(tpl.render().unwrap_or_default()).into_response()
 }
