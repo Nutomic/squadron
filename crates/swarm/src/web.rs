@@ -5,6 +5,7 @@ use axum::http::{header, StatusCode};
 use axum::response::{Html as HtmlResponse, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Router;
+use chrono::{TimeZone, Utc};
 use serde::Deserialize;
 use std::sync::Arc;
 use store::{Lane, Run, Store};
@@ -148,6 +149,93 @@ pub struct LaneTemplate {
     pub console_tail: String,
     pub error: Option<String>,
     pub screenshot_state: String,
+}
+
+/// #32: the lane fields shared by real and fixture lane rendering, so both
+/// paths map them identically. Val-report fields are filled per source.
+#[derive(Clone)]
+pub struct LaneCommon {
+    pub idx: i64,
+    pub state: String,
+    pub model: String,
+    pub impl_url: Option<String>,
+    pub build: String,
+    pub cost: String,
+    pub val_verdict: Option<String>,
+    pub tokei_json: String,
+    pub console_tail: String,
+    pub error: Option<String>,
+    pub screenshot_state: String,
+}
+
+impl LaneCommon {
+    pub fn from_store(lane: &Lane) -> Self {
+        Self {
+            idx: lane.idx,
+            state: lane.state.clone(),
+            model: lane.impl_model.clone().unwrap_or_default(),
+            impl_url: lane.impl_url.clone(),
+            build: build_time(lane),
+            cost: fmt_cost(lane.cost_usd),
+            val_verdict: lane.val_verdict.clone(),
+            tokei_json: lane.tokei_json.clone().unwrap_or_default(),
+            console_tail: lane.console_tail.clone().unwrap_or_default(),
+            error: lane.error.clone(),
+            screenshot_state: lane.screenshot_state.clone().unwrap_or_default(),
+        }
+    }
+
+    pub fn from_view(view: &crate::snapshot::LaneSnapshot) -> Self {
+        Self {
+            idx: view.idx,
+            state: view.state.clone(),
+            model: view.model.clone().unwrap_or_default(),
+            impl_url: view.impl_url.clone(),
+            build: view
+                .build_ms
+                .map(fmt_build_ms)
+                .unwrap_or_else(|| "-".to_owned()),
+            cost: fmt_cost(view.cost_usd),
+            val_verdict: view.val_verdict.clone(),
+            tokei_json: String::new(),
+            console_tail: view.console_tail.clone().unwrap_or_default(),
+            error: None,
+            screenshot_state: view.screenshot_state.clone().unwrap_or_default(),
+        }
+    }
+}
+
+impl LaneTemplate {
+    pub fn from_common(run_id: &str, c: &LaneCommon) -> Self {
+        Self {
+            run_id: run_id.to_owned(),
+            idx: c.idx,
+            state: c.state.clone(),
+            model: c.model.clone(),
+            impl_url: c.impl_url.clone(),
+            build: c.build.clone(),
+            cost: c.cost.clone(),
+            val_verdict: c.val_verdict.clone(),
+            val_quality: None,
+            val_summary: String::new(),
+            val_features: String::new(),
+            val_bugs: String::new(),
+            val_security: String::new(),
+            tokei_json: c.tokei_json.clone(),
+            console_tail: c.console_tail.clone(),
+            error: c.error.clone(),
+            screenshot_state: c.screenshot_state.clone(),
+        }
+    }
+}
+
+fn fmt_build_ms(ms: i64) -> String {
+    let mins = ms / 60_000;
+    if mins >= 60 {
+        format!("{}h{}m", mins / 60, mins % 60)
+    } else {
+        format!("{mins}m")
+    }
 }
 
 fn text_or_list_to_string(v: &prompts::TextOrList) -> String {
@@ -306,7 +394,14 @@ async fn lane_detail(
     let Some(lane) = state.store.get_lane(&run_id, idx).await.ok().flatten() else {
         return not_found();
     };
+    let common = LaneCommon::from_store(&lane);
+    let mut lane_tpl = LaneTemplate::from_common(run.id.as_str(), &common);
     let (val_features, val_bugs, val_security) = validator_report_view(&lane);
+    lane_tpl.val_quality = lane.val_quality.map(|q| format!("{q:.2}"));
+    lane_tpl.val_summary = lane.val_summary.clone().unwrap_or_default();
+    lane_tpl.val_features = val_features;
+    lane_tpl.val_bugs = val_bugs;
+    lane_tpl.val_security = val_security;
     // #3: viewing a lane also triggers the lazy screenshot render.
     if let Some(url) = lane.impl_url.clone() {
         let current = lane.screenshot_state.clone().unwrap_or_default();
@@ -319,25 +414,6 @@ async fn lane_detail(
             });
         }
     }
-    let lane_tpl = LaneTemplate {
-        run_id: run.id.clone(),
-        idx: lane.idx,
-        state: lane.state.clone(),
-        model: lane.impl_model.clone().unwrap_or_default(),
-        impl_url: lane.impl_url.clone(),
-        build: build_time(&lane),
-        cost: fmt_cost(lane.cost_usd),
-        val_verdict: lane.val_verdict.clone(),
-        val_quality: lane.val_quality.map(|q| format!("{q:.2}")),
-        val_summary: lane.val_summary.clone().unwrap_or_default(),
-        val_features,
-        val_bugs,
-        val_security,
-        tokei_json: lane.tokei_json.clone().unwrap_or_default(),
-        console_tail: lane.console_tail.clone().unwrap_or_default(),
-        error: lane.error.clone(),
-        screenshot_state: lane.screenshot_state.clone().unwrap_or_default(),
-    };
     HtmlResponse(lane_tpl.render().unwrap_or_default()).into_response()
 }
 
@@ -474,14 +550,7 @@ fn truncate(s: &str, max: usize) -> String {
 
 fn build_time(lane: &Lane) -> String {
     match (lane.impl_started_at, lane.val_started_at) {
-        (Some(start), Some(end)) if end >= start => {
-            let mins = (end - start) / 60_000;
-            if mins >= 60 {
-                format!("{}h{}m", mins / 60, mins % 60)
-            } else {
-                format!("{mins}m")
-            }
-        }
+        (Some(start), Some(end)) if end >= start => fmt_build_ms(end - start),
         _ => "-".to_owned(),
     }
 }
@@ -494,31 +563,10 @@ fn fmt_cost(cost: Option<f64>) -> String {
 }
 
 pub fn fmt_utc(ms: i64) -> String {
-    let secs = ms.div_euclid(1000);
-    let millis = ms.rem_euclid(1000);
-    let days = secs.div_euclid(86_400);
-    let secs_of_day = secs.rem_euclid(86_400);
-    let (y, m, d) = civil_from_days(days);
-    format!(
-        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}.{:03}Z",
-        secs_of_day / 3600,
-        (secs_of_day % 3600) / 60,
-        secs_of_day % 60,
-        millis
-    )
-}
-
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
+    match Utc.timestamp_millis_opt(ms).single() {
+        Some(t) => t.format("%Y-%m-%d %H:%M:%S%.3fZ").to_string(),
+        None => "-".to_owned(),
+    }
 }
 
 fn not_found() -> Response {
