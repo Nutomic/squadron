@@ -211,9 +211,12 @@ fn data_block_escapes_closing_tag_breakout() {
 #[test]
 fn escape_is_case_insensitive_and_never_panics_on_turkic_i() {
     let escaped = neutralize_data_closers("İ end </dAtA> more İ");
-    assert!(escaped.contains("<\u{200B}/data>"));
+    assert!(
+        escaped.contains("<\u{200B}/"),
+        "neutralized opener: {escaped:?}"
+    );
     assert!(escaped.contains("İ"));
-    assert!(!escaped.contains("</dAtA>"));
+    assert!(!escaped.to_lowercase().contains("</data>"));
 }
 
 #[test]

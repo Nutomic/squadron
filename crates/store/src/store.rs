@@ -400,7 +400,10 @@ impl Store {
         idx: i64,
         delta: f64,
     ) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await?;
+        // BEGIN IMMEDIATE takes the write lock up front: a deferred transaction
+        // upgrades from a shared read lock and can deadlock, surfacing as
+        // SQLITE_BUSY (code 5) under concurrent writers. Same for both txn paths.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let result = sqlx::query!(
             "UPDATE lanes SET cost_usd = COALESCE(cost_usd, 0) + ? WHERE run_id = ? AND idx = ?",
             delta,
@@ -451,7 +454,10 @@ impl Store {
         kind: &str,
         payload: &str,
     ) -> Result<i64, StoreError> {
-        let mut tx = self.pool.begin().await?;
+        // BEGIN IMMEDIATE takes the write lock up front: a deferred transaction
+        // upgrades from a shared read lock and can deadlock, surfacing as
+        // SQLITE_BUSY (code 5) under concurrent writers. Same for both txn paths.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let assigned = append_event_tx(&mut tx, run_id, lane_idx, ts, kind, payload).await?;
         tx.commit().await?;
         Ok(assigned)
