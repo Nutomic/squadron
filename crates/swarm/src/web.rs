@@ -117,6 +117,8 @@ pub struct RunRow {
     pub brief: String,
     pub status: String,
     pub created: String,
+    /// Full-precision timestamp kept for the hover title only.
+    pub created_full: String,
 }
 
 async fn runs_page(State(state): State<SharedState>) -> HtmlResponse<String> {
@@ -133,15 +135,20 @@ async fn runs_table(State(state): State<SharedState>) -> HtmlResponse<String> {
 
 async fn load_rows(store: &Store) -> Vec<RunRow> {
     match store.list_runs().await {
-        Ok(runs) => runs
-            .into_iter()
-            .map(|r| RunRow {
-                id: r.id,
-                brief: truncate(&r.brief, 120),
-                status: r.status,
-                created: fmt_utc(r.created_at),
-            })
-            .collect(),
+        Ok(mut runs) => {
+            // The subtitle promises "newest first" — enforce it here.
+            runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            let now_ms = Utc::now().timestamp_millis();
+            runs.into_iter()
+                .map(|r| RunRow {
+                    id: r.id,
+                    brief: truncate(&r.brief, 120),
+                    status: r.status,
+                    created: fmt_relative(r.created_at, now_ms),
+                    created_full: fmt_utc(r.created_at),
+                })
+                .collect()
+        }
         Err(_) => Vec::new(),
     }
 }
@@ -617,10 +624,41 @@ pub(crate) fn valid_brief_len(brief: &str) -> bool {
 
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
-        s.to_owned()
-    } else {
-        let cut: String = s.chars().take(max).collect();
-        format!("{cut}...")
+        return s.to_owned();
+    }
+    let cut: String = s.chars().take(max).collect();
+    // Prefer a word boundary so sample chips and briefs never cut mid-word.
+    if let Some(space) = cut.rfind(char::is_whitespace) {
+        if space >= max / 2 {
+            let trimmed: String = cut.chars().take(space).collect();
+            return format!("{trimmed}...");
+        }
+    }
+    format!("{cut}...")
+}
+
+/// Relative age for the runs table ("2h ago"); falls back to a short date
+/// (no milliseconds) once the run is older than a week.
+fn fmt_relative(ms: i64, now_ms: i64) -> String {
+    let diff = (now_ms - ms).max(0);
+    let mins = diff / 60_000;
+    if mins < 1 {
+        return "just now".to_owned();
+    }
+    if mins < 60 {
+        return format!("{mins}m ago");
+    }
+    let hours = mins / 60;
+    if hours < 24 {
+        return format!("{hours}h ago");
+    }
+    let days = hours / 24;
+    if days < 7 {
+        return format!("{days}d ago");
+    }
+    match Utc.timestamp_millis_opt(ms).single() {
+        Some(t) => t.format("%b %d %H:%M").to_string(),
+        None => "-".to_owned(),
     }
 }
 
