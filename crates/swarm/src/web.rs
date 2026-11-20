@@ -15,6 +15,12 @@ use crate::state::AppState;
 
 pub type SharedState = Arc<AppState>;
 
+/// R2 finding 6: a run cannot change once it reaches one of these statuses, so
+/// SSE streams stop there instead of polling the database forever.
+fn is_terminal_status(status: &str) -> bool {
+    matches!(status, "judged" | "failed" | "promoted")
+}
+
 const SAMPLE_BRIEFS: [&str; 3] = [
     "A 1996-style Netscape-era homepage for a fictional browser launch.",
     "Marketing site for a VM product pitched at AI agents, not people.",
@@ -312,6 +318,13 @@ async fn gallery(State(state): State<SharedState>, Path(run_id): Path<String>) -
     let Some(run) = get_run(&state, &run_id).await else {
         return not_found();
     };
+    // R2 finding 2: viewing the gallery enqueues pending renders so gallery
+    // cards fill in without visiting each lane page first.
+    if let Ok(lanes) = state.store.list_lanes(&run.id).await {
+        for lane in &lanes {
+            enqueue_pending_render(&state.screenshots, &run.id, lane);
+        }
+    }
     let tpl = GalleryTemplate {
         run_id: run.id.clone(),
         events_url: format!("/{}/events", run.id),
@@ -325,6 +338,7 @@ async fn events(State(state): State<SharedState>, Path(run_id): Path<String>) ->
         return not_found();
     }
     let store = state.store.clone();
+    let screenshots = state.screenshots.clone();
     let first = match crate::snapshot::build_snapshot(&store, &run_id).await {
         Some(s) => s,
         None => return not_found(),
@@ -333,37 +347,48 @@ async fn events(State(state): State<SharedState>, Path(run_id): Path<String>) ->
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(4);
     tokio::spawn(async move {
         let mut last = String::new();
-        let mut snapshot = Some(first);
         let mut last_hb = std::time::Instant::now();
+        // R2 finding 6: hub payloads are the wake signal (event-driven, no
+        // per-second DB polling); the wire format stays the full UI snapshot,
+        // rebuilt once per wake. Without a hub, fall back to the single
+        // initial DB snapshot and only re-check on the slow heartbeat.
+        if send_snapshot(&tx, &mut last, &first).await {
+            return;
+        }
+        // A run that is already terminal at connect time gets exactly one
+        // snapshot and the stream ends.
+        if is_terminal_status(&first.run.status) {
+            screenshots.evict_terminal(&run_id).await;
+            return;
+        }
         loop {
             let mut hub_closed = false;
+            let mut hub_terminal = false;
             match hub_rx.as_mut() {
                 Some(hub_rx) => {
                     tokio::select! {
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
-                        msg = hub_rx.recv() => {
-                            hub_closed = matches!(
-                                msg,
-                                Err(tokio::sync::broadcast::error::RecvError::Closed)
-                            );
-                        }
+                        msg = hub_rx.recv() => match msg {
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                hub_closed = true;
+                            }
+                            Err(_) => {}
+                            Ok(payload) => {
+                                hub_terminal = is_terminal_status(&payload.run.status);
+                            }
+                        },
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {}
                     }
                 }
-                None => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+                None => tokio::time::sleep(std::time::Duration::from_secs(15)).await,
             }
             if hub_closed {
                 hub_rx = None;
             }
-            if let Some(snap) = snapshot.take() {
-                if let Ok(json) = serde_json::to_string(&snap) {
-                    if json != last {
-                        last = json.clone();
-                        let frame = format!("data: {json}\n\n");
-                        if tx.send(Ok(frame.into())).await.is_err() {
-                            break;
-                        }
-                    }
-                }
+            let Some(snap) = crate::snapshot::build_snapshot(&store, &run_id).await else {
+                break;
+            };
+            if send_snapshot(&tx, &mut last, &snap).await {
+                break;
             }
             if last_hb.elapsed() >= std::time::Duration::from_secs(15) {
                 last_hb = std::time::Instant::now();
@@ -375,10 +400,48 @@ async fn events(State(state): State<SharedState>, Path(run_id): Path<String>) ->
                     break;
                 }
             }
-            snapshot = crate::snapshot::build_snapshot(&store, &run_id).await;
+            // Terminal (from the hub payload or the fresh snapshot): send the
+            // final state, evict cached screenshot entries for the run, stop.
+            if hub_terminal || is_terminal_status(&snap.run.status) {
+                screenshots.evict_terminal(&run_id).await;
+                break;
+            }
         }
     });
     crate::fixture::sse_response(ReceiverStream::new(rx))
+}
+
+/// Send one snapshot frame; true when the receiver is gone.
+async fn send_snapshot(
+    tx: &tokio::sync::mpsc::Sender<Result<axum::body::Bytes, std::io::Error>>,
+    last: &mut String,
+    snap: &crate::snapshot::Snapshot,
+) -> bool {
+    match serde_json::to_string(snap) {
+        Ok(json) if json != *last => {
+            *last = json.clone();
+            let frame = format!("data: {json}\n\n");
+            tx.send(Ok(frame.into())).await.is_err()
+        }
+        _ => false,
+    }
+}
+
+/// R2 finding 2: enqueue a lazy screenshot render for a lane whose render has
+/// not started (or queued) yet, without blocking the response.
+fn enqueue_pending_render(queue: &orchestrator::ScreenshotQueue, run_id: &str, lane: &Lane) {
+    let Some(url) = lane.impl_url.clone() else {
+        return;
+    };
+    let current = lane.screenshot_state.clone().unwrap_or_default();
+    if current.is_empty() || current == "pending" || current == "queued" {
+        let queue = queue.clone();
+        let rid = run_id.to_owned();
+        let idx = lane.idx;
+        tokio::spawn(async move {
+            queue.request(&rid, idx, &url).await;
+        });
+    }
 }
 
 async fn lane_detail(
@@ -403,17 +466,7 @@ async fn lane_detail(
     lane_tpl.val_bugs = val_bugs;
     lane_tpl.val_security = val_security;
     // #3: viewing a lane also triggers the lazy screenshot render.
-    if let Some(url) = lane.impl_url.clone() {
-        let current = lane.screenshot_state.clone().unwrap_or_default();
-        if current.is_empty() || current == "pending" || current == "queued" {
-            let queue = state.screenshots.clone();
-            let rid = run_id.clone();
-            let i = idx;
-            tokio::spawn(async move {
-                queue.request(&rid, i, &url).await;
-            });
-        }
-    }
+    enqueue_pending_render(&state.screenshots, &run_id, &lane);
     HtmlResponse(lane_tpl.render().unwrap_or_default()).into_response()
 }
 
@@ -446,16 +499,7 @@ async fn thumb(
     };
     // #3: first view triggers the lazy render for lanes that have not been
     // rendered yet (pending or failed-before-render).
-    if let Some(url) = lane.impl_url.clone() {
-        let current = lane.screenshot_state.clone().unwrap_or_default();
-        if current.is_empty() || current == "pending" || current == "queued" {
-            let queue = state.screenshots.clone();
-            let rid = run_id.clone();
-            tokio::spawn(async move {
-                queue.request(&rid, idx, &url).await;
-            });
-        }
-    }
+    enqueue_pending_render(&state.screenshots, &run_id, &lane);
     let Some(state_str) = lane.screenshot_state else {
         return not_found();
     };
