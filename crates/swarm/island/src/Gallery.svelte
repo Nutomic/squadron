@@ -39,11 +39,63 @@
     dialog.showModal();
     try {
       const res = await fetch(`/${runId}/lane/${idx}/tokei`);
-      box.innerHTML = await res.text();
+      const html = await res.text();
+      box.innerHTML = renderTokei(idx, html);
+      box.querySelector('[data-tokei-close]')?.addEventListener('click', () => dialog.close());
     } catch {
       box.innerHTML =
         '<div class="p-5 text-sm text-error">Failed to load tokei output.</div>';
     }
+  }
+
+  /// The tokei endpoint returns the raw JSON in a <pre>; parse it into
+  /// label/value rows. Falls back to the raw output when parsing fails.
+  function renderTokei(idx, html) {
+    let rows = null;
+    try {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const raw = doc.querySelector('pre')?.textContent ?? '';
+      // tokei JSON may contain Rust-style numeric separators (44_320)
+      const json = JSON.parse(raw.replace(/(\d)_(\d)/g, '$1$2'));
+      const t = json.Total ?? {};
+      if (t.files != null || t.code != null) {
+        rows = [
+          ['Files', t.files],
+          ['Lines of code', t.code],
+          ['Bytes', t.bytes],
+        ];
+      }
+    } catch {
+      rows = null;
+    }
+    const close =
+      '<div class="px-5 py-3 border-t border-base-300 flex justify-end">' +
+      '<button type="button" data-tokei-close class="btn btn-ghost btn-xs rounded-full">Close</button></div>';
+    if (!rows) {
+      return '<div class="p-5">' + html + '</div>' + close;
+    }
+    const fmtBytes = (b) =>
+      b == null ? '—' : b >= 1024 ? `${(b / 1024).toFixed(1)} KB` : `${b} B`;
+    const body = rows
+      .map(
+        ([label, v]) =>
+          `<div class="flex items-center justify-between gap-6 py-2 border-b border-base-300 last:border-b-0">
+            <span class="label-meta">${label}</span>
+            <span class="mono-num">${v == null ? '—' : Number(v).toLocaleString('en-US')}</span>
+          </div>`
+      )
+      .join('');
+    return (
+      `<div class="p-5">
+        <div class="flex items-center justify-between gap-3 mb-3">
+          <h3 class="text-[15px] font-semibold tracking-tight flex items-center gap-2.5">
+            <span class="lane-dot lane-hue-${idx % 6}"></span>Code size — lane ${idx}
+          </h3>
+          <span class="mono-num text-base-content/40">tokei</span>
+        </div>
+        <div class="px-1">${body}</div>
+      </div>` + close
+    );
   }
 </script>
 
@@ -51,8 +103,10 @@
   <span class="chip {conn === 'live' ? 'chip-success' : conn === 'error' ? 'chip-error' : 'chip-neutral chip-pulse'}">{conn}</span>
   <span class="text-[13px] text-base-content/55">lanes: <span class="mono-num">{snap?.lanes?.length ?? '—'}</span></span>
   {#if runningLanes > 0}
-    <div class="progress-thin w-32" aria-hidden="true"></div>
-    <span class="text-[13px] text-base-content/55">{runningLanes} in progress</span>
+    <span class="flex items-center gap-2 text-[13px] text-base-content/55">
+      <span class="progress-thin w-24" aria-hidden="true"></span>
+      {runningLanes} in progress
+    </span>
   {/if}
   {#if totalCost != null}
     <span class="text-[13px] text-base-content/55">total cost: <span class="mono-num">${totalCost.toFixed(2)}</span></span>
@@ -77,7 +131,7 @@
 {/if}
 
 {#if snap?.lanes?.length}
-  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 items-start">
     {#each snap.lanes as lane (lane.idx)}
       <LaneCard {lane} {runId} isWinner={lane.idx === winner} onTokei={openTokei} />
     {/each}
