@@ -42,3 +42,42 @@ async fn screenshot_queue_transitions_to_done() {
     let again = queue.request(&run.id, 0, "https://example.invalid").await;
     assert_eq!(again, "done");
 }
+
+/// R2 finding 2: ensure_rendered enqueues the job when needed and returns only
+/// once a terminal state is reached (bounded internally by the caller's wait).
+#[tokio::test(flavor = "multi_thread")]
+async fn ensure_rendered_waits_until_terminal_state() {
+    let store = Store::connect_in_memory().await.unwrap();
+    store.migrate().await.unwrap();
+    store.create_run("brief", 3, 0).await.unwrap();
+    let run = store.list_runs().await.unwrap().remove(0);
+    store.insert_lane(&run.id, 0, "{}").await.unwrap();
+
+    let queue = ScreenshotQueue::new(store.clone(), true);
+    let state = queue
+        .ensure_rendered(
+            &run.id,
+            0,
+            "https://example.invalid",
+            Duration::from_secs(10),
+        )
+        .await;
+    assert_eq!(state, "done", "test-mode render completes quickly");
+
+    // The cache holds the terminal entry until it is evicted.
+    assert_eq!(
+        queue.pending_state(&run.id, 0).await,
+        Some("done".to_owned())
+    );
+
+    // R2 finding 6: evict_terminal drops cached terminal entries for the run;
+    // request() re-adopts the state from the store afterwards.
+    queue.evict_terminal(&run.id).await;
+    assert_eq!(queue.pending_state(&run.id, 0).await, None);
+    let again = queue.request(&run.id, 0, "https://example.invalid").await;
+    assert_eq!(again, "done", "state is re-adopted from the store");
+    assert_eq!(
+        queue.pending_state(&run.id, 0).await,
+        Some("done".to_owned())
+    );
+}

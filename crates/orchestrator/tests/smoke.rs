@@ -140,10 +140,12 @@ async fn smoke_pipeline_mock_sprite_n3_judged_and_persisted() {
         assert!(lane.tarball_path.is_some(), "artifacts tarball recorded");
         assert!(lane.tokei_json.is_some(), "tokei recorded");
         assert!(lane.console_tail.is_some(), "console tail recorded");
+        // R2 finding 2: renders are now ensured before the judge phase, so a
+        // completed (judged) run has terminal screenshot states, not pending.
         assert_eq!(
             lane.screenshot_state.as_deref(),
-            Some("pending"),
-            "screenshot lazy/pending at completion"
+            Some("done"),
+            "screenshot rendered before judging"
         );
         let events = store.list_lane_events(&run.id, lane.idx).await.unwrap();
         assert!(

@@ -221,4 +221,89 @@ impl ScreenshotQueue {
     pub fn notify(&self) -> Arc<Notify> {
         self.notify.clone()
     }
+
+    fn is_terminal_state(state: &str) -> bool {
+        state == "done" || state == "failed"
+    }
+
+    /// Last known state for a lane: in-memory cache first, then the store.
+    async fn state_for(&self, run_id: &str, lane_idx: i64) -> Option<String> {
+        {
+            let map = self.pending.read().await;
+            if let Some(s) = map.get(&(run_id.to_owned(), lane_idx)) {
+                return Some(s.clone());
+            }
+        }
+        if let Ok(Some(lane)) = self.store.get_lane(run_id, lane_idx).await {
+            if let Some(s) = lane.screenshot_state {
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            }
+        }
+        None
+    }
+
+    /// Cached (not store-adopted) state for a lane, for introspection/tests.
+    pub async fn pending_state(&self, run_id: &str, lane_idx: i64) -> Option<String> {
+        self.pending
+            .read()
+            .await
+            .get(&(run_id.to_owned(), lane_idx))
+            .cloned()
+    }
+
+    /// R2 finding 2: ensure a render has been attempted and reached a terminal
+    /// state within `timeout`. Enqueues the job when needed, waits bounded on
+    /// the worker's notify, and returns the last known state ("pending" when
+    /// the wait expires without a terminal state).
+    pub async fn ensure_rendered(
+        &self,
+        run_id: &str,
+        lane_idx: i64,
+        url: &str,
+        timeout: std::time::Duration,
+    ) -> String {
+        let _ = self.request(run_id, lane_idx, url).await;
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if let Some(s) = self.state_for(run_id, lane_idx).await {
+                if Self::is_terminal_state(&s) {
+                    return s;
+                }
+            }
+            // Register for the worker's wake before re-checking, so a state
+            // change that lands between checks cannot be missed.
+            let notified = self.notify.notified();
+            if let Some(s) = self.state_for(run_id, lane_idx).await {
+                if Self::is_terminal_state(&s) {
+                    return s;
+                }
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return self
+                    .state_for(run_id, lane_idx)
+                    .await
+                    .unwrap_or_else(|| "pending".to_owned());
+            }
+            tokio::select! {
+                _ = notified => {}
+                _ = tokio::time::sleep(remaining) => {
+                    return self
+                        .state_for(run_id, lane_idx)
+                        .await
+                        .unwrap_or_else(|| "pending".to_owned());
+                }
+            }
+        }
+    }
+
+    /// R2 finding 6: drop cached terminal entries for a run. `request`
+    /// re-adopts terminal states from the store, so eviction only frees
+    /// memory once nothing can change anymore.
+    pub async fn evict_terminal(&self, run_id: &str) {
+        let mut map = self.pending.write().await;
+        map.retain(|(rid, _), state| !(rid == run_id && Self::is_terminal_state(state)));
+    }
 }

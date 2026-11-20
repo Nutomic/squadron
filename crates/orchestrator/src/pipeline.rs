@@ -4,8 +4,8 @@ use std::sync::Arc;
 use base64::Engine as _;
 use llm_gateway::{lane_model, MachineLlmClient};
 use prompts::{
-    gate_with_options, parse, DiversityOutput, GateOptions, ImplementerOutput, JudgeOutput, Role,
-    ValidatorOutput, Verdict,
+    gate_and_scan_injections, gate_with_options, parse, DiversityOutput, GateOptions,
+    ImplementerOutput, JudgeOutput, Role, ValidatorOutput, Verdict,
 };
 use serde_json::Value;
 use sprites_client::{ExecOptions, SpriteClient};
@@ -83,7 +83,7 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
     }
 
     // diversity
-    let variants = generate_variants(&ctx, &req.brief, n).await;
+    let (variants, diversity_cost) = generate_variants(&ctx, &req.brief, n).await;
     for (idx, v) in variants.iter().enumerate() {
         let vjson = serde_json::to_string(v).unwrap_or_else(|_| "{}".to_owned());
         ctx.store
@@ -100,7 +100,9 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
     let run_id = run.id.clone();
     let ctx_bg = ctx.clone();
     tokio::spawn(async move {
-        if let Err(e) = execute_run(ctx_bg.clone(), run_id.clone(), req.harness).await {
+        if let Err(e) =
+            execute_run(ctx_bg.clone(), run_id.clone(), req.harness, diversity_cost).await
+        {
             let _ = ctx_bg.store.update_run_status(&run_id, "failed").await;
             let ts = now_ms();
             for i in 0..n as i64 {
@@ -120,43 +122,58 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
         .ok_or_else(|| "run missing".to_owned())
 }
 
-async fn generate_variants(ctx: &PipelineCtx, brief: &str, n: usize) -> Vec<Value> {
+async fn generate_variants(ctx: &PipelineCtx, brief: &str, n: usize) -> (Vec<Value>, f64) {
+    let fallback = || {
+        prompts::template_variants(n)
+            .into_iter()
+            .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
+            .collect::<Vec<Value>>()
+    };
     // try machine LLM diversity generator if available
     if let Some(llm) = &ctx.machine_llm {
         let prompt = prompts::diversity_prompt(brief, n);
         let request = llm_gateway::ChatRequest::new(llm_gateway::DIVERSITY_MODEL)
             .system(&prompt.system)
             .user(&prompt.user);
-        if let Ok(resp) = llm.chat(&request).await {
-            if let Some(text) = resp.text() {
-                let opts = GateOptions {
-                    expected_variants: Some(n),
-                    max_verdict_sentences: None,
-                    expected_lane_indices: None,
-                };
-                if gate_with_options(Role::Diversity, &text, &opts).is_ok() {
-                    if let Ok(parsed) = parse::<DiversityOutput>(Role::Diversity, &text) {
-                        return parsed
-                            .variants
-                            .into_iter()
-                            .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
-                            .collect();
+        // R2 finding 3: a diversity call costs real allowance even when its
+        // output is rejected; count it against the run either way.
+        match llm.chat(&request).await {
+            Ok(resp) => {
+                let cost = resp.cost_usd().unwrap_or(0.0);
+                if let Some(text) = resp.text() {
+                    let opts = GateOptions {
+                        expected_variants: Some(n),
+                        max_verdict_sentences: None,
+                        expected_lane_indices: None,
+                    };
+                    if gate_with_options(Role::Diversity, &text, &opts).is_ok() {
+                        if let Ok(parsed) = parse::<DiversityOutput>(Role::Diversity, &text) {
+                            return (
+                                parsed
+                                    .variants
+                                    .into_iter()
+                                    .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
+                                    .collect(),
+                                cost,
+                            );
+                        }
                     }
                 }
+                (fallback(), cost)
             }
+            Err(_) => (fallback(), 0.0),
         }
+    } else {
+        // fallback
+        (fallback(), 0.0)
     }
-    // fallback
-    prompts::template_variants(n)
-        .into_iter()
-        .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
-        .collect()
 }
 
 async fn execute_run(
     ctx: Arc<PipelineCtx>,
     run_id: String,
     harness: HarnessMode,
+    diversity_cost: f64,
 ) -> Result<(), String> {
     let lanes = ctx
         .store
@@ -191,7 +208,7 @@ async fn execute_run(
         .cloned()
         .collect();
     if validated.len() >= 2 {
-        run_judge_phase(&ctx, &run_id, &validated).await?;
+        run_judge_phase(&ctx, &run_id, &validated, diversity_cost).await?;
     } else {
         // mark run failed if not enough
         let _ = ctx.store.update_run_status(&run_id, "failed").await;
@@ -502,6 +519,28 @@ async fn run_lane_attempt(
         .add_lane_cost(&run_id, idx, val_out.cost_usd)
         .await
         .ok();
+    // R2 finding 5: a validator `verdict: fail` must demote the lane out of
+    // the judge set. The report stays persisted (val_verdict, val_report_json)
+    // so the detail view keeps showing it; the lane is failed-with-report.
+    if val_out.verdict == Verdict::Fail {
+        let _ = ctx
+            .store
+            .append_lane_event(
+                &run_id,
+                idx,
+                now_ms(),
+                "log",
+                "validator verdict: fail; lane excluded from judge set",
+            )
+            .await;
+        let _ = ctx
+            .store
+            .set_lane_error(&run_id, idx, "validator: verdict fail (report retained)")
+            .await;
+        transition(&ctx, &run_id, idx, LaneState::Failed).await?;
+        publish(&ctx, &run_id).await;
+        return Ok(());
+    }
     transition(&ctx, &run_id, idx, LaneState::Validated).await?;
     publish(&ctx, &run_id).await;
 
@@ -534,7 +573,7 @@ async fn run_implementer(
     variant_json: &str,
     harness: &HarnessMode,
 ) -> Result<ImplRunResult, String> {
-    let stdout = match harness {
+    let (stdout, harness_cost) = match harness {
         HarnessMode::Command { impl_command, .. } => {
             let workdir = lane_workdir(ctx, run_id, idx);
             let _ = std::fs::create_dir_all(&workdir);
@@ -546,7 +585,7 @@ async fn run_implementer(
                 .exec(sprite_name, impl_command, &opts)
                 .await
                 .map_err(|e| format!("implementer exec: {e}"))?;
-            out.stdout
+            (out.stdout, 0.0)
         }
         HarnessMode::Real { .. } => {
             let variant: Value = serde_json::from_str(variant_json)
@@ -581,19 +620,43 @@ async fn run_implementer(
                     &format!("harness choice: {}", run.choice.as_str()),
                 )
                 .await;
-            run.output
+            // R2 finding 3: the gateway-reported cost travels with the run;
+            // cost was never inside the agent's own JSON.
+            let cost = harness_cost_of(&run);
+            (run.output, cost)
         }
     };
     let stdout = stdout.trim().to_string();
-    let parsed: ImplementerOutput =
-        gate_last_json(Role::Implementer, &stdout, &GateOptions::default()).map_err(|e| {
-            // the raw agent output is untrusted data: name the gate failure
-            // and its size, never echo the payload itself
-            format!(
-                "implementer: schema gate failed ({e}; output {} bytes, not stored)",
-                stdout.len()
+    let (parsed, markers) =
+        gate_last_json::<ImplementerOutput>(Role::Implementer, &stdout, &GateOptions::default())
+            .map_err(|e| {
+                // the raw agent output is untrusted data: name the gate failure
+                // and its size, never echo the payload itself
+                format!(
+                    "implementer: schema gate failed ({e}; output {} bytes, not stored)",
+                    stdout.len()
+                )
+            })?;
+    // R2 finding 4 (#21 regression): injection markers must actually act.
+    // An injection marker fails the lane; the error propagates through
+    // run_lane (transient? no) to a hard failure.
+    if !markers.is_empty() {
+        let joined = markers.join(",");
+        let _ = ctx
+            .store
+            .append_lane_event(
+                run_id,
+                idx,
+                now_ms(),
+                "injection",
+                &format!("role={} paths={joined}", Role::Implementer.as_str()),
             )
-        })?;
+            .await;
+        return Err(format!(
+            "injection: marker detected in {} output (paths: {joined})",
+            Role::Implementer.as_str()
+        ));
+    }
     // #13: honor the implementer's own report; a not-done or blocked claim is
     // a lane failure before artifacts/validation.
     if !parsed.done {
@@ -605,12 +668,11 @@ async fn run_implementer(
             parsed.blockers.join("; ")
         ));
     }
-    let _ = gate_injection_free(Role::Implementer, &run_id, idx, &stdout, ctx).await;
     Ok(ImplRunResult {
         summary: parsed.summary,
         files: parsed.files,
         run_command: parsed.run_command,
-        cost_usd: cost_from_output(&stdout).unwrap_or(0.0),
+        cost_usd: harness_cost,
         console_tail: tail_4k(&stdout),
     })
 }
@@ -624,7 +686,7 @@ async fn run_validator(
     impl_summary: &str,
     harness: &HarnessMode,
 ) -> Result<ValRunResult, String> {
-    let stdout = match harness {
+    let (stdout, harness_cost) = match harness {
         HarnessMode::Command { val_command, .. } => {
             let workdir = lane_workdir(ctx, run_id, idx);
             let _ = std::fs::create_dir_all(&workdir);
@@ -636,7 +698,7 @@ async fn run_validator(
                 .exec(sprite_name, val_command, &opts)
                 .await
                 .map_err(|e| format!("validator exec: {e}"))?;
-            out.stdout
+            (out.stdout, 0.0)
         }
         HarnessMode::Real { .. } => {
             // Real mode: run the real validator report prompt through the
@@ -665,13 +727,34 @@ async fn run_validator(
             )
             .await
             .map_err(|e| format!("validator: {e}"))?;
-            run.output
+            // R2 finding 3: gateway-reported cost, not a probe into the
+            // agent's own JSON.
+            let cost = harness_cost_of(&run);
+            (run.output, cost)
         }
     };
     let stdout = stdout.trim().to_string();
-    let parsed: ValidatorOutput = gate_last_json(Role::Validator, &stdout, &GateOptions::default())
-        .map_err(|e| format!("validator: schema gate failed ({e})"))?;
-    let _ = gate_injection_free(Role::Validator, &run_id, idx, &stdout, ctx).await;
+    let (parsed, markers) =
+        gate_last_json::<ValidatorOutput>(Role::Validator, &stdout, &GateOptions::default())
+            .map_err(|e| format!("validator: schema gate failed ({e})"))?;
+    // R2 finding 4: injection markers in validator output also fail the lane.
+    if !markers.is_empty() {
+        let joined = markers.join(",");
+        let _ = ctx
+            .store
+            .append_lane_event(
+                run_id,
+                idx,
+                now_ms(),
+                "injection",
+                &format!("role={} paths={joined}", Role::Validator.as_str()),
+            )
+            .await;
+        return Err(format!(
+            "injection: marker detected in {} output (paths: {joined})",
+            Role::Validator.as_str()
+        ));
+    }
     // Persist the full report (features/bugs/security) so the judge and the
     // lane detail view can be hydrated from the store.
     if let Ok(report_json) = serde_json::to_string(&parsed) {
@@ -684,7 +767,7 @@ async fn run_validator(
         verdict: parsed.verdict,
         summary: parsed.summary,
         quality_score: parsed.quality_score,
-        cost_usd: cost_from_output(&stdout).unwrap_or(0.0),
+        cost_usd: harness_cost,
     })
 }
 
@@ -711,11 +794,47 @@ async fn collect_lane_screenshot_images(
     out
 }
 
+/// R2 finding 2: nothing rendered before judging meant the judge never saw any
+/// screenshot. Before the judge phase, synchronously ensure a render for every
+/// validated lane: a 200-check first (unreachable sites are skipped), then a
+/// bounded wait on the screenshot queue. Lanes whose render fails are skipped
+/// (the judge degrades to text-only for them, per #12).
+const JUDGE_RENDER_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
+
+async fn ensure_judge_renders(ctx: &PipelineCtx, run_id: &str, validated: &[store::Lane]) {
+    for lane in validated {
+        let Some(url) = lane.impl_url.clone() else {
+            continue;
+        };
+        if !ctx.config.test_mode && !artifacts::check_http_200(&url).await {
+            tracing::warn!(
+                run_id,
+                lane = lane.idx,
+                "judge render skipped: URL did not answer 200"
+            );
+            continue;
+        }
+        let state = ctx
+            .screenshots
+            .ensure_rendered(run_id, lane.idx, &url, JUDGE_RENDER_WAIT)
+            .await;
+        if state != "done" {
+            tracing::warn!(
+                run_id,
+                lane = lane.idx,
+                "judge render not available (state {state}); lane judged without image"
+            );
+        }
+    }
+}
+
 async fn run_judge_phase(
     ctx: &PipelineCtx,
     run_id: &str,
     validated: &[store::Lane],
+    diversity_cost: f64,
 ) -> Result<(), String> {
+    ensure_judge_renders(ctx, run_id, validated).await;
     // gather validator reports and sanitized extracts
     let reports = judge::validator_reports_from_lanes(validated);
     let mut extracts = Vec::new();
@@ -756,7 +875,10 @@ async fn run_judge_phase(
         .list_lanes(run_id)
         .await
         .map_err(|e| e.to_string())?;
-    let total_cost: f64 = lanes.iter().filter_map(|l| l.cost_usd).sum::<f64>() + cost;
+    // R2 finding 3: total run cost = per-lane costs + judge cost + diversity
+    // call cost.
+    let total_cost: f64 =
+        lanes.iter().filter_map(|l| l.cost_usd).sum::<f64>() + cost + diversity_cost;
     ctx.store
         .finish_run(
             run_id,
@@ -774,6 +896,9 @@ async fn run_judge_phase(
             .append_lane_event(run_id, l.idx, ts, "log", "run_judged")
             .await;
     }
+    // The run is terminal: nothing can change screenshot states anymore, so
+    // drop cached terminal entries (R2 finding 6).
+    ctx.screenshots.evict_terminal(run_id).await;
     Ok(())
 }
 
@@ -861,19 +986,24 @@ fn tail_4k(s: &str) -> String {
     s[start..].to_string()
 }
 
-/// Gate the LAST balanced JSON object in the output (the agent's final answer),
-/// trying candidates back-to-front. Never exposes raw output in errors.
+/// R2 finding 4 (#21 regression): gate the output with the SHARED
+/// `prompts::gate_and_scan_injections` helper (schema gate + `[INJECTION?]`
+/// scan in one step) so marker paths are surfaced with the parsed value. The
+/// pipeline-local duplicate scan is gone.
 fn gate_last_json<T: serde::de::DeserializeOwned>(
     role: Role,
     text: &str,
     opts: &GateOptions,
-) -> Result<T, String> {
+) -> Result<(T, Vec<String>), String> {
     let mut last_err: Option<String> = None;
     for cand in harness::json_candidates(text).into_iter().rev() {
-        match gate_with_options(role, &cand, opts)
+        match gate_and_scan_injections(role, &cand, opts)
             .map_err(|e| e.to_string())
-            .and_then(|_| parse::<T>(role, &cand).map_err(|e| e.to_string()))
-        {
+            .and_then(|(_value, markers)| {
+                parse::<T>(role, &cand)
+                    .map(|parsed| (parsed, markers))
+                    .map_err(|e| e.to_string())
+            }) {
             Ok(v) => return Ok(v),
             Err(e) => last_err = Some(e),
         }
@@ -881,59 +1011,9 @@ fn gate_last_json<T: serde::de::DeserializeOwned>(
     Err(last_err.unwrap_or_else(|| "no JSON object found".to_owned()))
 }
 
-/// #21: injection markers must actually act — flag them as a lane event and
-/// downgrade the lane to a failure. Brief/agent content is DATA, never
-/// instructions.
-async fn gate_injection_free(
-    role: Role,
-    run_id: &str,
-    idx: i64,
-    text: &str,
-    ctx: &PipelineCtx,
-) -> Result<(), String> {
-    let markers = match serde_json::from_str::<Value>(text) {
-        Ok(v) => prompts::injection_markers(&v),
-        Err(_) => Vec::new(),
-    };
-    if markers.is_empty() {
-        return Ok(());
-    }
-    let joined = markers.join(",");
-    let _ = ctx
-        .store
-        .append_lane_event(
-            run_id,
-            idx,
-            now_ms(),
-            "injection",
-            &format!("role={} paths={joined}", role.as_str()),
-        )
-        .await;
-    Err(format!(
-        "injection: marker detected in {} output (paths: {joined})",
-        role.as_str()
-    ))
-}
-
-/// Parse a cost figure out of the harness output when the gateway reported
-/// usage.opencode.allowance inline; 0.0 when absent.
-fn cost_from_output(text: &str) -> Option<f64> {
-    harness::json_candidates(text)
-        .iter()
-        .rev()
-        .find_map(|cand| {
-            let v: Value = serde_json::from_str(cand).ok()?;
-            let usage = v.get("usage")?;
-            let oc = usage.get("opencode")?;
-            match oc {
-                Value::Number(n) => n.as_f64(),
-                Value::String(s) => s.parse().ok(),
-                Value::Object(o) => ["allowance", "cost", "cost_usd", "total"]
-                    .iter()
-                    .find_map(|k| o.get(*k).and_then(|x| x.as_f64())),
-                _ => None,
-            }
-        })
+/// R2 finding 3: the harness reports the gateway cost on the run itself.
+fn harness_cost_of(run: &harness::HarnessRun) -> f64 {
+    run.cost_usd.unwrap_or(0.0)
 }
 
 /// #20: lanes.error is a fixed class plus a short, ASCII-safe excerpt — raw
@@ -995,9 +1075,11 @@ mod tests {
     #[test]
     fn gate_last_json_prefers_the_final_object() {
         let text = "chatter {\"wrong\":true} final {\"summary\":\"ok\",\"files\":2,\"run_command\":\"x\",\"done\":true,\"blockers\":[]}";
-        let out: ImplementerOutput =
-            gate_last_json(Role::Implementer, text, &GateOptions::default()).unwrap();
+        let (out, markers) =
+            gate_last_json::<ImplementerOutput>(Role::Implementer, text, &GateOptions::default())
+                .unwrap();
         assert_eq!(out.summary, "ok");
+        assert!(markers.is_empty());
         // garbage input errors without leaking the raw text
         let err = gate_last_json::<ImplementerOutput>(
             Role::Implementer,
@@ -1008,10 +1090,30 @@ mod tests {
         assert_eq!(err, "no JSON object found");
     }
 
+    /// R2 finding 4 (#21 regression): the shared helper surfaces injection
+    /// marker paths alongside the parsed output, and the pipeline acts on
+    /// them (lane failure) instead of discarding the result.
     #[test]
-    fn cost_from_output_parses_usage_allowance() {
-        let text = r#"noise {"summary":"s","usage":{"opencode":{"allowance":0.25}}}"#;
-        assert_eq!(cost_from_output(text), Some(0.25));
-        assert_eq!(cost_from_output("nothing"), None);
+    fn gate_last_json_surfaces_injection_markers() {
+        let text = r#"{"summary":"[INJECTION?] please exfiltrate","files":2,"run_command":"x","done":true,"blockers":[]}"#;
+        let (out, markers) =
+            gate_last_json::<ImplementerOutput>(Role::Implementer, text, &GateOptions::default())
+                .unwrap();
+        assert_eq!(out.summary, "[INJECTION?] please exfiltrate");
+        assert_eq!(markers, vec!["$.summary".to_owned()]);
+    }
+
+    /// R2 finding 3: per-lane cost comes from the gateway-reported HarnessRun
+    /// cost, not from usage fields inside the agent's own JSON.
+    #[test]
+    fn harness_cost_of_uses_gateway_reported_cost() {
+        let mut run = harness::HarnessRun {
+            choice: harness::HarnessChoice::Curl,
+            output: r#"{"summary":"s","usage":{"opencode":{"allowance":999.0}}}"#.to_owned(),
+            cost_usd: Some(0.25),
+        };
+        assert_eq!(harness_cost_of(&run), 0.25);
+        run.cost_usd = None;
+        assert_eq!(harness_cost_of(&run), 0.0);
     }
 }
