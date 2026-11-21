@@ -33,7 +33,7 @@ pub fn diversity_prompt(brief: &str, n: usize) -> Prompt {
 pub fn implementer_prompt(variant: &Value) -> Prompt {
     build(
         Role::Implementer,
-        "Build the web project described by the variant. Work in the sprite workdir, serve on port 8080, use no external services and no secrets. HARD REQUIREMENT: start the site DETACHED so it survives your session end, e.g. `nohup <run_command> > server.log 2>&1 &` — a server you only run in the foreground dies when the session ends. Verify YOURSELF that `curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8080` returns 200, and only then declare done:true. The detached server must still be serving after your session ends.",
+        "Build the web project described by the variant. Work in the sprite workdir, serve on port 8080, use no external services and no secrets. BIND REQUIREMENT: the server MUST listen on ALL interfaces — pass `--host 0.0.0.0` (or the stack's equivalent: `HOST=0.0.0.0`, `-o 0.0.0.0`, `server.host = '0.0.0.0'`). NEVER bind to 127.0.0.1/localhost: the sprite's public HTTPS URL routes port 8080 from outside, and a loopback bind is unreachable there. Your own verification may still curl 127.0.0.1:8080. HARD REQUIREMENT: start the site DETACHED so it survives your session end, e.g. `nohup <run_command> --host 0.0.0.0 > server.log 2>&1 &` — a server you only run in the foreground dies when the session ends. Verify YOURSELF that `curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8080` returns 200, and only then declare done:true. The detached server must still be serving after your session ends.",
         data_block("variant", &serde_json::to_string_pretty(variant).unwrap_or_default()),
     )
 }

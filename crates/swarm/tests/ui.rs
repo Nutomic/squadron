@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -16,6 +17,11 @@ use swarm::{router, AppState};
 
 const STATIC_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/static");
 
+/// The F3 per-IP rate limit reads the socket address through ConnectInfo;
+/// oneshot tests mock it (production uses into_make_service_with_connect_info).
+const MOCK_CONNECT_INFO: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 1234);
+
 async fn app() -> (axum::Router, Store) {
     let store = Store::connect_in_memory().await.unwrap();
     store.migrate().await.unwrap();
@@ -27,7 +33,9 @@ async fn app() -> (axum::Router, Store) {
     .with_fixtures(true)
     .with_static_dir(PathBuf::from(STATIC_DIR))
     .without_pipeline();
-    let app = router(Arc::new(state));
+    let app = router(Arc::new(state)).layer(axum::extract::connect_info::MockConnectInfo(
+        MOCK_CONNECT_INFO,
+    ));
     (app, store)
 }
 
@@ -35,15 +43,39 @@ async fn body_string(body: Body) -> String {
     String::from_utf8(body.collect().await.unwrap().to_bytes().to_vec()).unwrap()
 }
 
+/// Issue a GET that renders a form and return the double-submit CSRF token
+/// (from the swarm_csrf Set-Cookie header) — review F3 #3.
+async fn csrf_token_for(app: &axum::Router, uri: &str) -> String {
+    let res = app
+        .clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let cookie = res
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .expect("form GET must set the swarm_csrf cookie")
+        .to_owned();
+    cookie
+        .strip_prefix("swarm_csrf=")
+        .and_then(|rest| rest.split(';').next())
+        .filter(|t| !t.is_empty())
+        .expect("swarm_csrf cookie must carry a token")
+        .to_owned()
+}
+
 async fn post_run(app: &axum::Router, brief: &str, n: Option<&str>) -> axum::http::Response<Body> {
-    let form = match n {
-        Some(n) => format!("brief={}&n={}", urlencode(brief), n),
-        None => format!("brief={}", urlencode(brief)),
-    };
+    let token = csrf_token_for(app, "/").await;
+    let mut form = format!("brief={}&csrf_token={}", urlencode(brief), token);
+    if let Some(n) = n {
+        form.push_str(&format!("&n={n}"));
+    }
     let req = Request::builder()
         .method("POST")
         .uri("/runs")
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::COOKIE, format!("swarm_csrf={token}"))
         .body(Body::from(form))
         .unwrap();
     app.clone().oneshot(req).await.unwrap()
@@ -335,7 +367,7 @@ async fn tokei_fragment_renders_plain_text() {
     store.insert_lane(&run.id, 1, "{}").await.unwrap();
     let tokei = r#"{"Total":{"files":9,"code":1204}}"#;
     store
-        .set_artifacts(&run.id, 1, "t.tar.gz", tokei, None, "pending", "log")
+        .set_artifacts(&run.id, 1, "t.tar.gz", tokei, "log")
         .await
         .unwrap();
     let res = app
@@ -376,15 +408,11 @@ async fn thumb_gated_on_done_state() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
     store
-        .set_artifacts(
-            &run.id,
-            0,
-            "t.tar.gz",
-            "{}",
-            Some(png.to_str().unwrap()),
-            "done",
-            "log",
-        )
+        .set_artifacts(&run.id, 0, "t.tar.gz", "{}", "log")
+        .await
+        .unwrap();
+    store
+        .set_screenshot_state(&run.id, 0, "done", Some(png.to_str().unwrap()))
         .await
         .unwrap();
     let res = app
@@ -412,15 +440,7 @@ async fn source_download_serves_tarball_attachment() {
     let tar = std::env::temp_dir().join(format!("swarm-test-{}.tar.gz", std::process::id()));
     std::fs::write(&tar, b"fake gzip bytes").unwrap();
     store
-        .set_artifacts(
-            &run.id,
-            0,
-            tar.to_str().unwrap(),
-            "{}",
-            None,
-            "pending",
-            "log",
-        )
+        .set_artifacts(&run.id, 0, tar.to_str().unwrap(), "{}", "log")
         .await
         .unwrap();
     let res = app
@@ -451,13 +471,16 @@ async fn promote_requires_judged_status() {
         .create_run("promote test", 2, 1_732_020_000_000)
         .await
         .unwrap();
+    let token = csrf_token_for(&app, &format!("/{run_id}", run_id = run.id)).await;
     let res = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(format!("/{}/promote", run.id))
-                .body(Body::empty())
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("swarm_csrf={token}"))
+                .body(Body::from(format!("csrf_token={token}")))
                 .unwrap(),
         )
         .await
@@ -480,7 +503,9 @@ async fn promote_requires_judged_status() {
             Request::builder()
                 .method("POST")
                 .uri(format!("/{}/promote", run.id))
-                .body(Body::empty())
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("swarm_csrf={token}"))
+                .body(Body::from(format!("csrf_token={token}")))
                 .unwrap(),
         )
         .await

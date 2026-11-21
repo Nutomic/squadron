@@ -483,8 +483,11 @@ async fn run_lane_attempt(
     // #10: the sprite URL must answer with 200 before the lane can be Done.
     // Test mode uses fake URLs, so the probe is skipped to stay deterministic;
     // the 127.0.0.1 self-probe fallback is gone (a passing orchestrator is not
-    // a passing lane).
-    if !ctx.config.test_mode && !artifacts::check_http_200(&impl_url).await {
+    // a passing lane). F2: the probe is SSRF-safe (shared net.rs machinery);
+    // the loopback escape is config-driven and test-only.
+    if !ctx.config.test_mode
+        && !artifacts::check_http_200_policy(&impl_url, ctx.config.probe_allow_loopback).await
+    {
         return Err(format!(
             "implementer: live URL did not answer 200: {impl_url}"
         ));
@@ -514,15 +517,9 @@ async fn run_lane_attempt(
         let files_store = files_n.or(Some(impl_out.files as i64));
         let _ = ctx
             .store
-            .set_artifacts(
-                &run_id,
-                idx,
-                &tarball,
-                &tokei_json,
-                None,
-                "pending",
-                &console_tail,
-            )
+            // F1: the screenshot columns are owned by the queue; a pre-render
+            // made during the long impl session must survive completion.
+            .set_artifacts(&run_id, idx, &tarball, &tokei_json, &console_tail)
             .await;
         if let Some(f) = files_store {
             let _ = ctx
@@ -535,15 +532,7 @@ async fn run_lane_attempt(
         let tokei_json = serde_json::json!({"loc": 0, "files": impl_out.files}).to_string();
         let _ = ctx
             .store
-            .set_artifacts(
-                &run_id,
-                idx,
-                "",
-                &tokei_json,
-                None,
-                "pending",
-                &console_tail,
-            )
+            .set_artifacts(&run_id, idx, "", &tokei_json, &console_tail)
             .await;
     }
 
@@ -976,7 +965,9 @@ async fn ensure_judge_renders(ctx: &PipelineCtx, run_id: &str, validated: &[stor
         let Some(url) = lane.impl_url.clone() else {
             continue;
         };
-        if !ctx.config.test_mode && !artifacts::check_http_200(&url).await {
+        if !ctx.config.test_mode
+            && !artifacts::check_http_200_policy(&url, ctx.config.probe_allow_loopback).await
+        {
             tracing::warn!(
                 run_id,
                 lane = lane.idx,

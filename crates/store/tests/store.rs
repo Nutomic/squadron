@@ -103,10 +103,12 @@ async fn lanes_store_all_pipeline_fields() {
             0,
             "/data/lane0.tar.gz",
             "{\"files\":7,\"loc\":321}",
-            Some("/data/lane0.png"),
-            "done",
             "last console line",
         )
+        .await
+        .unwrap();
+    store
+        .set_screenshot_state(&run.id, 0, "done", Some("/data/lane0.png"))
         .await
         .unwrap();
     store.add_lane_cost(&run.id, 0, 0.1).await.unwrap();
@@ -163,6 +165,39 @@ async fn lane_events_are_monotonic_and_auditable() {
     assert_eq!(events[0].kind, "state");
     assert_eq!(events[1].payload, "started");
     assert_eq!(events[1].lane_idx, 0);
+}
+
+/// Review F1 regression: `set_artifacts` at implementer completion must not
+/// overwrite a screenshot the serial queue already rendered+persisted during
+/// the long impl session — screenshot_path/state stay untouched in the DB.
+#[tokio::test]
+async fn set_artifacts_never_clobbers_screenshot_state() {
+    let store = Store::connect_in_memory().await.unwrap();
+    store.migrate().await.unwrap();
+    let run = store.create_run("brief", 1, 100).await.unwrap();
+    store.insert_lane(&run.id, 0, "{}").await.unwrap();
+
+    // The queue rendered and persisted a screenshot while impl was running.
+    store
+        .set_screenshot_state(&run.id, 0, "done", Some("/data/run/lane-0.png"))
+        .await
+        .unwrap();
+
+    // Implementer completion writes its artifacts with no screenshot info.
+    store
+        .set_artifacts(&run.id, 0, "/data/run/lane0.tar.gz", "{}", "tail")
+        .await
+        .unwrap();
+
+    let lane = store.get_lane(&run.id, 0).await.unwrap().unwrap();
+    assert_eq!(lane.screenshot_state.as_deref(), Some("done"));
+    assert_eq!(
+        lane.screenshot_path.as_deref(),
+        Some("/data/run/lane-0.png")
+    );
+    // The artifact columns did land.
+    assert_eq!(lane.tarball_path.as_deref(), Some("/data/run/lane0.tar.gz"));
+    assert_eq!(lane.console_tail.as_deref(), Some("tail"));
 }
 
 #[test]

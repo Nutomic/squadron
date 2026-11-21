@@ -11,6 +11,11 @@ pub struct PipelineConfig {
     pub data_dir: std::path::PathBuf,
     pub gateway_connector_id: String,
     pub test_mode: bool,
+    /// Review F2: test-only escape for the SSRF-safe 200 probe. Production
+    /// lane URLs must resolve to public addresses; integration tests point
+    /// them at loopback tunnel servers and flip this to true. Never set from
+    /// untrusted input.
+    pub probe_allow_loopback: bool,
 }
 
 impl PipelineConfig {
@@ -47,6 +52,7 @@ impl Default for PipelineConfig {
             data_dir: std::path::PathBuf::from("/data"),
             gateway_connector_id: DEFAULT_GATEWAY_CONNECTOR_ID.to_owned(),
             test_mode: false,
+            probe_allow_loopback: false,
         }
     }
 }

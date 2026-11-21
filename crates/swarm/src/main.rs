@@ -52,5 +52,11 @@ async fn main() {
         .await
         .expect("failed to bind");
     tracing::info!("swarm listening on {addr}");
-    axum::serve(listener, app).await.expect("server error");
+    // ConnectInfo is needed by the F3 per-IP run-creation rate limit.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .expect("server error");
 }

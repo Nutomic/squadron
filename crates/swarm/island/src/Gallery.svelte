@@ -1,7 +1,7 @@
 <script>
   import LaneCard from './LaneCard.svelte';
 
-  let { runId, eventsUrl } = $props();
+  let { runId, eventsUrl, csrfToken } = $props();
 
   let snap = $state(null);
   let conn = $state('connecting');
@@ -123,7 +123,10 @@
 {/if}
 
 {#if snap && judged}
+  <!-- CSRF double-submit token (review F3 #3): the server sets the same
+       token in the swarm_csrf cookie on this page's GET. -->
   <form method="post" action="/{runId}/promote" class="mb-6">
+    <input type="hidden" name="csrf_token" value={csrfToken ?? ''}>
     <button type="submit" class="btn btn-primary btn-sm rounded-full px-5 font-semibold border-0">
       Promote winner (lane {winner})
     </button>

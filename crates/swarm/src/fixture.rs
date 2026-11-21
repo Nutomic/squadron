@@ -172,6 +172,7 @@ async fn fixture_gallery() -> Response {
         run_id: "__fixtures".to_owned(),
         events_url: "/__fixtures/events".to_owned(),
         status: "judged".to_owned(),
+        csrf_token: String::new(),
     };
     Html(tpl.render().unwrap_or_default()).into_response()
 }

@@ -137,6 +137,17 @@ impl Store {
             .collect())
     }
 
+    /// Review F3 #2: number of non-terminal runs (queued/running), backing the
+    /// process-wide concurrent-run cap.
+    pub async fn count_active_runs(&self) -> Result<i64, StoreError> {
+        let n = sqlx::query_scalar!(
+            "SELECT COUNT(*) AS \"n: i64\" FROM runs WHERE status IN ('queued', 'running')"
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n)
+    }
+
     pub async fn update_run_status(&self, id: &str, status: &str) -> Result<(), StoreError> {
         let result = sqlx::query!("UPDATE runs SET status = ? WHERE id = ?", status, id)
             .execute(&self.pool)
@@ -318,23 +329,24 @@ impl Store {
     }
 
     // See start_impl above: arguments mirror the lane columns of one UPDATE.
-    #[allow(clippy::too_many_arguments)]
+    /// Review F1: the screenshot columns are deliberately absent — the serial
+    /// queue owns them, and a `set_artifacts` write at implementer completion
+    /// must never clobber a render it persisted earlier in the session (the
+    /// in-memory cache would then say done while the DB said pending, leaving
+    /// /thumb 404ing until restart). Screenshot state goes through
+    /// `set_screenshot_state` only.
     pub async fn set_artifacts(
         &self,
         run_id: &str,
         idx: i64,
         tarball_path: &str,
         tokei_json: &str,
-        screenshot_path: Option<&str>,
-        screenshot_state: &str,
         console_tail: &str,
     ) -> Result<(), StoreError> {
         let result = sqlx::query!(
-            "UPDATE lanes SET tarball_path = ?, tokei_json = ?, screenshot_path = ?, screenshot_state = ?, console_tail = ? WHERE run_id = ? AND idx = ?",
+            "UPDATE lanes SET tarball_path = ?, tokei_json = ?, console_tail = ? WHERE run_id = ? AND idx = ?",
             tarball_path,
             tokei_json,
-            screenshot_path,
-            screenshot_state,
             console_tail,
             run_id,
             idx

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE lanes SET tarball_path = ?, tokei_json = ?, console_tail = ? WHERE run_id = ? AND idx = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "dce3a08387e20a896a446a09c6b3031ab6adaa23c7612d623f9981e3b19e6924"
+}

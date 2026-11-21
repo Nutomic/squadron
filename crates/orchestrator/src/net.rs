@@ -96,6 +96,23 @@ pub async fn fetch_public_text(url: &str) -> Result<String, String> {
     fetch_text(url, STRICT).await
 }
 
+/// Review F2: status-only 200-oracle for the artifacts gate. Runs the full
+/// shared policy machinery (manual validated redirects, resolved-IP pinning,
+/// `is_public_ip` on every hop) and reports success only when the final
+/// response on a public destination is 2xx — a lane site can no longer 302 the
+/// orchestrator at internal/metadata endpoints.
+pub async fn fetch_public_200(url: &str, allow_loopback: bool) -> bool {
+    fetch_text(
+        url,
+        FetchPolicy {
+            max_hops: MAX_HOPS,
+            allow_loopback,
+        },
+    )
+    .await
+    .is_ok()
+}
+
 /// Fetch a URL as text under `policy`. Every hop (including the first) is
 /// resolved and validated against the policy before a connection is made, and
 /// the resolved addresses are pinned into the client so DNS cannot rebind

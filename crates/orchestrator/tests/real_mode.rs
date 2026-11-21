@@ -139,6 +139,8 @@ async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
         impl_deadline: Duration::from_secs(30),
         val_deadline: Duration::from_secs(30),
         judge_deadline: Duration::from_secs(15),
+        // F2 test-only escape: the tunnel URL is loopback.
+        probe_allow_loopback: true,
         ..PipelineConfig::default()
     };
     std::fs::create_dir_all(&config.data_dir).unwrap();
@@ -220,6 +222,40 @@ async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
         state.url_auth_public,
         "url-auth must be public in real mode"
     );
+
+    // (b2) review F5 ordering regression: for EVERY production lane sprite
+    // the `sprite config update --url-auth public` command is issued after
+    // `create` and BEFORE the implementer session (the first `exec`) —
+    // otherwise the lane URL stays private until it is too late. (Lanes run
+    // concurrently, so commands of different sprites interleave; the
+    // ordering is per sprite.)
+    for name in state.sprites.keys() {
+        let log = &state.command_log;
+        let create_pos = log
+            .iter()
+            .position(|e| e == &format!("create {name}"))
+            .expect("lane sprite was created through the mock CLI");
+        let auth_pos = log
+            .iter()
+            .position(|e| e == &format!("config {name}"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "url-auth public must be issued for every lane sprite ({name}); log: {log:?}"
+                )
+            });
+        assert!(
+            auth_pos > create_pos,
+            "url-auth public must follow create for {name}; log: {log:?}"
+        );
+        let first_exec = log
+            .iter()
+            .position(|e| e == &format!("exec {name}"))
+            .expect("the implementer session runs via `sprite exec`");
+        assert!(
+            auth_pos < first_exec,
+            "url-auth public must precede the implementer session for {name}"
+        );
+    }
 
     let lanes = store.list_lanes(&run.id).await.unwrap();
     assert_eq!(lanes.len(), 3);
