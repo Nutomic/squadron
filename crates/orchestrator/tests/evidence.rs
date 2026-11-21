@@ -135,6 +135,150 @@ async fn gather_validator_evidence_embeds_files_and_http_probe() {
     std::env::remove_var("MOCK_EXEC_MS");
 }
 
+/// F10 regression (run 8): the gatherer embedded index.html and
+/// package.json but NEVER src/main.ts — the implementer's core gameplay
+/// source — so every gameplay claim came back UNVERIFIED. The src/ source
+/// band (main stems first) must guarantee the core source file is embedded.
+#[tokio::test(flavor = "multi_thread")]
+async fn gather_validator_evidence_embeds_the_core_src_source_files() {
+    let _env = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("MOCK_SPRITE_STATE", dir.path().join("mock-state3.json"));
+    std::env::set_var("MOCK_COLD_START_MS", "0");
+    std::env::set_var("MOCK_CREATE_MS", "0");
+    std::env::set_var("MOCK_EXEC_MS", "0");
+
+    let sprite = SpriteClient::new(SpriteConfig {
+        cli_path: option_env!("CARGO_BIN_EXE_mock-sprite-cli")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/debug/mock-sprite-cli")
+            }),
+        command_timeout: Duration::from_secs(15),
+        ..SpriteConfig::default()
+    });
+    sprite.create("ev-sprite3").await.unwrap();
+    sprite.set_url_auth_public("ev-sprite3").await.unwrap();
+
+    let workdir = dir.path().join("swarm-work").join("lane-2");
+    std::fs::create_dir_all(workdir.join("src")).unwrap();
+    std::fs::write(
+        workdir.join("index.html"),
+        "<html><body>game</body></html>\n",
+    )
+    .unwrap();
+    std::fs::write(workdir.join("package.json"), "{\"name\":\"game\"}\n").unwrap();
+    std::fs::write(
+        workdir.join("src/main.ts"),
+        "MAIN-TS-MARKER: const player = { x: 0, y: 0 };\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workdir.join("src/utils.ts"),
+        "UTILS-TS-MARKER: export const id = 1;\n",
+    )
+    .unwrap();
+    std::fs::write(workdir.join("vite.config.ts"), "export default {};\n").unwrap();
+
+    let evidence = gather_validator_evidence(
+        &sprite,
+        "ev-sprite3",
+        workdir.to_str().unwrap(),
+        "https://203.0.113.1/nope",
+        false,
+    )
+    .await;
+
+    assert!(
+        evidence.contains("<data label=\"file-src/main.ts\">"),
+        "the core gameplay source MUST be embedded: {evidence}"
+    );
+    assert!(
+        evidence.contains("MAIN-TS-MARKER"),
+        "src/main.ts content must reach the validator: {evidence}"
+    );
+    assert!(
+        evidence.contains("UTILS-TS-MARKER"),
+        "src/ sources outrank config in the selection: {evidence}"
+    );
+    assert!(
+        evidence.contains("<data label=\"file-vite.config.ts\">"),
+        "config files still fit within the budget: {evidence}"
+    );
+    assert!(
+        evidence.contains("<data label=\"file-package.json\">"),
+        "evidence: {evidence}"
+    );
+
+    std::env::remove_var("MOCK_SPRITE_STATE");
+    std::env::remove_var("MOCK_COLD_START_MS");
+    std::env::remove_var("MOCK_CREATE_MS");
+    std::env::remove_var("MOCK_EXEC_MS");
+}
+
+/// A source file larger than the per-file cap is embedded cut, with an
+/// explicit `[truncated after N bytes]` marker — never silently dropped.
+#[tokio::test(flavor = "multi_thread")]
+async fn gather_validator_evidence_truncates_large_sources_with_marker() {
+    let _env = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("MOCK_SPRITE_STATE", dir.path().join("mock-state4.json"));
+    std::env::set_var("MOCK_COLD_START_MS", "0");
+    std::env::set_var("MOCK_CREATE_MS", "0");
+    std::env::set_var("MOCK_EXEC_MS", "0");
+
+    let sprite = SpriteClient::new(SpriteConfig {
+        cli_path: option_env!("CARGO_BIN_EXE_mock-sprite-cli")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/debug/mock-sprite-cli")
+            }),
+        command_timeout: Duration::from_secs(15),
+        ..SpriteConfig::default()
+    });
+    sprite.create("ev-sprite4").await.unwrap();
+    sprite.set_url_auth_public("ev-sprite4").await.unwrap();
+
+    let workdir = dir.path().join("swarm-work").join("lane-3");
+    std::fs::create_dir_all(workdir.join("src")).unwrap();
+    std::fs::write(
+        workdir.join("index.html"),
+        "<html><body>game</body></html>\n",
+    )
+    .unwrap();
+    let big = "BIGMAIN-MARKER ".repeat(40 * 1024 / 15);
+    std::fs::write(workdir.join("src/main.ts"), big).unwrap();
+
+    let evidence = gather_validator_evidence(
+        &sprite,
+        "ev-sprite4",
+        workdir.to_str().unwrap(),
+        "https://203.0.113.1/nope",
+        false,
+    )
+    .await;
+
+    assert!(
+        evidence.contains("<data label=\"file-src/main.ts\">"),
+        "evidence: {evidence}"
+    );
+    assert!(
+        evidence.contains("BIGMAIN-MARKER"),
+        "the truncated source still carries its opening content: {evidence}"
+    );
+    assert!(
+        evidence.contains("[truncated after 10240 bytes]"),
+        "an explicit truncation marker is required: {evidence}"
+    );
+
+    std::env::remove_var("MOCK_SPRITE_STATE");
+    std::env::remove_var("MOCK_COLD_START_MS");
+    std::env::remove_var("MOCK_CREATE_MS");
+    std::env::remove_var("MOCK_EXEC_MS");
+}
+
 /// Best-effort: an unreachable public URL yields an explicit probe-failure
 /// block instead of failing the validator turn.
 #[tokio::test(flavor = "multi_thread")]

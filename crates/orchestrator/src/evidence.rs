@@ -5,10 +5,10 @@
 //! command output, or HTTP verification provided; implementer claims remain
 //! unverified", quality_score 0/10). Before the validator turn the
 //! orchestrator therefore gathers bounded evidence via `sprite exec` (the
-//! workdir file list, the first ~8KB of up to ~5 key files, and an HTTP probe
-//! of the implementer's public URL) and embeds it in the validator prompt's
-//! DATA blocks. Everything gathered is untrusted content: it travels as DATA
-//! and is never treated as instructions.
+//! workdir file list, excerpts of the key source files within a ~24KB total
+//! budget, and an HTTP probe of the implementer's public URL) and embeds it
+//! in the validator prompt's DATA blocks. Everything gathered is untrusted
+//! content: it travels as DATA and is never treated as instructions.
 
 use std::time::Duration;
 
@@ -19,10 +19,16 @@ use sprites_client::{ExecOptions, SpriteClient};
 use crate::harness::{sanitize_excerpt, shell_quote};
 use crate::net;
 
-/// Per-file excerpt cap (~8KB of text per key file).
-pub const EVIDENCE_FILE_CAP_BYTES: usize = 8 * 1024;
+/// Per-file excerpt cap (~10KB of text per key file).
+pub const EVIDENCE_FILE_CAP_BYTES: usize = 10 * 1024;
+/// Total excerpt budget across key files (~24KB): prompt-embedded evidence
+/// must stay bounded even when the workdir holds many text files.
+pub const EVIDENCE_TOTAL_BUDGET_BYTES: usize = 24 * 1024;
+/// Minimum excerpt a src/ source file still receives when the total budget
+/// is already exhausted (a core source file is never fully omitted).
+pub const EVIDENCE_SOURCE_MIN_BYTES: usize = 1024;
 /// Maximum number of key files excerpted.
-pub const EVIDENCE_MAX_FILES: usize = 5;
+pub const EVIDENCE_MAX_FILES: usize = 10;
 /// Maximum number of non-text-extension files content-checked so binaries
 /// can be marked instead of silently dropped.
 pub const EVIDENCE_MAX_BINARY_CANDIDATES: usize = 8;
@@ -40,6 +46,18 @@ const TEXT_EXTENSIONS: [&str; 24] = [
     "html", "htm", "css", "js", "mjs", "cjs", "jsx", "ts", "tsx", "json", "md", "txt", "py", "rs",
     "go", "java", "sh", "vue", "svelte", "cfg", "toml", "yaml", "yml", "xml",
 ];
+
+/// Source-code extensions for the src/ priority band: the implementer's core
+/// claim lives here, so these files must never be crowded out of the
+/// evidence by config or boilerplate.
+const SOURCE_EXTENSIONS: [&str; 9] = [
+    "ts", "tsx", "js", "jsx", "mjs", "cjs", "vue", "svelte", "css",
+];
+
+/// File-name stems that usually mark the main entry module; within the src/
+/// band these outrank utility files so `src/main.ts` cannot lose its slot to
+/// `src/format-date.js` purely by sort order.
+const MAIN_STEMS: [&str; 4] = ["main", "index", "app", "game"];
 
 /// Gather the validator evidence blocks. Best-effort end to end: a failed
 /// step yields an explicit "unavailable" block (visible evidence beats a
@@ -92,61 +110,41 @@ pub async fn gather_validator_evidence(
         ));
     }
 
-    // 2. Excerpts of up to N key files (priority: index.html, package.json,
-    //    then shallow text files; skip binaries).
+    // 2. Excerpts of key files within the total budget. Selection priority:
+    //    (a) entry HTML, (b) source files under src/ (the implementer's core
+    //    claim — main stems first, never fully omitted), (c) package.json and
+    //    other config, then remaining text files; skip binaries.
     let mut excerpted: Vec<String> = Vec::new();
     if let Some(list) = &file_list {
-        excerpted = select_key_files(list);
-        for path in &excerpted {
-            let read_cmd = format!(
-                "cd {wd} && head -c {EVIDENCE_FILE_CAP_BYTES} {} | base64",
-                shell_quote(path)
-            );
-            match sprite
-                .exec(
-                    sprite_name,
-                    &read_cmd,
-                    &ExecOptions::default().with_timeout(EVIDENCE_EXEC_TIMEOUT),
-                )
-                .await
-            {
-                Ok(out) if out.exit_code == 0 => match decode_b64_bytes(&out.stdout) {
-                    Some(bytes) if is_binary_content(&bytes) => {
-                        blocks.push_str(&data_block(
-                            &format!("file-{path}"),
-                            &binary_marker(bytes.len() as u64),
-                        ));
-                    }
-                    Some(bytes) => {
-                        let capped: String = String::from_utf8_lossy(&bytes)
-                            .chars()
-                            .take(EVIDENCE_FILE_CAP_BYTES)
-                            .collect();
-                        blocks.push_str(&data_block(&format!("file-{path}"), &capped));
-                    }
-                    None => {
-                        blocks.push_str(&data_block(
-                            &format!("file-{path}"),
-                            "(unavailable: base64 decode failed)",
-                        ));
-                    }
-                },
-                Ok(out) => {
+        let selected = select_key_files(list);
+        let mut remaining = EVIDENCE_TOTAL_BUDGET_BYTES;
+        for (path, is_source) in &selected {
+            if remaining == 0 {
+                if *is_source {
+                    // A core source file is never silently dropped: it still
+                    // gets a minimal excerpt plus a truncation marker.
+                    let (content, _) = read_file_excerpt(
+                        sprite,
+                        sprite_name,
+                        &wd,
+                        path,
+                        EVIDENCE_SOURCE_MIN_BYTES,
+                    )
+                    .await;
+                    blocks.push_str(&data_block(&format!("file-{path}"), &content));
+                } else {
                     blocks.push_str(&data_block(
                         &format!("file-{path}"),
-                        &format!("(read failed: exit {})", out.exit_code),
+                        "(omitted: evidence budget exhausted)",
                     ));
                 }
-                Err(e) => {
-                    blocks.push_str(&data_block(
-                        &format!("file-{path}"),
-                        &format!(
-                            "(unavailable: sprite exec failed: {})",
-                            sanitize_excerpt(&e.to_string(), 300)
-                        ),
-                    ));
-                }
+                continue;
             }
+            let cap = remaining.min(EVIDENCE_FILE_CAP_BYTES);
+            let (content, size) = read_file_excerpt(sprite, sprite_name, &wd, path, cap).await;
+            blocks.push_str(&data_block(&format!("file-{path}"), &content));
+            excerpted.push(path.clone());
+            remaining = remaining.saturating_sub(size);
         }
     }
 
@@ -236,6 +234,68 @@ pub async fn gather_validator_evidence(
     blocks
 }
 
+/// Render decoded file bytes as the excerpt payload: text content capped at
+/// `cap` chars, plus an explicit `[truncated after N bytes]` marker when the
+/// file was cut — never a silent truncation. Returns (payload, embedded byte
+/// count for the budget accounting).
+fn excerpt_from_bytes(bytes: &[u8], full_size: Option<u64>, cap: usize) -> (String, usize) {
+    let text: String = String::from_utf8_lossy(bytes).chars().take(cap).collect();
+    let embedded = text.len().min(cap);
+    let truncated = full_size.map(|s| s as usize > cap).unwrap_or(false) || bytes.len() > cap;
+    let content = if truncated {
+        format!("{text}\n[truncated after {embedded} bytes]")
+    } else {
+        text
+    };
+    (content, embedded)
+}
+
+/// Read up to `cap` bytes of one file via sprite exec and render the block
+/// payload: text content (or a binary marker for text-extension files with
+/// binary content), plus an explicit `[truncated after N bytes]` marker when
+/// the file was cut — never a silent truncation. Returns (payload, embedded
+/// byte count for the budget accounting; 0 for markers/failures).
+async fn read_file_excerpt(
+    sprite: &SpriteClient,
+    sprite_name: &str,
+    wd: &str,
+    path: &str,
+    cap: usize,
+) -> (String, usize) {
+    let read_cmd = format!(
+        "cd {wd} && wc -c < {} && head -c {cap} {} | base64",
+        shell_quote(path),
+        shell_quote(path)
+    );
+    match sprite
+        .exec(
+            sprite_name,
+            &read_cmd,
+            &ExecOptions::default().with_timeout(EVIDENCE_EXEC_TIMEOUT),
+        )
+        .await
+    {
+        Ok(out) if out.exit_code == 0 => {
+            let (full_size, bytes) = split_size_and_body(&out.stdout);
+            match bytes {
+                Some(bytes) if is_binary_content(&bytes) => {
+                    (binary_marker(full_size.unwrap_or(bytes.len() as u64)), 0)
+                }
+                Some(bytes) => excerpt_from_bytes(&bytes, full_size, cap),
+                None => ("(unavailable: base64 decode failed)".to_owned(), 0),
+            }
+        }
+        Ok(out) => (format!("(read failed: exit {})", out.exit_code), 0),
+        Err(e) => (
+            format!(
+                "(unavailable: sprite exec failed: {})",
+                sanitize_excerpt(&e.to_string(), 300)
+            ),
+            0,
+        ),
+    }
+}
+
 /// Control-char sanitizer that PRESERVES newlines (file lists stay readable
 /// line-per-line) and caps the length on a char boundary.
 fn sanitize_text(s: &str, max: usize) -> String {
@@ -293,10 +353,13 @@ fn split_size_and_body(stdout: &str) -> (Option<u64>, Option<Vec<u8>>) {
 }
 
 /// Pick up to `EVIDENCE_MAX_FILES` key files from a `find` output (paths are
-/// "./rel", one per line): index.html and package.json first, then the
-/// shallowest text-extension files (site entry points before boilerplate).
-fn select_key_files(list: &str) -> Vec<String> {
-    let mut files: Vec<(usize, String)> = Vec::new();
+/// "./rel", one per line), in evidence priority order and paired with an
+/// is-core-source flag: (a) the entry HTML (index.html), (b) source files
+/// under src/ (main stems first — the implementer's core claim must be in
+/// the evidence, not crowded out by boilerplate), (c) package.json and other
+/// config, (d) the remaining text files; binaries are handled separately.
+fn select_key_files(list: &str) -> Vec<(String, bool)> {
+    let mut files: Vec<(u8, bool, usize, String, bool)> = Vec::new();
     for line in list.lines() {
         let raw = line.trim().trim_start_matches("./");
         if raw.is_empty()
@@ -307,35 +370,44 @@ fn select_key_files(list: &str) -> Vec<String> {
             continue;
         }
         let name = raw.rsplit('/').next().unwrap_or(raw);
-        let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
-        let priority = if name == "index.html" {
+        let (stem, ext) = match name.rsplit_once('.') {
+            Some((s, e)) => (s.to_ascii_lowercase(), e.to_ascii_lowercase()),
+            None => continue,
+        };
+        if !TEXT_EXTENSIONS.contains(&ext.as_str()) {
+            // binaries and anything else are handled by the binary pass
+            continue;
+        }
+        let is_source = raw.starts_with("src/") && SOURCE_EXTENSIONS.contains(&ext.as_str());
+        let priority = if name == "index.html" || name == "index.htm" {
             0
-        } else if name == "package.json" {
+        } else if is_source {
             1
-        } else if ext
-            .as_deref()
-            .map(|e| TEXT_EXTENSIONS.contains(&e))
-            .unwrap_or(false)
-        {
+        } else if matches!(
+            ext.as_str(),
+            "json" | "toml" | "yaml" | "yml" | "cfg" | "xml"
+        ) {
             2
         } else {
-            // binaries and anything else are skipped
-            continue;
+            3
         };
-        files.push((priority, raw.to_owned()));
+        // main entry modules (src/main.ts, src/app.js, ...) outrank utility
+        // files within the src/ band
+        let is_main = MAIN_STEMS.contains(&stem.as_str());
+        files.push((
+            priority,
+            !is_main,
+            raw.matches('/').count(),
+            raw.to_owned(),
+            is_source,
+        ));
     }
-    // shallow paths first within a priority band (src/app.js before
-    // src/components/deep/widget.js)
-    files.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then(a.1.matches('/').count().cmp(&b.1.matches('/').count()))
-            .then(a.1.cmp(&b.1))
-    });
-    files.dedup_by(|a, b| a.1 == b.1);
+    files.sort();
+    files.dedup_by(|a, b| a.3 == b.3);
     files
         .into_iter()
         .take(EVIDENCE_MAX_FILES)
-        .map(|(_, p)| p)
+        .map(|(_, _, _, p, src)| (p, src))
         .collect()
 }
 
@@ -386,13 +458,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn select_key_files_prioritizes_entry_points_and_skips_binaries() {
+    fn select_key_files_prioritizes_entry_html_then_sources_then_config() {
         let list = "./node_modules/x.js\n./index.html\n./package.json\n./src/main.js\n./site.css\n./logo.png\n./data.bin\n./deep/a/b/c/d/app.js\n";
-        let picked = select_key_files(list);
+        let picked: Vec<String> = select_key_files(list).into_iter().map(|(p, _)| p).collect();
+        // priority: entry HTML, then src/ sources, then config, then the
+        // remaining text files (shallow before deep)
         assert_eq!(picked[0], "index.html");
-        assert_eq!(picked[1], "package.json");
-        assert!(picked.contains(&"src/main.js".to_owned()));
-        assert!(picked.contains(&"site.css".to_owned()));
+        assert_eq!(picked[1], "src/main.js");
+        assert_eq!(picked[2], "package.json");
+        assert_eq!(picked[3], "site.css");
+        assert_eq!(picked[4], "deep/a/b/c/d/app.js");
         assert!(
             picked.iter().all(|p| !p.contains("node_modules")
                 && !p.ends_with(".png")
@@ -400,9 +475,43 @@ mod tests {
             "binaries must be skipped: {picked:?}"
         );
         assert!(picked.len() <= EVIDENCE_MAX_FILES, "{picked:?}");
-        // the shallower text file outranks the nested one (capped at 5)
-        assert_eq!(picked[2], "site.css", "shallow files first: {picked:?}");
-        assert_eq!(picked[3], "src/main.js", "shallow files first: {picked:?}");
+    }
+
+    #[test]
+    fn select_key_files_flags_core_sources_and_boosts_main_stems() {
+        let list = "./src/utils.js\n./src/game/engine.ts\n./src/main.ts\n./index.html\n";
+        let picked = select_key_files(list);
+        // src/main.ts (main stem) outranks the utility and nested sources and
+        // is flagged as a core source
+        assert_eq!(picked[1].0, "src/main.ts", "{picked:?}");
+        assert!(picked[1].1, "src/main.ts must be flagged is_source");
+        assert!(picked
+            .iter()
+            .all(|(p, _)| p != "src/utils.js" || !p.is_empty()));
+        let utils = picked.iter().find(|(p, _)| p == "src/utils.js").unwrap();
+        assert!(!utils.1, "utility files are not core sources");
+        // the nested src/ file is still in the source band
+        let engine = picked
+            .iter()
+            .find(|(p, _)| p == "src/game/engine.ts")
+            .unwrap();
+        assert!(engine.1);
+    }
+
+    #[test]
+    fn truncation_marker_is_explicit_not_silent() {
+        let text = "a".repeat(64);
+        let (content, embedded) = excerpt_from_bytes(text.as_bytes(), Some(128), 32);
+        assert_eq!(embedded, 32);
+        assert!(
+            content.ends_with("\n[truncated after 32 bytes]"),
+            "truncation must carry an explicit marker: {content:?}"
+        );
+        // an uncut file carries no marker
+        let (content, embedded) = excerpt_from_bytes(b"hello", None, 32);
+        assert_eq!(content, "hello");
+        assert_eq!(embedded, 5);
+        assert!(!content.contains("truncated"));
     }
 
     #[test]
