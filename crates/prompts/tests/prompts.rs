@@ -86,6 +86,30 @@ fn role_prompts_include_schema_and_untrusted_data_rule() {
         "the loopback bind must be explicitly forbidden: {}",
         implementer.user
     );
+    // Review F8: the vite-host-blocking failure round — the agent verified
+    // 127.0.0.1 while the public URL 403'd (vite blocks non-local Host
+    // headers), so the prompt must require self-verifying the PUBLIC URL and
+    // give the host-allow-listing / static-serving fixes.
+    assert!(
+        implementer.user.contains("sprites.app"),
+        "public-URL self-verification requirement missing: {}",
+        implementer.user
+    );
+    assert!(
+        implementer.user.contains("allowedHosts"),
+        "host allow-listing guidance missing: {}",
+        implementer.user
+    );
+    assert!(
+        implementer.user.contains("python3 -m http.server 8080"),
+        "static-serving fallback missing: {}",
+        implementer.user
+    );
+    assert!(
+        implementer.user.contains("Host headers"),
+        "host-blocking cause missing: {}",
+        implementer.user
+    );
 
     let validator = validator_prompt("summary text", "https://lane.sprites.app", "/workdir");
     assert!(validator.system.contains("\"quality_score\""));

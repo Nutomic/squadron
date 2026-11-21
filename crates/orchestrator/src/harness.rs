@@ -59,7 +59,7 @@ pub const CURL_FLOOR_REPAIR: &str = "Your previous reply was not a single parsea
 /// under `files` could never pass the schema gate (and the field would be
 /// stripped anyway). The orchestrator strips `writes` and synthesizes the
 /// `files` integer from the written set before the answer is returned.
-pub const CURL_FLOOR_PROTOCOL: &str = "RAW-HTTP MODE: you have no shell, editor, or file access; the orchestrator materializes files for you. In addition to the schema fields from the task prompt, include a \"writes\" array: [{\"path\": \"relative/path.ext\", \"content\": \"complete file content as a string\"}] for every file to create or overwrite (paths relative to the workdir only, never absolute, never containing '..'). Emit the complete current content of every file you touch; do NOT emit a \"files\" field, the orchestrator computes it. HARD REQUIREMENT on the final turn: your writes must include the complete site (at least index.html) AND a \"start-server.sh\" whose content starts the site detached exactly like `nohup python3 -m http.server 8080 --bind 0.0.0.0 > server.log 2>&1 &` (adapt the command if the site needs more than static files; whatever you choose, the server MUST bind ALL interfaces — `--host 0.0.0.0` / `--bind 0.0.0.0` / `HOST=0.0.0.0`; NEVER 127.0.0.1 or localhost, the sprite's public HTTPS URL routes port 8080 from outside and a loopback bind is unreachable there; it must keep serving after your session ends and never exit on its own). The orchestrator runs start-server.sh in the workdir and then verifies HTTP 200 itself — you have no shell, so you cannot verify, do not claim you did. Reply with exactly one JSON object. If the work is not finished, set done:false and stop; a continuation turn will follow.";
+pub const CURL_FLOOR_PROTOCOL: &str = "RAW-HTTP MODE: you have no shell, editor, or file access; the orchestrator materializes files for you. In addition to the schema fields from the task prompt, include a \"writes\" array: [{\"path\": \"relative/path.ext\", \"content\": \"complete file content as a string\"}] for every file to create or overwrite (paths relative to the workdir only, never absolute, never containing '..'). Emit the complete current content of every file you touch; do NOT emit a \"files\" field, the orchestrator computes it. HARD REQUIREMENT on the final turn: your writes must include the complete site (at least index.html) AND a \"start-server.sh\" whose content starts the site detached exactly like `nohup python3 -m http.server 8080 --bind 0.0.0.0 > server.log 2>&1 &` (adapt the command if the site needs more than static files; whatever you choose, the server MUST bind ALL interfaces — `--host 0.0.0.0` / `--bind 0.0.0.0` / `HOST=0.0.0.0`; NEVER 127.0.0.1 or localhost, the sprite's public HTTPS URL routes port 8080 from outside and a loopback bind is unreachable there; it must keep serving after your session ends and never exit on its own). The orchestrator runs start-server.sh in the workdir and then verifies HTTP 200 itself — you have no shell, so you cannot verify, do not claim you did. It verifies the PUBLIC URL (pattern `https://<sprite-name>-b5t5x.sprites.app/`), not just 127.0.0.1: dev servers like `vite preview` block non-local Host headers and answer 403 at the public URL even when bound to 0.0.0.0, so prefer serving the built output statically (`python3 -m http.server 8080` from the build dir) or allowing all Host headers (`--allowedHosts true` / `allowedHosts: true` in vite, or your server's equivalent) — otherwise the public 200-check fails and the lane is rejected. Reply with exactly one JSON object. If the work is not finished, set done:false and stop; a continuation turn will follow.";
 
 /// Detached server start (failure round: the implementer session ended and
 /// killed the foreground server, so the public 200-check failed). The curl
@@ -1367,6 +1367,18 @@ mod tests {
         assert!(CURL_FLOOR_PROTOCOL.contains("0.0.0.0"));
         assert!(CURL_FLOOR_PROTOCOL.contains("--bind 0.0.0.0"));
         assert!(CURL_FLOOR_PROTOCOL.contains("NEVER 127.0.0.1"));
+    }
+
+    /// Review F8: the orchestrator verifies the PUBLIC URL, and dev servers
+    /// like `vite preview` 403 non-local Host headers even when bound to
+    /// 0.0.0.0, so the floor protocol must warn about host blocking and give
+    /// the static-serving / allow-listing fixes.
+    #[test]
+    fn floor_protocol_warns_about_public_url_host_blocking() {
+        assert!(CURL_FLOOR_PROTOCOL.contains("sprites.app"));
+        assert!(CURL_FLOOR_PROTOCOL.contains("Host headers"));
+        assert!(CURL_FLOOR_PROTOCOL.contains("allowedHosts"));
+        assert!(CURL_FLOOR_PROTOCOL.contains("python3 -m http.server 8080"));
     }
 
     /// Failure round: a gateway response carrying reasoning_content with empty
