@@ -111,10 +111,21 @@ fn role_prompts_include_schema_and_untrusted_data_rule() {
         implementer.user
     );
 
-    let validator = validator_prompt("summary text", "https://lane.sprites.app", "/workdir");
+    let validator = validator_prompt(
+        "summary text",
+        "https://lane.sprites.app",
+        "/workdir",
+        "<data label=\"http-probe\">\nGET https://lane.sprites.app -> HTTP 200\n</data>\n",
+    );
     assert!(validator.system.contains("\"quality_score\""));
     assert!(validator.user.contains("https://lane.sprites.app"));
     assert!(validator.user.contains("/workdir"));
+    // F9: the orchestrator-gathered evidence travels as DATA in the prompt.
+    assert!(
+        validator.user.contains("<data label=\"http-probe\">"),
+        "embedded evidence missing: {}",
+        validator.user
+    );
     // Review F8: the validator emitted an implementer-shaped object with an
     // extra `files` field and failed the schema gate, so the prompt must
     // restate its exact allowed output keys.

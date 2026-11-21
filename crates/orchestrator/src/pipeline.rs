@@ -14,6 +14,7 @@ use store::{now_ms, Run, Store};
 
 use crate::artifacts;
 use crate::config::{ms_after, PipelineConfig};
+use crate::evidence;
 use crate::harness::{self, HarnessCache};
 use crate::judge;
 use crate::lane::LaneState;
@@ -256,11 +257,15 @@ async fn run_lane(
     let max_harness_retries = harness::HARNESS_CHAIN.len();
     let mut lane_retries = 0;
     let mut harness_retries = 0;
-    loop {
+
+    // --- Implementer phase (F9): sprite creation + implementer session +
+    // 200 gate + artifacts. ONLY implementer-phase failures destroy the
+    // sprite and recreate it.
+    let phase = loop {
         attempts += 1;
-        let res = run_lane_attempt(ctx.clone(), run_id.clone(), idx, &harness).await;
+        let res = run_implementer_phase(ctx.clone(), run_id.clone(), idx, &harness).await;
         match res {
-            Ok(()) => return Ok(()),
+            Ok(p) => break p,
             Err(e) => {
                 let harness_failure = is_harness_error(&e);
                 let transient = is_transient_error(&e);
@@ -339,6 +344,63 @@ async fn run_lane(
                     publish(&ctx, &run_id).await;
                     return Err(e);
                 }
+            }
+        }
+    };
+    let ImplPhaseOutcome {
+        sprite_name,
+        impl_url,
+        impl_out,
+    } = phase;
+
+    // --- Validator phase (F9): failures retry IN PLACE. A validator-phase
+    // failure must NOT recreate the implementer's sprite or rerun the
+    // implementer (run 7: one schema-gate hiccup escalated the harness and
+    // recreated the sprite, burning a good implementer build). New validator
+    // session on the same sprite; the site and workdir stay intact.
+    let max_val_retries = ctx.config.retries_per_lane;
+    let mut val_retries = 0;
+    loop {
+        let res = run_validator_phase(
+            &ctx,
+            &run_id,
+            idx,
+            &sprite_name,
+            &impl_url,
+            &impl_out,
+            &harness,
+        )
+        .await;
+        match res {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let ts = now_ms();
+                if val_retries < max_val_retries {
+                    val_retries += 1;
+                    let _ = ctx
+                        .store
+                        .append_lane_event(
+                            &run_id,
+                            idx,
+                            ts,
+                            "log",
+                            &format!(
+                                "validator attempt {} failed; retrying in place (sprite and site kept): {e}",
+                                val_retries
+                            ),
+                        )
+                        .await;
+                    continue;
+                }
+                // retries exhausted: hard fail / skip
+                let _ = ctx
+                    .store
+                    .set_lane_error(&run_id, idx, &lane_error_message(&e))
+                    .await;
+                let _ = transition(&ctx, &run_id, idx, LaneState::Failed).await;
+                let _ = ctx.sprite.destroy(&sprite_name).await;
+                publish(&ctx, &run_id).await;
+                return Err(e);
             }
         }
     }
@@ -565,12 +627,20 @@ async fn update_and_verify_public_auth(
     }
 }
 
-async fn run_lane_attempt(
+/// Outcome of the implementer phase: everything the validator phase needs
+/// (F9 phase split — validator failures must not touch any of it).
+struct ImplPhaseOutcome {
+    sprite_name: String,
+    impl_url: String,
+    impl_out: ImplRunResult,
+}
+
+async fn run_implementer_phase(
     ctx: Arc<PipelineCtx>,
     run_id: String,
     idx: i64,
     harness: &HarnessMode,
-) -> Result<(), String> {
+) -> Result<ImplPhaseOutcome, String> {
     // --- Implementer phase: acquire slot ---
     let permit = ctx.slots.acquire().await;
     transition(&ctx, &run_id, idx, LaneState::Creating).await?;
@@ -744,29 +814,45 @@ async fn run_lane_attempt(
     // validation, so validation/retries can restart from a known state.
     let _ = ctx.sprite.checkpoint(&sprite_name).await;
 
+    Ok(ImplPhaseOutcome {
+        sprite_name,
+        impl_url,
+        impl_out,
+    })
+}
+
+async fn run_validator_phase(
+    ctx: &PipelineCtx,
+    run_id: &str,
+    idx: i64,
+    sprite_name: &str,
+    impl_url: &str,
+    impl_out: &ImplRunResult,
+    harness: &HarnessMode,
+) -> Result<(), String> {
     // --- Validator phase: acquires its own slot ---
     let _val_permit = ctx.slots.acquire().await;
     let val_started = now_ms();
     let val_deadline = ms_after(val_started, ctx.config.val_deadline);
     let val_model = lane_model(idx as usize).to_owned(); // alternate same scheme; spec states validators alternate per lane too
     ctx.store
-        .start_validation(&run_id, idx, &val_model, val_started, val_deadline)
+        .start_validation(run_id, idx, &val_model, val_started, val_deadline)
         .await
         .map_err(|e| e.to_string())?;
     let _ = ctx
         .store
-        .append_lane_event(&run_id, idx, val_started, "state", "validating")
+        .append_lane_event(run_id, idx, val_started, "state", "validating")
         .await;
-    publish(&ctx, &run_id).await;
+    publish(ctx, run_id).await;
 
     let val_result = tokio::time::timeout(
         ctx.config.val_deadline,
         run_validator(
-            &ctx,
-            &run_id,
+            ctx,
+            run_id,
             idx,
-            &sprite_name,
-            &impl_url,
+            sprite_name,
+            impl_url,
             &impl_out.summary,
             harness,
         ),
@@ -785,7 +871,7 @@ async fn run_lane_attempt(
     };
     ctx.store
         .finish_validation(
-            &run_id,
+            run_id,
             idx,
             verdict_str,
             &val_out.summary,
@@ -794,7 +880,7 @@ async fn run_lane_attempt(
         .await
         .map_err(|e| e.to_string())?;
     if let Some(cost) = val_out.cost_usd {
-        ctx.store.add_lane_cost(&run_id, idx, cost).await.ok();
+        ctx.store.add_lane_cost(run_id, idx, cost).await.ok();
     }
     // R2 finding 5: a validator `verdict: fail` must demote the lane out of
     // the judge set. The report stays persisted (val_verdict, val_report_json)
@@ -803,7 +889,7 @@ async fn run_lane_attempt(
         let _ = ctx
             .store
             .append_lane_event(
-                &run_id,
+                run_id,
                 idx,
                 now_ms(),
                 "log",
@@ -812,14 +898,14 @@ async fn run_lane_attempt(
             .await;
         let _ = ctx
             .store
-            .set_lane_error(&run_id, idx, "validator: verdict fail (report retained)")
+            .set_lane_error(run_id, idx, "validator: verdict fail (report retained)")
             .await;
-        transition(&ctx, &run_id, idx, LaneState::Failed).await?;
-        publish(&ctx, &run_id).await;
+        transition(ctx, run_id, idx, LaneState::Failed).await?;
+        publish(ctx, run_id).await;
         return Ok(());
     }
-    transition(&ctx, &run_id, idx, LaneState::Validated).await?;
-    publish(&ctx, &run_id).await;
+    transition(ctx, run_id, idx, LaneState::Validated).await?;
+    publish(ctx, run_id).await;
 
     Ok(())
 }
@@ -890,6 +976,7 @@ async fn run_implementer(
                     timeout: ctx.config.impl_deadline,
                     connector_env: Some(connector_env),
                     workdir: Some(&sprite_workdir(run_id, idx)),
+                    role: Role::Implementer,
                 },
             )
             .await
@@ -1026,9 +1113,35 @@ async fn run_validator(
         HarnessMode::Real { .. } => {
             // Real mode: run the real validator report prompt through the
             // harness against the actual code in the lane workdir and the
-            // live site. Never fabricate a verdict.
+            // live site. Never fabricate a verdict. F9: the validator's
+            // evidence is gathered by the orchestrator (bounded sprite execs:
+            // workdir file list, key-file excerpts, HTTP probe of the public
+            // URL) and embedded as DATA — the curl-floor validator has no
+            // shell, and a validator without evidence writes junk verdicts
+            // (run 7: "implementer claims remain unverified", 0/10).
             let workdir = sprite_workdir(run_id, idx);
-            let prompt = prompts::validator_prompt(impl_summary, impl_url, &workdir);
+            let evidence = evidence::gather_validator_evidence(
+                &ctx.sprite,
+                sprite_name,
+                &workdir,
+                impl_url,
+                ctx.config.probe_allow_loopback,
+            )
+            .await;
+            let _ = ctx
+                .store
+                .append_lane_event(
+                    run_id,
+                    idx,
+                    now_ms(),
+                    "log",
+                    &format!(
+                        "validator evidence gathered ({} bytes, embedded as DATA)",
+                        evidence.len()
+                    ),
+                )
+                .await;
+            let prompt = prompts::validator_prompt(impl_summary, impl_url, &workdir, &evidence);
             let recipe = llm_gateway::SpriteRecipe::for_model(
                 format!("{run_id}-{idx}-val"),
                 lane_model(idx as usize).to_owned(),
@@ -1048,6 +1161,7 @@ async fn run_validator(
                     timeout: ctx.config.val_deadline,
                     connector_env: Some(connector_env),
                     workdir: Some(&sprite_workdir(run_id, idx)),
+                    role: Role::Validator,
                 },
             )
             .await

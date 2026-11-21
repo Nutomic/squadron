@@ -192,6 +192,7 @@ async fn run_prompt_runs_the_curl_floor_and_parses_cost() {
             // R3-B: lane workdirs must live in the test tempdir, not in the
             // source tree (leaked swarm-work/ artifacts).
             workdir: Some(dir.path().join("lane-0").to_str().unwrap()),
+            role: prompts::Role::Implementer,
         },
     )
     .await
@@ -236,6 +237,7 @@ async fn run_prompt_cli_choice_returns_agent_stdout() {
             )),
             // R3-B: lane workdir in the test tempdir (leaked artifacts fix).
             workdir: Some(dir.path().join("lane-1").to_str().unwrap()),
+            role: prompts::Role::Implementer,
         },
     )
     .await
@@ -322,6 +324,7 @@ async fn run_prompt_retries_reasoning_only_floor_response() {
             timeout: Duration::from_secs(30),
             connector_env: None,
             workdir: Some(dir.path().join("lane-0").to_str().unwrap()),
+            role: prompts::Role::Implementer,
         },
     )
     .await
@@ -377,6 +380,7 @@ async fn run_prompt_failure_carries_the_captured_attempt() {
             timeout: Duration::from_secs(30),
             connector_env: None,
             workdir: Some(dir.path().join("lane-0").to_str().unwrap()),
+            role: prompts::Role::Implementer,
         },
     )
     .await
@@ -427,6 +431,7 @@ async fn run_prompt_reports_raw_excerpt_when_floor_response_has_no_text() {
             timeout: Duration::from_secs(30),
             connector_env: None,
             workdir: None,
+            role: prompts::Role::Implementer,
         },
     )
     .await

@@ -126,6 +126,31 @@ pub async fn fetch_public_status(url: &str, allow_loopback: bool) -> Result<u16,
         .map(|resp| resp.status().as_u16())
 }
 
+/// F9: status AND a bounded prefix of the body (validator evidence: the
+/// floor validator needs to see what the live site actually serves, not only
+/// the status). Only the first `max_bytes` body bytes are read; everything
+/// else is dropped, so a hostile/large site cannot blow up the prompt.
+pub async fn fetch_public_status_body(
+    url: &str,
+    allow_loopback: bool,
+    max_bytes: usize,
+) -> Result<(u16, String), String> {
+    let policy = FetchPolicy {
+        max_hops: MAX_HOPS,
+        allow_loopback,
+    };
+    let resp = fetch_final_response(url, policy).await?;
+    let status = resp.status().as_u16();
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("body read failed: {e}"))?;
+    let take = bytes.len().min(max_bytes);
+    // from_utf8_lossy is safe on any slice: mid-character cuts degrade to
+    // U+FFFD instead of panicking.
+    Ok((status, String::from_utf8_lossy(&bytes[..take]).into_owned()))
+}
+
 /// Fetch a URL as text under `policy`. Every hop (including the first) is
 /// resolved and validated against the policy before a connection is made, and
 /// the resolved addresses are pinned into the client so DNS cannot rebind
