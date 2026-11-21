@@ -466,8 +466,10 @@ fn config_update(args: &[String]) -> Result<String, (i32, String)> {
 }
 
 /// `sprite info <name>`: the URL line is the source of truth for the public
-/// host (R3-A #1). The read takes the same exclusive lock as `with_state` so
-/// it can never observe a mid-update state.
+/// host (R3-A #1) and the `Auth:` line is the source of truth for the
+/// public-routing state (F7: `private` after create, `public` after
+/// `config update -s <name> --url-auth public`). The read takes the same
+/// exclusive lock as `with_state` so it can never observe a mid-update state.
 fn info(args: &[String]) -> Result<String, (i32, String)> {
     let name = args
         .get(1)
@@ -482,7 +484,7 @@ fn info(args: &[String]) -> Result<String, (i32, String)> {
     })
     .map_err(|e| (3, e))?;
     Ok(format!(
-        "Name: {}\nStatus: running\nURL: {}\nurl-auth: {}\n",
+        "Name: {}\nStatus: running\nURL: {}\nAuth: {}\n",
         sprite.name,
         sprite.url,
         if sprite.url_auth_public {

@@ -25,4 +25,8 @@ pub enum SpriteError {
     /// `URL:` line, so the real (opaque-suffixed) public URL is unknown.
     #[error("sprite info for `{command}` did not report a URL")]
     InfoUrlMissing { command: String },
+    /// F7: `sprite info <name>` ran but its output carried no parseable
+    /// `Auth:` field, so the authoritative public-routing state is unknown.
+    #[error("sprite info for `{command}` did not report an Auth field")]
+    InfoAuthMissing { command: String },
 }

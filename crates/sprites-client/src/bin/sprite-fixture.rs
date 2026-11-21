@@ -21,7 +21,9 @@ fn main() {
     }
     if args.get(1).map(String::as_str) == Some("info") {
         let name = args.get(2).cloned().unwrap_or_default();
-        print!("Name: {name}\nStatus: running\nURL: https://{name}-f1x2e.sprites.app\nurl-auth: public\n");
+        print!(
+            "Name: {name}\nStatus: running\nURL: https://{name}-f1x2e.sprites.app\nAuth: public\n"
+        );
         return;
     }
     if whole.contains("failstdout") {

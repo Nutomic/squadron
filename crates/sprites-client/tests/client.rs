@@ -9,7 +9,13 @@ use std::time::{Duration, Instant};
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 use sprites_client::mock_cli::{self, MockState};
-use sprites_client::{parse_info_url, ExecOptions, SpriteClient, SpriteConfig, SpriteError};
+use sprites_client::{
+    parse_info_auth, parse_info_url, ExecOptions, SpriteClient, SpriteConfig, SpriteError,
+};
+
+fn args_of(v: Vec<&str>) -> Vec<String> {
+    v.into_iter().map(str::to_owned).collect()
+}
 
 fn fixture_client() -> (SpriteClient, PathBuf, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -416,6 +422,67 @@ fn parse_info_url_accepts_url_lines_only() {
     assert_eq!(parse_info_url(""), None);
     // non-http values are rejected
     assert_eq!(parse_info_url("URL: not-a-url\n"), None);
+}
+
+/// F7: the mock `sprite info` reports an `Auth:` field — `private` after
+/// create, `public` after the config update — and `client.auth()` parses it
+/// (the authoritative verification the pipeline now performs).
+#[tokio::test(flavor = "multi_thread")]
+async fn auth_parses_the_auth_field_from_sprite_info() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("auth-field-state.json");
+    std::env::set_var("MOCK_SPRITE_STATE", &state);
+    let client = SpriteClient::new(SpriteConfig {
+        cli_path: PathBuf::from(env!("CARGO_BIN_EXE_mock-sprite-cli")),
+        command_timeout: Duration::from_secs(5),
+        ..SpriteConfig::default()
+    });
+    let name = client.name("authtest");
+    client.create(&name).await.unwrap();
+
+    // private right after create
+    assert_eq!(client.auth(&name).await.unwrap(), "private");
+    // the raw output carries the documented `Auth:` line
+    let raw = mock_cli::execute(&args_of(vec!["info", &name])).unwrap();
+    assert!(raw.contains("\nAuth: private\n"), "raw info output: {raw}");
+
+    client.set_url_auth_public(&name).await.unwrap();
+    assert_eq!(client.auth(&name).await.unwrap(), "public");
+    let raw = mock_cli::execute(&args_of(vec!["info", &name])).unwrap();
+    assert!(raw.contains("\nAuth: public\n"), "raw info output: {raw}");
+
+    // unknown sprite: typed error, no fabricated value
+    let err = client.auth("auth-missing-sprite").await.unwrap_err();
+    assert!(matches!(err, SpriteError::CliExit { .. }), "{err:?}");
+    std::env::remove_var("MOCK_SPRITE_STATE");
+}
+
+/// F7: the parser accepts the documented `Auth:` shapes and nothing else.
+#[test]
+fn parse_info_auth_accepts_auth_lines_only() {
+    assert_eq!(
+        parse_info_auth("Name: x\nStatus: cold\nAuth: public\n"),
+        Some("public".to_owned())
+    );
+    // lowercase key
+    assert_eq!(
+        parse_info_auth("auth: private\n"),
+        Some("private".to_owned())
+    );
+    // table padding
+    assert_eq!(
+        parse_info_auth("| auth | public |\n"),
+        Some("public".to_owned())
+    );
+    // no Auth line -> None (never fabricate a verdict)
+    assert_eq!(
+        parse_info_auth("Name: x\nURL: https://x.sprites.app\n"),
+        None
+    );
+    assert_eq!(parse_info_auth(""), None);
+    // empty value is not a verdict
+    assert_eq!(parse_info_auth("Auth:\n"), None);
 }
 
 /// R3-A #2: `config update` without `-s <name>` fails (real CLI: "sprite name

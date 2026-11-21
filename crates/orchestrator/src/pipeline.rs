@@ -368,9 +368,10 @@ fn is_harness_error(e: &str) -> bool {
 /// even though the implementer had done everything right — a transient routing
 /// propagation gap must not kill an hour of agent work. When the failed probe
 /// carries an auth-wall signature (30x/401/403), re-issue
-/// `sprite config update -s <name> --url-auth public`, let routing settle
-/// briefly, and re-probe exactly once. Any other failure (or a still-private
-/// URL after the retry) fails the lane as before.
+/// `sprite config update -s <name> --url-auth public` (asserted + logged, see
+/// `assert_public_url_auth`), verify `sprite info` reports auth=public, let
+/// routing settle briefly, and re-probe exactly once. Any other failure (or a
+/// still-private URL after the retry) fails the lane as before.
 async fn ensure_public_200(
     ctx: &Arc<PipelineCtx>,
     run_id: &str,
@@ -407,26 +408,161 @@ async fn ensure_public_200(
             ));
         }
     }
-    // Best-effort re-issue: a failure here is logged, the re-probe decides.
-    if let Err(e) = ctx.sprite.set_url_auth_public(sprite_name).await {
-        let _ = ctx
-            .store
-            .append_lane_event(
-                run_id,
-                idx,
-                now_ms(),
-                "log",
-                &format!("url-auth retry failed: {e}"),
-            )
-            .await;
-    }
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // F7: the re-issue is asserted, not best-effort: the config update output
+    // is captured and logged, and `sprite info` must report auth=public
+    // before the re-probe. A config failure here fails the lane with the
+    // config error instead of a misleading 200 failure.
+    assert_public_url_auth(ctx, run_id, idx, sprite_name).await?;
+    tokio::time::sleep(Duration::from_secs(5)).await;
     if !artifacts::check_http_200_policy(impl_url, ctx.config.probe_allow_loopback).await {
         return Err(format!(
             "implementer: live URL did not answer 200 after url-auth retry: {impl_url}"
         ));
     }
     Ok(())
+}
+
+/// F7: the url-auth public step is asserted, not assumed (run 5, lane 0 died
+/// silently here). Issue `sprite config update -s <name> --url-auth public`,
+/// capturing and logging stdout+stderr to lane_events (kind="log",
+/// sanitized); on non-zero exit or empty output, retry up to
+/// `URL_AUTH_ATTEMPTS` times with backoff (1s/3s), each attempt logged.
+/// Authoritative verification then parses the `Auth:` field from
+/// `sprite info`: the lane only proceeds when it reads `public` (the parsed
+/// value is logged too). If it is still not public after the retries, the
+/// lane fails EARLY with a clear error naming the config failure — before
+/// any implementer session is launched, so an hour of agent work is never
+/// spent on a sprite that can never pass the 200-check.
+const URL_AUTH_ATTEMPTS: usize = 3;
+
+async fn assert_public_url_auth(
+    ctx: &PipelineCtx,
+    run_id: &str,
+    idx: i64,
+    sprite_name: &str,
+) -> Result<(), String> {
+    let backoffs = [Duration::from_secs(1), Duration::from_secs(3)];
+    let mut last_detail = "no attempt completed".to_owned();
+    for attempt in 1..=URL_AUTH_ATTEMPTS {
+        last_detail = update_and_verify_public_auth(ctx, run_id, idx, sprite_name, attempt).await;
+        if last_detail.is_empty() {
+            return Ok(());
+        }
+        if attempt < URL_AUTH_ATTEMPTS {
+            tokio::time::sleep(backoffs[attempt - 1]).await;
+        }
+    }
+    Err(format!(
+        "url-auth: sprite {sprite_name} still not public after {URL_AUTH_ATTEMPTS} attempts ({last_detail})"
+    ))
+}
+
+/// One round of `config update` + `sprite info` verification. Returns an
+/// empty string on verified success, otherwise a short failure detail that
+/// names what went wrong (config update exit/output or the parsed Auth
+/// value). Every step is logged to lane_events, sanitized: CLI output is
+/// untrusted text.
+async fn update_and_verify_public_auth(
+    ctx: &PipelineCtx,
+    run_id: &str,
+    idx: i64,
+    sprite_name: &str,
+    attempt: usize,
+) -> String {
+    let config = match ctx.sprite.set_url_auth_public(sprite_name).await {
+        Ok(out) => {
+            let mut combined = format!("stdout={}", out.stdout.trim());
+            if !out.stderr.trim().is_empty() {
+                combined.push_str(&format!(" stderr={}", out.stderr.trim()));
+            }
+            let _ = ctx
+                .store
+                .append_lane_event(
+                    run_id,
+                    idx,
+                    now_ms(),
+                    "log",
+                    &format!(
+                        "url-auth config update attempt {attempt} exit={}: {}",
+                        out.exit_code,
+                        harness::sanitize_excerpt(&combined, 300)
+                    ),
+                )
+                .await;
+            if out.stdout.trim().is_empty() && out.stderr.trim().is_empty() {
+                // Empty output: success is unprovable. The `sprite info`
+                // verification below still runs, but the attempt is treated
+                // as failed for the retry decision.
+                return format!("config update attempt {attempt} produced no output");
+            }
+            out
+        }
+        Err(e) => {
+            let _ = ctx
+                .store
+                .append_lane_event(
+                    run_id,
+                    idx,
+                    now_ms(),
+                    "log",
+                    &format!(
+                        "url-auth config update attempt {attempt} failed: {}",
+                        harness::sanitize_excerpt(&e.to_string(), 300)
+                    ),
+                )
+                .await;
+            return format!("config update attempt {attempt} failed: {e}");
+        }
+    };
+    // Authoritative verification: the parsed `Auth:` value decides, not the
+    // config update's own output.
+    match ctx.sprite.auth(sprite_name).await {
+        Ok(auth) if auth.eq_ignore_ascii_case("public") => {
+            let _ = ctx
+                .store
+                .append_lane_event(
+                    run_id,
+                    idx,
+                    now_ms(),
+                    "log",
+                    &format!(
+                        "url-auth public verified via sprite info (auth={auth}, config exit={})",
+                        config.exit_code
+                    ),
+                )
+                .await;
+            String::new()
+        }
+        Ok(auth) => {
+            let _ = ctx
+                .store
+                .append_lane_event(
+                    run_id,
+                    idx,
+                    now_ms(),
+                    "log",
+                    &format!("sprite info auth={auth} after config update attempt {attempt}"),
+                )
+                .await;
+            format!("sprite info auth={auth} after config update attempt {attempt}")
+        }
+        Err(e) => {
+            let _ = ctx
+                .store
+                .append_lane_event(
+                    run_id,
+                    idx,
+                    now_ms(),
+                    "log",
+                    &format!(
+                        "sprite info verification failed after config update attempt {attempt}: {}",
+                        harness::sanitize_excerpt(&e.to_string(), 300)
+                    ),
+                )
+                .await;
+            format!("sprite info verification failed: {e}")
+        }
+    }
 }
 
 async fn run_lane_attempt(
@@ -467,14 +603,19 @@ async fn run_lane_attempt(
             .await
             .map_err(|e| e.to_string())?;
     }
-    // R3-A #2: url-auth public is scoped to the sprite (-s <name>) and a
-    // failure is a hard lane error: a private URL can never pass the 200-check,
-    // serve the validator, or be iframed, so silently proceeding would only
-    // defer the failure.
-    ctx.sprite
-        .set_url_auth_public(&sprite_name)
-        .await
-        .map_err(|e| format!("url-auth: {e}"))?;
+    // R3-A #2 / F7: url-auth public is scoped to the sprite (-s <name>) and
+    // is ASSERTED here, before the implementer session is launched: the
+    // config update is retried with captured output, and `sprite info` must
+    // report auth=public. A private URL can never pass the 200-check, serve
+    // the validator, or be iframed, so failing early (with a clear error
+    // naming the config failure) beats silently spending the implementer
+    // hour on a dead lane. The sprite name is only persisted by start_impl
+    // (which we never reach on this path), so destroy it here — a leaked
+    // sprite is a billable resource.
+    if let Err(e) = assert_public_url_auth(&ctx, &run_id, idx, &sprite_name).await {
+        let _ = ctx.sprite.destroy(&sprite_name).await;
+        return Err(e);
+    }
     // R3-A #1: the real host carries an opaque platform suffix; parse it from
     // `sprite info` instead of fabricating `https://{name}.sprites.app`.
     let impl_url = ctx

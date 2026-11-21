@@ -147,6 +147,17 @@ impl SpriteClient {
         Ok(parse_sprite_names(&output.stdout))
     }
 
+    /// F7: read the authoritative public-routing state from
+    /// `sprite info <name>` — the value of its `Auth:` field (e.g.
+    /// "public"/"private"). A config update whose output looks successful is
+    /// still not proof; callers must verify here before proceeding.
+    pub async fn auth(&self, name: &str) -> Result<String, SpriteError> {
+        let args = vec!["info".into(), name.into()];
+        let output = self.run(args.clone(), None).await?;
+        let command = args.join(" ");
+        parse_info_auth(&output.stdout).ok_or(SpriteError::InfoAuthMissing { command })
+    }
+
     /// Query the public URL of a sprite (`sprite info <name>`). Returns the
     /// first http(s) URL found in the CLI output, or an empty string when the
     /// CLI prints none (callers fall back to the deterministic name form).
@@ -256,6 +267,41 @@ pub fn parse_info_url(text: &str) -> Option<String> {
         let url = value.trim();
         if url.starts_with("http://") || url.starts_with("https://") {
             return Some(url.to_owned());
+        }
+    }
+    None
+}
+
+/// F7: extract the `Auth:` field from `sprite info` output (the authoritative
+/// public-routing state; evidence format: `Auth: public`). Same tolerant
+/// shapes as `parse_info_url`: case-insensitive key, optional table padding,
+/// non-empty value required.
+pub fn parse_info_auth(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('|') || trimmed.starts_with('│') {
+            let cells: Vec<String> = trimmed
+                .trim_matches(|c| c == '|' || c == '│')
+                .split(['|', '│'])
+                .map(|c| c.trim().to_owned())
+                .collect();
+            for pair in cells.windows(2) {
+                if pair[0].eq_ignore_ascii_case("auth") && !pair[1].is_empty() {
+                    return Some(pair[1].to_owned());
+                }
+            }
+            continue;
+        }
+        let (key, value) = match trimmed.split_once(':') {
+            Some(kv) => kv,
+            None => continue,
+        };
+        if !key.trim().eq_ignore_ascii_case("auth") {
+            continue;
+        }
+        let value = value.trim();
+        if !value.is_empty() {
+            return Some(value.to_owned());
         }
     }
     None
