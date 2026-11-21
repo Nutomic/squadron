@@ -69,7 +69,7 @@ pub const CURL_FLOOR_PROTOCOL: &str = "RAW-HTTP MODE: you have no shell, editor,
 /// implementer turn and failed the schema gate 4x with `unknown field
 /// 'done'`). The orchestrator stops the loop itself as soon as the answer
 /// carries a `verdict`, so the model must not emit any done flag either.
-pub const CURL_FLOOR_VALIDATOR_PROTOCOL: &str = "VALIDATOR RAW-HTTP MODE: you have no shell, editor, or file access; you cannot run commands, read files, or fetch URLs yourself — the DATA blocks embedded in this prompt are your complete evidence. Write your report ONLY from that evidence. Respond with ONLY one JSON object with EXACTLY these keys and no others: verdict, features, bugs, security, quality_score, summary. Do not include done, files, run_command, or blockers — those belong to a different role. Do not include a writes array and do not write any files. If your reply was not a single such JSON object, a follow-up turn will ask you to fix it.";
+pub const CURL_FLOOR_VALIDATOR_PROTOCOL: &str = "VALIDATOR RAW-HTTP MODE: you have no shell, editor, or file access; you cannot run commands, read files, or fetch URLs yourself — the DATA blocks embedded in this prompt are your complete evidence. Write your report ONLY from that evidence. Respond with ONLY one JSON object with EXACTLY these keys and no others: verdict, features, bugs, security, quality_score, summary. Do not include done, files, run_command, or blockers — those belong to a different role. Do not include a writes array and do not write any files. VERDICT CALIBRATION: verdict fail is for CONCRETE evidence of breakage: live probe non-200, missing core feature demonstrable from code, security issues. If the site serves 200 and its structure is verified, claims you cannot verify from evidence are reported as unverified in features/bugs but do NOT by themselves flip the verdict to fail — reflect verification depth in quality_score instead. A pass with quality 60 and noted gaps is correct; a fail requires affirmative evidence of a problem. If your reply was not a single such JSON object, a follow-up turn will ask you to fix it.";
 
 /// F9: retry lead for a validator floor turn whose answer was not a single
 /// validator-schema JSON object (the model produced chatter, echoed
@@ -1427,6 +1427,22 @@ mod tests {
         assert!(
             CURL_FLOOR_VALIDATOR_PROTOCOL
                 .contains("DATA blocks embedded in this prompt are your complete evidence"),
+            "protocol: {CURL_FLOOR_VALIDATOR_PROTOCOL}"
+        );
+        // F10 verdict calibration: unverifiable claims are not grounds for
+        // fail — only concrete breakage evidence flips the verdict.
+        assert!(
+            CURL_FLOOR_VALIDATOR_PROTOCOL
+                .contains("verdict fail is for CONCRETE evidence of breakage"),
+            "protocol: {CURL_FLOOR_VALIDATOR_PROTOCOL}"
+        );
+        assert!(
+            CURL_FLOOR_VALIDATOR_PROTOCOL.contains("do NOT by themselves flip the verdict to fail"),
+            "protocol: {CURL_FLOOR_VALIDATOR_PROTOCOL}"
+        );
+        assert!(
+            CURL_FLOOR_VALIDATOR_PROTOCOL
+                .contains("a fail requires affirmative evidence of a problem"),
             "protocol: {CURL_FLOOR_VALIDATOR_PROTOCOL}"
         );
         // the retry lead repeats the no-echo contract

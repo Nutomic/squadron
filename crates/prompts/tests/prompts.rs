@@ -148,6 +148,35 @@ fn role_prompts_include_schema_and_untrusted_data_rule() {
         "implementer-only keys must be called out: {}",
         validator.user
     );
+    // F10 verdict calibration: unverifiable claims are not grounds for fail.
+    assert!(
+        validator
+            .user
+            .contains("verdict fail is for CONCRETE evidence of breakage"),
+        "calibration sentence missing: {}",
+        validator.user
+    );
+    assert!(
+        validator
+            .user
+            .contains("do NOT by themselves flip the verdict to fail"),
+        "unverified-is-not-fail rule missing: {}",
+        validator.user
+    );
+    assert!(
+        validator
+            .user
+            .contains("a fail requires affirmative evidence of a problem"),
+        "affirmative-evidence rule missing: {}",
+        validator.user
+    );
+    assert!(
+        validator
+            .user
+            .contains("A pass with quality 60 and noted gaps is correct"),
+        "pass-with-gaps example missing: {}",
+        validator.user
+    );
 
     let report = ValidatorOutput {
         verdict: Verdict::Pass,
