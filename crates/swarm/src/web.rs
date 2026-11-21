@@ -207,7 +207,7 @@ async fn load_rows(store: &Store) -> Vec<RunRow> {
     match store.list_runs().await {
         Ok(mut runs) => {
             // The subtitle promises "newest first" — enforce it here.
-            runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            runs.sort_by_key(|a| std::cmp::Reverse(a.created_at));
             let now_ms = Utc::now().timestamp_millis();
             runs.into_iter()
                 .map(|r| RunRow {

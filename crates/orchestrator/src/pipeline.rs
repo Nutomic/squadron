@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::Engine as _;
 use llm_gateway::{lane_model, MachineLlmClient};
@@ -362,6 +363,72 @@ fn is_harness_error(e: &str) -> bool {
     l.contains("harness[") || l.contains("schema gate failed") || l.contains("curl floor")
 }
 
+/// F6: the real public 200-check, with one auth-wall recovery round. Three
+/// real runs died because the lane sprite's public routing answered 302/401/403
+/// even though the implementer had done everything right — a transient routing
+/// propagation gap must not kill an hour of agent work. When the failed probe
+/// carries an auth-wall signature (30x/401/403), re-issue
+/// `sprite config update -s <name> --url-auth public`, let routing settle
+/// briefly, and re-probe exactly once. Any other failure (or a still-private
+/// URL after the retry) fails the lane as before.
+async fn ensure_public_200(
+    ctx: &Arc<PipelineCtx>,
+    run_id: &str,
+    idx: i64,
+    impl_url: &str,
+    sprite_name: &str,
+) -> Result<(), String> {
+    // Single probe before deciding: a double probe would burn the wall's
+    // one-shot response and misread a still-private URL as healthy.
+    match artifacts::fetch_public_status(impl_url, ctx.config.probe_allow_loopback).await {
+        Ok(status) if (200..300).contains(&status) => return Ok(()),
+        Ok(status) if artifacts::is_auth_wall_status(status) => {
+            let _ = ctx
+                .store
+                .append_lane_event(
+                    run_id,
+                    idx,
+                    now_ms(),
+                    "log",
+                    &format!(
+                        "200-check hit an auth wall (HTTP {status}); re-issuing url-auth public and retrying once",
+                    ),
+                )
+                .await;
+        }
+        Ok(status) => {
+            return Err(format!(
+                "implementer: live URL did not answer 200 (HTTP {status}): {impl_url}"
+            ));
+        }
+        Err(_) => {
+            return Err(format!(
+                "implementer: live URL did not answer 200: {impl_url}"
+            ));
+        }
+    }
+    // Best-effort re-issue: a failure here is logged, the re-probe decides.
+    if let Err(e) = ctx.sprite.set_url_auth_public(sprite_name).await {
+        let _ = ctx
+            .store
+            .append_lane_event(
+                run_id,
+                idx,
+                now_ms(),
+                "log",
+                &format!("url-auth retry failed: {e}"),
+            )
+            .await;
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    if !artifacts::check_http_200_policy(impl_url, ctx.config.probe_allow_loopback).await {
+        return Err(format!(
+            "implementer: live URL did not answer 200 after url-auth retry: {impl_url}"
+        ));
+    }
+    Ok(())
+}
+
 async fn run_lane_attempt(
     ctx: Arc<PipelineCtx>,
     run_id: String,
@@ -485,12 +552,8 @@ async fn run_lane_attempt(
     // the 127.0.0.1 self-probe fallback is gone (a passing orchestrator is not
     // a passing lane). F2: the probe is SSRF-safe (shared net.rs machinery);
     // the loopback escape is config-driven and test-only.
-    if !ctx.config.test_mode
-        && !artifacts::check_http_200_policy(&impl_url, ctx.config.probe_allow_loopback).await
-    {
-        return Err(format!(
-            "implementer: live URL did not answer 200: {impl_url}"
-        ));
+    if !ctx.config.test_mode {
+        ensure_public_200(&ctx, &run_id, idx, &impl_url, &sprite_name).await?;
     }
     transition(&ctx, &run_id, idx, LaneState::Done).await?;
     publish(&ctx, &run_id).await;

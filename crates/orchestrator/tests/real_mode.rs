@@ -1,12 +1,12 @@
 //! Real-mode (`test_mode = false`) integration test — the seam where audits
 //! #1–#3 escaped: it drives the full pipeline against the mock sprite CLI and
 //! proves that (a) the lane URL is derived from `sprite info`, (b) the URL
-//! auth is flipped public, (c) the 200 gate passes against a live local
-//! (tunneled) server, and (d) the artifact pull runs from the sprite — all
-//! together in one run.
+//! auth is flipped public (and re-issued when the 200-check hits an auth
+//! wall), (c) the 200 gate passes against a live local (tunneled) server, and
+//! (d) the artifact pull runs from the sprite — all together in one run.
 //!
-//! This file intentionally contains a single test: it mutates process env
-//! (PATH, cwd, MOCK_* vars) and must not race with a sibling test.
+//! The two tests mutate process env (PATH, cwd, MOCK_* vars) and must not
+//! race with each other; ENV_LOCK serializes them.
 #![allow(clippy::unwrap_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
 
 use std::collections::HashMap;
@@ -14,6 +14,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::Request;
+use axum::http::StatusCode;
 use axum::routing::get;
 use axum::Router;
 use flate2::read::GzDecoder;
@@ -23,7 +25,10 @@ use orchestrator::{
 };
 use sprites_client::{SpriteClient, SpriteConfig};
 use store::Store;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
+
+// Both tests mutate process-global state (PATH, cwd, MOCK_* env): serialize.
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn canned_impl() -> String {
     serde_json::json!({
@@ -62,8 +67,14 @@ fn short_run_id(run_id: &str) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
+    let _env = ENV_LOCK.lock().await;
     let project = tempfile::tempdir().unwrap();
-    let old_cwd = std::env::current_dir().unwrap();
+    // F6: a sibling test that panicked before its cleanup leaves the process
+    // cwd inside a deleted tempdir; fall back to a stable dir instead of
+    // compounding the failure with a NotFound on current_dir().
+    let old_cwd = std::env::current_dir()
+        .ok()
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
     // The mock CLI executes commands in this process' cwd; the sprite-side
     // workdir (`swarm-work/...`) is relative, so run from a private cwd.
     std::env::set_current_dir(project.path()).unwrap();
@@ -93,12 +104,29 @@ async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
         ),
     );
 
-    // The "tunnel": a local server every sprite URL points at, answering 200.
+    // The "tunnel": a local server every sprite URL points at. F6: the FIRST
+    // probe of each lane URL answers with the platform auth-wall signature
+    // (403); only after the pipeline re-issues `config update --url-auth
+    // public` and re-probes does the URL answer 200. The run must therefore
+    // survive one auth-wall round per lane instead of dying on it.
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
-    let app = Router::new().fallback(get(|| async { "<html><body>tunnel</body></html>" }));
+    let probes: Arc<Mutex<HashMap<String, u32>>> = Arc::new(Mutex::new(HashMap::new()));
+    let app = Router::new().fallback(get(move |req: Request| {
+        let probes = probes.clone();
+        async move {
+            let mut probes = probes.lock().await;
+            let seen = probes.entry(req.uri().path().to_owned()).or_insert(0);
+            *seen += 1;
+            if *seen == 1 {
+                (StatusCode::FORBIDDEN, "auth wall")
+            } else {
+                (StatusCode::OK, "<html><body>tunnel</body></html>")
+            }
+        }
+    }));
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
@@ -255,6 +283,16 @@ async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
             auth_pos < first_exec,
             "url-auth public must precede the implementer session for {name}"
         );
+        // F6: every lane's first 200-probe hits the tunnel's 403 auth wall,
+        // so the pipeline must re-issue the config update exactly once more.
+        let config_calls = log
+            .iter()
+            .filter(|e| *e == &format!("config {name}"))
+            .count();
+        assert_eq!(
+            config_calls, 2,
+            "initial + auth-wall retry config update expected for {name}"
+        );
     }
 
     let lanes = store.list_lanes(&run.id).await.unwrap();
@@ -328,5 +366,142 @@ async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
         Some(p) => std::env::set_var("PATH", p),
         None => std::env::remove_var("PATH"),
     }
+    std::env::set_current_dir(old_cwd).unwrap();
+}
+
+/// F6 regression: a PERSISTENT auth wall (the retry cannot fix it — routing
+/// still answers 403 after the re-issued config update and the settle delay)
+/// must fail the lane with the post-retry error, not loop or pass.
+#[tokio::test(flavor = "multi_thread")]
+async fn persistent_auth_wall_fails_the_lane_after_one_retry() {
+    let _env = ENV_LOCK.lock().await;
+    let project = tempfile::tempdir().unwrap();
+    let old_cwd = std::env::current_dir()
+        .ok()
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    std::env::set_current_dir(project.path()).unwrap();
+
+    // A tunnel that ALWAYS answers the auth-wall signature.
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().fallback(get(|| async { (StatusCode::FORBIDDEN, "auth wall") }));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    std::env::set_var(
+        "MOCK_SPRITE_STATE",
+        project.path().join("mock-sprites.json"),
+    );
+    std::env::set_var("MOCK_COLD_START_MS", "0");
+    std::env::set_var("MOCK_CREATE_MS", "0");
+    std::env::set_var("MOCK_EXEC_MS", "0");
+    std::env::set_var("MOCK_URL_TEMPLATE", format!("http://{addr}/{{name}}"));
+    std::env::remove_var("CHROMIUM_BIN");
+
+    let store = Store::connect_in_memory().await.unwrap();
+    store.migrate().await.unwrap();
+
+    let sprite = SpriteClient::new(SpriteConfig {
+        cli_path: option_env!("CARGO_BIN_EXE_mock-sprite-cli")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/mock-sprite-cli")
+            }),
+        command_timeout: Duration::from_secs(15),
+        ..SpriteConfig::default()
+    });
+
+    let config = PipelineConfig {
+        n_lanes: 2,
+        max_running_slots: 10,
+        retries_per_lane: 0,
+        test_mode: false,
+        data_dir: project.path().join("data"),
+        impl_deadline: Duration::from_secs(30),
+        val_deadline: Duration::from_secs(30),
+        judge_deadline: Duration::from_secs(15),
+        probe_allow_loopback: true,
+        ..PipelineConfig::default()
+    };
+    std::fs::create_dir_all(&config.data_dir).unwrap();
+
+    let screenshots = ScreenshotQueue::with_data_dir(store.clone(), false, config.data_dir.clone());
+    let slots = SlotSemaphore::new(config.max_running_slots);
+    let ctx = Arc::new(PipelineCtx {
+        store: store.clone(),
+        sprite,
+        machine_llm: None,
+        sse: SseHub::new(256),
+        screenshots,
+        config,
+        slots,
+        harness_cache: Arc::new(orchestrator::harness::HarnessCache::new()),
+        hub_registry: None,
+    });
+
+    let harness = HarnessMode::Command {
+        impl_command: format!("echo site; echo '{}'", shell_quote(&canned_impl())),
+        val_command: format!("echo '{}'", shell_quote(&canned_val())),
+    };
+
+    let run = orchestrator::start_run(
+        ctx,
+        RunRequest {
+            brief: "Build a small site".to_owned(),
+            n_lanes: 2,
+            harness,
+        },
+    )
+    .await
+    .unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        let r = store.get_run(&run.id).await.unwrap().unwrap();
+        if r.status == "judged" || r.status == "failed" {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!("timeout waiting for the real-mode run to fail");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Every lane died at the 200 gate — after exactly one auth-wall retry.
+    let lanes = store.list_lanes(&run.id).await.unwrap();
+    assert_eq!(lanes.len(), 2);
+    for lane in &lanes {
+        let err = lane.error.clone().unwrap_or_default();
+        assert!(
+            err.contains("did not answer 200 after url-auth retry"),
+            "lane {} must fail at the 200 gate after the retry: state={} err={err:?}",
+            lane.idx,
+            lane.state
+        );
+    }
+
+    // The retry re-issued the config update exactly once per sprite.
+    let state_json = std::fs::read_to_string(project.path().join("mock-sprites.json")).unwrap();
+    let state: sprites_client::mock_cli::MockState = serde_json::from_str(&state_json).unwrap();
+    for name in state.sprites.keys() {
+        let config_calls = state
+            .command_log
+            .iter()
+            .filter(|e| *e == &format!("config {name}"))
+            .count();
+        assert_eq!(
+            config_calls, 2,
+            "the auth-wall retry must stay bounded (one re-issue) for {name}"
+        );
+    }
+
+    std::env::remove_var("MOCK_SPRITE_STATE");
+    std::env::remove_var("MOCK_COLD_START_MS");
+    std::env::remove_var("MOCK_CREATE_MS");
+    std::env::remove_var("MOCK_EXEC_MS");
+    std::env::remove_var("MOCK_URL_TEMPLATE");
     std::env::set_current_dir(old_cwd).unwrap();
 }

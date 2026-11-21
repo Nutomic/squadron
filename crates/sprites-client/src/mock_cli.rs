@@ -35,6 +35,11 @@ pub struct MockSprite {
     pub url: String,
     pub checkpoints: u32,
     pub last_command: Option<String>,
+    /// F6: per-sprite public-routing invariant — `config update -s <name>
+    /// --url-auth public` must precede the sprite's first exec (a lane sprite
+    /// that execs while still private can never pass the public 200-check).
+    #[serde(default)]
+    pub url_auth_public: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -190,8 +195,8 @@ pub fn valid_sprite_name(name: &str) -> bool {
         && chars
             .iter()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
-        && chars.first().unwrap().is_ascii_alphanumeric()
-        && chars.last().unwrap().is_ascii_alphanumeric()
+        && chars.first().is_some_and(char::is_ascii_alphanumeric)
+        && chars.last().is_some_and(char::is_ascii_alphanumeric)
 }
 
 fn create(args: &[String]) -> Result<String, (i32, String)> {
@@ -321,6 +326,15 @@ fn exec(args: &[String]) -> Result<String, (i32, String)> {
             .sprites
             .get_mut(&name)
             .ok_or_else(|| format!("exec: unknown sprite {name}"))?;
+        // F6 invariant: a created sprite must have had `sprite config update
+        // -s <name> --url-auth public` issued BEFORE its first exec. The mock
+        // accepts whatever the pipeline used to do — that is exactly how real
+        // runs died on the auth wall — so it now fails loudly instead.
+        if !sprite.url_auth_public {
+            return Err(format!(
+                "exec: sprite {name} has no public url-auth; issue `sprite config update -s {name} --url-auth public` before exec"
+            ));
+        }
         let was_cold = !sprite.cold_started;
         sprite.cold_started = true;
         Ok(was_cold)
@@ -438,9 +452,12 @@ fn config_update(args: &[String]) -> Result<String, (i32, String)> {
         return Err((1, "config update: mock url-auth failure".to_owned()));
     }
     with_state(|state| {
-        if !state.sprites.contains_key(name) {
-            return Err(format!("config update: unknown sprite {name}"));
-        }
+        let sprite = state
+            .sprites
+            .get_mut(name)
+            .ok_or_else(|| format!("config update: unknown sprite {name}"))?;
+        sprite.url_auth_public = true;
+        // Global mirror kept for state consumers that assert the aggregate.
         state.url_auth_public = true;
         Ok(())
     })
@@ -455,20 +472,24 @@ fn info(args: &[String]) -> Result<String, (i32, String)> {
     let name = args
         .get(1)
         .ok_or_else(|| (2, "info: missing name".to_owned()))?;
-    let (sprite, auth) = with_state(|state| {
+    let (sprite,) = with_state(|state| {
         let sprite = state
             .sprites
             .get(name)
             .cloned()
             .ok_or_else(|| format!("info: unknown sprite {name}"))?;
-        Ok((sprite, state.url_auth_public))
+        Ok((sprite,))
     })
     .map_err(|e| (3, e))?;
     Ok(format!(
         "Name: {}\nStatus: running\nURL: {}\nurl-auth: {}\n",
         sprite.name,
         sprite.url,
-        if auth { "public" } else { "private" }
+        if sprite.url_auth_public {
+            "public"
+        } else {
+            "private"
+        }
     ))
 }
 
@@ -480,7 +501,7 @@ fn list() -> Result<String, (i32, String)> {
             "{}  running  {}  url-auth={}\n",
             sprite.name,
             sprite.url,
-            if state.url_auth_public {
+            if sprite.url_auth_public {
                 "public"
             } else {
                 "private"

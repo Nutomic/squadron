@@ -166,6 +166,20 @@ pub async fn check_http_200_policy(url: &str, allow_loopback: bool) -> bool {
     crate::net::fetch_public_200(url, allow_loopback).await
 }
 
+/// F6: the final HTTP status behind the same SSRF-safe policy, for callers
+/// that must distinguish an auth wall from an unreachable server.
+pub async fn fetch_public_status(url: &str, allow_loopback: bool) -> Result<u16, String> {
+    crate::net::fetch_public_status(url, allow_loopback).await
+}
+
+/// F6: response signatures of the platform's public-routing auth wall. When
+/// the real 200-check hits one of these, the routing config may simply not
+/// have been applied (or was lost), so the caller retries
+/// `sprite config update -s <name> --url-auth public` once before failing.
+pub fn is_auth_wall_status(status: u16) -> bool {
+    matches!(status, 301 | 302 | 303 | 307 | 308 | 401 | 403)
+}
+
 /// #4: collect artifacts FROM the sprite, not from the orchestrator's local
 /// disk: `sprite exec` a `tar -C workdir -czf - . | base64` pull, then run
 /// tokei ORCHESTRATOR-side over the pulled tarball (R3-B: tokei may be absent

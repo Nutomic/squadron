@@ -113,12 +113,42 @@ pub async fn fetch_public_200(url: &str, allow_loopback: bool) -> bool {
     .is_ok()
 }
 
+/// F6: same policy machinery, but reports the final response's HTTP status
+/// code (even for non-success statuses) instead of folding everything into a
+/// bool. Transport/validation failures still surface as errors.
+pub async fn fetch_public_status(url: &str, allow_loopback: bool) -> Result<u16, String> {
+    let policy = FetchPolicy {
+        max_hops: MAX_HOPS,
+        allow_loopback,
+    };
+    fetch_final_response(url, policy)
+        .await
+        .map(|resp| resp.status().as_u16())
+}
+
 /// Fetch a URL as text under `policy`. Every hop (including the first) is
 /// resolved and validated against the policy before a connection is made, and
 /// the resolved addresses are pinned into the client so DNS cannot rebind
 /// between validation and connect. Redirects are followed manually, one
 /// validated hop at a time (`redirect(Policy::none())`).
 pub async fn fetch_text(url: &str, policy: FetchPolicy) -> Result<String, String> {
+    let resp = fetch_final_response(url, policy).await?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("non-success status: {status}"));
+    }
+    if let Some(len) = resp.content_length() {
+        if len > MAX_BODY_BYTES {
+            return Err(format!("body too large: {len} bytes"));
+        }
+    }
+    resp.text()
+        .await
+        .map_err(|e| format!("body read failed: {e}"))
+}
+
+/// Drive the validated-hop loop up to the final (non-redirect) response.
+async fn fetch_final_response(url: &str, policy: FetchPolicy) -> Result<reqwest::Response, String> {
     let mut current = Url::parse(url).map_err(|e| format!("invalid url: {e}"))?;
     for _ in 0..=policy.max_hops {
         validate_url(&current)?;
@@ -141,19 +171,7 @@ pub async fn fetch_text(url: &str, policy: FetchPolicy) -> Result<String, String
             validate_url(&current)?;
             continue;
         }
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(format!("non-success status: {status}"));
-        }
-        if let Some(len) = resp.content_length() {
-            if len > MAX_BODY_BYTES {
-                return Err(format!("body too large: {len} bytes"));
-            }
-        }
-        return resp
-            .text()
-            .await
-            .map_err(|e| format!("body read failed: {e}"));
+        return Ok(resp);
     }
     Err(format!("too many redirects (> {})", policy.max_hops))
 }

@@ -185,6 +185,16 @@ async fn mock_cli_models_cold_start_create_exec_and_destroy() {
 
     let args = |v: Vec<&str>| v.into_iter().map(str::to_owned).collect::<Vec<_>>();
     mock_cli::execute(&args(vec!["create", "lane0", "--skip-console"])).unwrap();
+    // F6 invariant: public url-auth precedes the first exec.
+    mock_cli::execute(&args(vec![
+        "config",
+        "update",
+        "-s",
+        "lane0",
+        "--url-auth",
+        "public",
+    ]))
+    .unwrap();
     let cold_start = Instant::now();
     mock_cli::execute(&args(vec![
         "exec",
@@ -214,15 +224,6 @@ async fn mock_cli_models_cold_start_create_exec_and_destroy() {
     .unwrap();
     assert!(warm_start.elapsed() < cold_elapsed);
     mock_cli::execute(&args(vec!["checkpoint", "create", "lane0"])).unwrap();
-    mock_cli::execute(&args(vec![
-        "config",
-        "update",
-        "-s",
-        "lane0",
-        "--url-auth",
-        "public",
-    ]))
-    .unwrap();
     let listing = mock_cli::execute(&args(vec!["list"])).unwrap();
     assert!(listing.contains("lane0"));
     mock_cli::execute(&args(vec!["destroy", "lane0", "--force"])).unwrap();
@@ -323,6 +324,15 @@ async fn mock_cli_records_http_200_from_port_8080() {
     std::env::set_var("MOCK_SPRITE_STATE", &state);
     let args = |v: Vec<&str>| v.into_iter().map(str::to_owned).collect::<Vec<_>>();
     mock_cli::execute(&args(vec!["create", "serving", "--skip-console"])).unwrap();
+    mock_cli::execute(&args(vec![
+        "config",
+        "update",
+        "-s",
+        "serving",
+        "--url-auth",
+        "public",
+    ]))
+    .unwrap();
     mock_cli::execute(&args(vec![
         "exec",
         "-s",
@@ -443,5 +453,79 @@ async fn url_auth_without_sprite_name_fails() {
     client.set_url_auth_public(&name).await.unwrap();
     let state: MockState = serde_json::from_str(&fs::read_to_string(&state).unwrap()).unwrap();
     assert!(state.url_auth_public);
+    std::env::remove_var("MOCK_SPRITE_STATE");
+}
+
+/// F6 invariant: a created sprite that never received
+/// `sprite config update -s <name> --url-auth public` must fail loudly on its
+/// first exec — this is exactly the failure mode that killed real runs (the
+/// orchestrator's public 200-check hit the platform auth wall).
+#[tokio::test(flavor = "multi_thread")]
+async fn exec_before_public_url_auth_fails_loudly() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("invariant-state.json");
+    std::env::set_var("MOCK_SPRITE_STATE", &state);
+    let client = SpriteClient::new(SpriteConfig {
+        cli_path: PathBuf::from(env!("CARGO_BIN_EXE_mock-sprite-cli")),
+        command_timeout: Duration::from_secs(5),
+        ..SpriteConfig::default()
+    });
+    let name = client.name("noauth");
+    client.create(&name).await.unwrap();
+
+    let err = client
+        .exec(&name, "echo hi", &ExecOptions::default())
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("no public url-auth")
+            && msg.contains(&format!("config update -s {name}"))
+            && msg.contains("--url-auth public"),
+        "the invariant error must name the exact missing call: {msg}"
+    );
+
+    // The exact verified syntax unlocks exec.
+    client.set_url_auth_public(&name).await.unwrap();
+    let output = client
+        .exec(&name, "echo hi", &ExecOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(output.exit_code, 0);
+    std::env::remove_var("MOCK_SPRITE_STATE");
+}
+
+/// F6: the invariant is per sprite — configuring one lane sprite must not
+/// unlock another.
+#[tokio::test(flavor = "multi_thread")]
+async fn url_auth_invariant_is_per_sprite() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("per-sprite-state.json");
+    std::env::set_var("MOCK_SPRITE_STATE", &state);
+    let client = SpriteClient::new(SpriteConfig {
+        cli_path: PathBuf::from(env!("CARGO_BIN_EXE_mock-sprite-cli")),
+        command_timeout: Duration::from_secs(5),
+        ..SpriteConfig::default()
+    });
+    let a = client.name("iso-a");
+    let b = client.name("iso-b");
+    client.create(&a).await.unwrap();
+    client.create(&b).await.unwrap();
+    client.set_url_auth_public(&a).await.unwrap();
+
+    client
+        .exec(&a, "echo a-ok", &ExecOptions::default())
+        .await
+        .unwrap();
+    let err = client
+        .exec(&b, "echo b", &ExecOptions::default())
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("no public url-auth"),
+        "sprite b must still be locked: {err}"
+    );
     std::env::remove_var("MOCK_SPRITE_STATE");
 }

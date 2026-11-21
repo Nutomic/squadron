@@ -37,6 +37,9 @@ pub struct CreateRunResponse {
     pub n_lanes: i64,
 }
 
+// Axum handlers return the full Response type; the variant size is inherent
+// to the framework, not a design issue worth boxing at this call site.
+#[allow(clippy::result_large_err)]
 async fn create_run(
     State(state): State<SharedState>,
     headers: HeaderMap,

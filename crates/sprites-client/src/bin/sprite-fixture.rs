@@ -27,7 +27,7 @@ fn main() {
     if whole.contains("failstdout") {
         // Failure round: emit stdout BEFORE failing so CliExit capture of the
         // stream can be asserted (the real CLI forwards both streams).
-        print!("partial stdout before the crash\n");
+        println!("partial stdout before the crash");
         eprintln!("synthetic failure");
         std::process::exit(7);
     }

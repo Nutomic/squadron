@@ -30,6 +30,9 @@ async fn test_sprite(dir: &std::path::Path, name: &str) -> SpriteClient {
         ..SpriteConfig::default()
     });
     sprite.create(name).await.unwrap();
+    // F6 mock invariant: exec requires public url-auth first (the pipeline
+    // issues it after create; this helper models the same order).
+    sprite.set_url_auth_public(name).await.unwrap();
     sprite
 }
 
