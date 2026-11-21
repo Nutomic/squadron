@@ -351,6 +351,7 @@ async fn run_lane(
         sprite_name,
         impl_url,
         impl_out,
+        tarball_bytes,
     } = phase;
 
     // --- Validator phase (F9): failures retry IN PLACE. A validator-phase
@@ -368,6 +369,7 @@ async fn run_lane(
             &sprite_name,
             &impl_url,
             &impl_out,
+            tarball_bytes.as_deref(),
             &harness,
         )
         .await;
@@ -633,6 +635,11 @@ struct ImplPhaseOutcome {
     sprite_name: String,
     impl_url: String,
     impl_out: ImplRunResult,
+    /// F10: the bytes of the SAME source.tar.gz the orchestrator pulled at
+    /// lane completion (user download artifact) — the validator's evidence
+    /// is derived from it, never from a second file-collection pass. None =
+    /// the artifact pull failed (evidence degrades explicitly).
+    tarball_bytes: Option<Vec<u8>>,
 }
 
 async fn run_implementer_phase(
@@ -787,6 +794,12 @@ async fn run_implementer_phase(
         )
         .await
     };
+    // F10: the pulled tarball's bytes feed the validator's evidence — read
+    // them back from the one artifact so every consumer shares it.
+    let tarball_bytes = match &collected {
+        Ok((tarball_path, ..)) => tokio::fs::read(tarball_path).await.ok(),
+        Err(_) => None,
+    };
     if let Ok((tarball, tokei_json, files_n, _loc_n)) = collected {
         let files_store = files_n.or(Some(impl_out.files as i64));
         let _ = ctx
@@ -818,6 +831,7 @@ async fn run_implementer_phase(
         sprite_name,
         impl_url,
         impl_out,
+        tarball_bytes,
     })
 }
 
@@ -828,6 +842,7 @@ async fn run_validator_phase(
     sprite_name: &str,
     impl_url: &str,
     impl_out: &ImplRunResult,
+    tarball_bytes: Option<&[u8]>,
     harness: &HarnessMode,
 ) -> Result<(), String> {
     // --- Validator phase: acquires its own slot ---
@@ -854,6 +869,7 @@ async fn run_validator_phase(
             sprite_name,
             impl_url,
             &impl_out.summary,
+            tarball_bytes,
             harness,
         ),
     )
@@ -1092,6 +1108,7 @@ async fn run_validator(
     sprite_name: &str,
     impl_url: &str,
     impl_summary: &str,
+    tarball_bytes: Option<&[u8]>,
     harness: &HarnessMode,
 ) -> Result<ValRunResult, String> {
     let mut used_choice: Option<harness::HarnessChoice> = None;
@@ -1113,17 +1130,17 @@ async fn run_validator(
         HarnessMode::Real { .. } => {
             // Real mode: run the real validator report prompt through the
             // harness against the actual code in the lane workdir and the
-            // live site. Never fabricate a verdict. F9: the validator's
-            // evidence is gathered by the orchestrator (bounded sprite execs:
-            // workdir file list, key-file excerpts, HTTP probe of the public
-            // URL) and embedded as DATA — the curl-floor validator has no
-            // shell, and a validator without evidence writes junk verdicts
-            // (run 7: "implementer claims remain unverified", 0/10).
+            // live site. Never fabricate a verdict. F9/F10: the validator's
+            // evidence is derived by the orchestrator from the SAME
+            // source.tar.gz pulled at lane completion (file list, key-file
+            // excerpts — entry HTML, main sources, config) plus a live HTTP
+            // probe of the public URL, all embedded as DATA. The curl-floor
+            // validator has no shell, and a validator without evidence
+            // writes junk verdicts (run 7) or fails on unverified claims
+            // (run 8 — src/main.ts missing from the evidence).
             let workdir = sprite_workdir(run_id, idx);
             let evidence = evidence::gather_validator_evidence(
-                &ctx.sprite,
-                sprite_name,
-                &workdir,
+                tarball_bytes,
                 impl_url,
                 ctx.config.probe_allow_loopback,
             )

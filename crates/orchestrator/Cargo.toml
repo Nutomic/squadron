@@ -27,3 +27,5 @@ chromiumoxide_cdp = "0.9.1"
 [dev-dependencies]
 tempfile.workspace = true
 axum.workspace = true
+tar = "0.4"
+flate2 = "1"

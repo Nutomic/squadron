@@ -1,43 +1,53 @@
-//! F9: the orchestrator gathers bounded validator evidence via `sprite exec`
-//! (workdir file list, first ~8KB of up to ~5 key files, HTTP probe of the
-//! public URL) and embeds it as DATA for the validator turn. Driven against
-//! the mock sprite CLI, which really executes the gathered commands.
+//! F9/F10: the validator's evidence is derived from the SAME source.tar.gz
+//! the orchestrator pulls at lane completion (the user-facing source
+//! download artifact) — its file list plus bounded excerpts (entry HTML,
+//! main sources under src/, config) and a live HTTP probe of the public
+//! URL, all embedded as DATA for the validator turn. There is no second
+//! file-collection path.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::extract::Request;
 use axum::routing::get;
 use axum::Router;
 use orchestrator::evidence::gather_validator_evidence;
-use sprites_client::{SpriteClient, SpriteConfig};
 use tokio::sync::Mutex;
 
-static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Build an in-memory tar.gz of a directory tree, exactly like the lane
+/// artifact pull produces (`tar -czf - .` over the workdir).
+fn tarball_from_dir(dir: &std::path::Path) -> Vec<u8> {
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    {
+        let mut tar = tar::Builder::new(&mut gz);
+        tar.append_dir_all(".", dir).unwrap();
+        tar.finish().unwrap();
+    }
+    gz.finish().unwrap()
+}
+
+/// Loopback tunnel answering 200 for the HTTP-probe part of the evidence.
+async fn spawn_tunnel(hits: Arc<Mutex<u32>>) -> String {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().fallback(get(move |_req: Request| {
+        let hits = hits.clone();
+        async move {
+            *hits.lock().await += 1;
+            (axum::http::StatusCode::OK, "<html>probe body</html>")
+        }
+    }));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}/site")
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn gather_validator_evidence_embeds_files_and_http_probe() {
-    let _env = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
-    std::env::set_var("MOCK_SPRITE_STATE", dir.path().join("mock-state.json"));
-    std::env::set_var("MOCK_COLD_START_MS", "0");
-    std::env::set_var("MOCK_CREATE_MS", "0");
-    std::env::set_var("MOCK_EXEC_MS", "0");
-
-    let sprite = SpriteClient::new(SpriteConfig {
-        cli_path: option_env!("CARGO_BIN_EXE_mock-sprite-cli")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../target/debug/mock-sprite-cli")
-            }),
-        command_timeout: Duration::from_secs(15),
-        ..SpriteConfig::default()
-    });
-    sprite.create("ev-sprite").await.unwrap();
-    sprite.set_url_auth_public("ev-sprite").await.unwrap();
-
     // Populate the lane workdir the way an implementer would.
     let workdir = dir.path().join("swarm-work").join("lane-0");
     std::fs::create_dir_all(workdir.join("src")).unwrap();
@@ -51,29 +61,12 @@ async fn gather_validator_evidence_embeds_files_and_http_probe() {
     std::fs::write(workdir.join("src/app.js"), "console.log(42);\n").unwrap();
     std::fs::write(workdir.join("logo.png"), b"\x00\x01\x02binary").unwrap();
     std::fs::write(workdir.join("node_modules/leftpad.js"), "junk\n").unwrap();
+    let tarball = tarball_from_dir(&workdir);
 
-    // The implementer's public URL (loopback tunnel; test-only escape).
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let hits: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
-    let hits_for_handler = hits.clone();
-    let app = Router::new().fallback(get(move |_req: Request| {
-        let hits = hits_for_handler.clone();
-        async move {
-            *hits.lock().await += 1;
-            (axum::http::StatusCode::OK, "<html>probe body</html>")
-        }
-    }));
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
-    let url = format!("http://{addr}/site");
+    let hits = Arc::new(Mutex::new(0));
+    let url = spawn_tunnel(hits.clone()).await;
 
-    let evidence =
-        gather_validator_evidence(&sprite, "ev-sprite", workdir.to_str().unwrap(), &url, true)
-            .await;
+    let evidence = gather_validator_evidence(Some(&tarball), &url, true).await;
 
     // File list block: real entries, node_modules excluded.
     assert!(
@@ -128,11 +121,6 @@ async fn gather_validator_evidence_embeds_files_and_http_probe() {
     );
     // the probe actually hit the tunnel
     assert!(*hits.lock().await >= 1, "the HTTP probe must reach the URL");
-
-    std::env::remove_var("MOCK_SPRITE_STATE");
-    std::env::remove_var("MOCK_COLD_START_MS");
-    std::env::remove_var("MOCK_CREATE_MS");
-    std::env::remove_var("MOCK_EXEC_MS");
 }
 
 /// F10 regression (run 8): the gatherer embedded index.html and
@@ -141,26 +129,7 @@ async fn gather_validator_evidence_embeds_files_and_http_probe() {
 /// band (main stems first) must guarantee the core source file is embedded.
 #[tokio::test(flavor = "multi_thread")]
 async fn gather_validator_evidence_embeds_the_core_src_source_files() {
-    let _env = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
-    std::env::set_var("MOCK_SPRITE_STATE", dir.path().join("mock-state3.json"));
-    std::env::set_var("MOCK_COLD_START_MS", "0");
-    std::env::set_var("MOCK_CREATE_MS", "0");
-    std::env::set_var("MOCK_EXEC_MS", "0");
-
-    let sprite = SpriteClient::new(SpriteConfig {
-        cli_path: option_env!("CARGO_BIN_EXE_mock-sprite-cli")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../target/debug/mock-sprite-cli")
-            }),
-        command_timeout: Duration::from_secs(15),
-        ..SpriteConfig::default()
-    });
-    sprite.create("ev-sprite3").await.unwrap();
-    sprite.set_url_auth_public("ev-sprite3").await.unwrap();
-
     let workdir = dir.path().join("swarm-work").join("lane-2");
     std::fs::create_dir_all(workdir.join("src")).unwrap();
     std::fs::write(
@@ -180,15 +149,10 @@ async fn gather_validator_evidence_embeds_the_core_src_source_files() {
     )
     .unwrap();
     std::fs::write(workdir.join("vite.config.ts"), "export default {};\n").unwrap();
+    let tarball = tarball_from_dir(&workdir);
 
-    let evidence = gather_validator_evidence(
-        &sprite,
-        "ev-sprite3",
-        workdir.to_str().unwrap(),
-        "https://203.0.113.1/nope",
-        false,
-    )
-    .await;
+    let evidence =
+        gather_validator_evidence(Some(&tarball), "https://203.0.113.1/nope", false).await;
 
     assert!(
         evidence.contains("<data label=\"file-src/main.ts\">"),
@@ -210,37 +174,13 @@ async fn gather_validator_evidence_embeds_the_core_src_source_files() {
         evidence.contains("<data label=\"file-package.json\">"),
         "evidence: {evidence}"
     );
-
-    std::env::remove_var("MOCK_SPRITE_STATE");
-    std::env::remove_var("MOCK_COLD_START_MS");
-    std::env::remove_var("MOCK_CREATE_MS");
-    std::env::remove_var("MOCK_EXEC_MS");
 }
 
 /// A source file larger than the per-file cap is embedded cut, with an
 /// explicit `[truncated after N bytes]` marker — never silently dropped.
 #[tokio::test(flavor = "multi_thread")]
 async fn gather_validator_evidence_truncates_large_sources_with_marker() {
-    let _env = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
-    std::env::set_var("MOCK_SPRITE_STATE", dir.path().join("mock-state4.json"));
-    std::env::set_var("MOCK_COLD_START_MS", "0");
-    std::env::set_var("MOCK_CREATE_MS", "0");
-    std::env::set_var("MOCK_EXEC_MS", "0");
-
-    let sprite = SpriteClient::new(SpriteConfig {
-        cli_path: option_env!("CARGO_BIN_EXE_mock-sprite-cli")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../target/debug/mock-sprite-cli")
-            }),
-        command_timeout: Duration::from_secs(15),
-        ..SpriteConfig::default()
-    });
-    sprite.create("ev-sprite4").await.unwrap();
-    sprite.set_url_auth_public("ev-sprite4").await.unwrap();
-
     let workdir = dir.path().join("swarm-work").join("lane-3");
     std::fs::create_dir_all(workdir.join("src")).unwrap();
     std::fs::write(
@@ -250,15 +190,10 @@ async fn gather_validator_evidence_truncates_large_sources_with_marker() {
     .unwrap();
     let big = "BIGMAIN-MARKER ".repeat(40 * 1024 / 15);
     std::fs::write(workdir.join("src/main.ts"), big).unwrap();
+    let tarball = tarball_from_dir(&workdir);
 
-    let evidence = gather_validator_evidence(
-        &sprite,
-        "ev-sprite4",
-        workdir.to_str().unwrap(),
-        "https://203.0.113.1/nope",
-        false,
-    )
-    .await;
+    let evidence =
+        gather_validator_evidence(Some(&tarball), "https://203.0.113.1/nope", false).await;
 
     assert!(
         evidence.contains("<data label=\"file-src/main.ts\">"),
@@ -272,50 +207,21 @@ async fn gather_validator_evidence_truncates_large_sources_with_marker() {
         evidence.contains("[truncated after 10240 bytes]"),
         "an explicit truncation marker is required: {evidence}"
     );
-
-    std::env::remove_var("MOCK_SPRITE_STATE");
-    std::env::remove_var("MOCK_COLD_START_MS");
-    std::env::remove_var("MOCK_CREATE_MS");
-    std::env::remove_var("MOCK_EXEC_MS");
 }
 
 /// Best-effort: an unreachable public URL yields an explicit probe-failure
 /// block instead of failing the validator turn.
 #[tokio::test(flavor = "multi_thread")]
 async fn gather_validator_evidence_reports_unreachable_probe_as_data() {
-    let _env = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
-    std::env::set_var("MOCK_SPRITE_STATE", dir.path().join("mock-state2.json"));
-    std::env::set_var("MOCK_COLD_START_MS", "0");
-    std::env::set_var("MOCK_CREATE_MS", "0");
-    std::env::set_var("MOCK_EXEC_MS", "0");
-
-    let sprite = SpriteClient::new(SpriteConfig {
-        cli_path: option_env!("CARGO_BIN_EXE_mock-sprite-cli")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../target/debug/mock-sprite-cli")
-            }),
-        command_timeout: Duration::from_secs(15),
-        ..SpriteConfig::default()
-    });
-    sprite.create("ev-sprite2").await.unwrap();
-    sprite.set_url_auth_public("ev-sprite2").await.unwrap();
-
-    // Empty workdir: the file list exec still succeeds (find on an empty dir).
+    // Empty workdir: the tarball still carries the directory structure.
     let workdir = dir.path().join("swarm-work").join("lane-1");
     std::fs::create_dir_all(&workdir).unwrap();
+    let tarball = tarball_from_dir(&workdir);
 
     // Unroutable documentation-range host: resolution/connect fails fast.
-    let evidence = gather_validator_evidence(
-        &sprite,
-        "ev-sprite2",
-        workdir.to_str().unwrap(),
-        "https://203.0.113.1/nope",
-        false,
-    )
-    .await;
+    let evidence =
+        gather_validator_evidence(Some(&tarball), "https://203.0.113.1/nope", false).await;
 
     assert!(
         evidence.contains("<data label=\"http-probe\">"),
@@ -325,9 +231,33 @@ async fn gather_validator_evidence_reports_unreachable_probe_as_data() {
         evidence.contains("GET https://203.0.113.1/nope failed"),
         "the probe failure must be stated in DATA: {evidence}"
     );
+}
 
-    std::env::remove_var("MOCK_SPRITE_STATE");
-    std::env::remove_var("MOCK_COLD_START_MS");
-    std::env::remove_var("MOCK_CREATE_MS");
-    std::env::remove_var("MOCK_EXEC_MS");
+/// F10 amendment: when the artifact pull failed (no tarball), the evidence
+/// degrades explicitly — the validator sees WHY the file data is missing
+/// and still gets the live HTTP probe. No silent gap, no fabricated files.
+#[tokio::test(flavor = "multi_thread")]
+async fn gather_validator_evidence_states_tarball_unavailability_explicitly() {
+    let hits = Arc::new(Mutex::new(0));
+    let url = spawn_tunnel(hits.clone()).await;
+
+    let evidence = gather_validator_evidence(None, &url, true).await;
+
+    assert!(
+        evidence.contains("source tarball was not collected"),
+        "the missing tarball must be stated in DATA: {evidence}"
+    );
+    assert!(
+        evidence.contains("<data label=\"http-probe\">"),
+        "the live probe is still embedded: {evidence}"
+    );
+    assert!(
+        evidence.contains(&format!("GET {url} -> HTTP 200")),
+        "evidence: {evidence}"
+    );
+    // no fabricated file blocks without the artifact
+    assert!(
+        !evidence.contains("<data label=\"file-"),
+        "no file excerpts can exist without the tarball: {evidence}"
+    );
 }
