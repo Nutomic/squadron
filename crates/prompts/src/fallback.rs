@@ -42,7 +42,7 @@ const TONES: [&str; 10] = [
 const CONSTRAINTS: [&str; 10] = [
     "no external services or network calls",
     "fully self-contained in one workdir",
-    "serve on port 8080",
+    "serve on port 8080 bound to 0.0.0.0 (all interfaces; never 127.0.0.1)",
     "no secrets or credentials in code",
     "works offline after load",
     "keyboard and pointer input both supported",

@@ -68,6 +68,24 @@ fn role_prompts_include_schema_and_untrusted_data_rule() {
     assert!(implementer.user.contains("server.log"));
     assert!(implementer.user.contains("http_code"));
     assert!(implementer.user.contains("127.0.0.1:8080"));
+    // Review F5: the loopback-bind failure round — the public HTTPS URL
+    // routes port 8080 from OUTSIDE the sprite, so the implementer prompt
+    // must require an all-interfaces bind explicitly.
+    assert!(
+        implementer.user.contains("0.0.0.0"),
+        "implementer prompt must require the 0.0.0.0 bind: {}",
+        implementer.user
+    );
+    assert!(
+        implementer.user.contains("--host 0.0.0.0"),
+        "explicit --host flag required: {}",
+        implementer.user
+    );
+    assert!(
+        implementer.user.contains("NEVER bind to 127.0.0.1"),
+        "the loopback bind must be explicitly forbidden: {}",
+        implementer.user
+    );
 
     let validator = validator_prompt("summary text", "https://lane.sprites.app", "/workdir");
     assert!(validator.system.contains("\"quality_score\""));

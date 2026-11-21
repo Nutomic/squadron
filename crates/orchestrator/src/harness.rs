@@ -59,7 +59,7 @@ pub const CURL_FLOOR_REPAIR: &str = "Your previous reply was not a single parsea
 /// under `files` could never pass the schema gate (and the field would be
 /// stripped anyway). The orchestrator strips `writes` and synthesizes the
 /// `files` integer from the written set before the answer is returned.
-pub const CURL_FLOOR_PROTOCOL: &str = "RAW-HTTP MODE: you have no shell, editor, or file access; the orchestrator materializes files for you. In addition to the schema fields from the task prompt, include a \"writes\" array: [{\"path\": \"relative/path.ext\", \"content\": \"complete file content as a string\"}] for every file to create or overwrite (paths relative to the workdir only, never absolute, never containing '..'). Emit the complete current content of every file you touch; do NOT emit a \"files\" field, the orchestrator computes it. HARD REQUIREMENT on the final turn: your writes must include the complete site (at least index.html) AND a \"start-server.sh\" whose content starts the site detached exactly like `nohup python3 -m http.server 8080 > server.log 2>&1 &` (adapt the command if the site needs more than static files; it must keep serving after your session ends and never exit on its own). The orchestrator runs start-server.sh in the workdir and then verifies HTTP 200 itself — you have no shell, so you cannot verify, do not claim you did. Reply with exactly one JSON object. If the work is not finished, set done:false and stop; a continuation turn will follow.";
+pub const CURL_FLOOR_PROTOCOL: &str = "RAW-HTTP MODE: you have no shell, editor, or file access; the orchestrator materializes files for you. In addition to the schema fields from the task prompt, include a \"writes\" array: [{\"path\": \"relative/path.ext\", \"content\": \"complete file content as a string\"}] for every file to create or overwrite (paths relative to the workdir only, never absolute, never containing '..'). Emit the complete current content of every file you touch; do NOT emit a \"files\" field, the orchestrator computes it. HARD REQUIREMENT on the final turn: your writes must include the complete site (at least index.html) AND a \"start-server.sh\" whose content starts the site detached exactly like `nohup python3 -m http.server 8080 --bind 0.0.0.0 > server.log 2>&1 &` (adapt the command if the site needs more than static files; whatever you choose, the server MUST bind ALL interfaces — `--host 0.0.0.0` / `--bind 0.0.0.0` / `HOST=0.0.0.0`; NEVER 127.0.0.1 or localhost, the sprite's public HTTPS URL routes port 8080 from outside and a loopback bind is unreachable there; it must keep serving after your session ends and never exit on its own). The orchestrator runs start-server.sh in the workdir and then verifies HTTP 200 itself — you have no shell, so you cannot verify, do not claim you did. Reply with exactly one JSON object. If the work is not finished, set done:false and stop; a continuation turn will follow.";
 
 /// Detached server start (failure round: the implementer session ended and
 /// killed the foreground server, so the public 200-check failed). The curl
@@ -1356,6 +1356,17 @@ mod tests {
         let cmd = floor_start_cmd("sw/0");
         assert!(cmd.contains("cd 'sw/0'"), "cmd: {cmd}");
         assert!(cmd.contains("sh 'start-server.sh'"), "cmd: {cmd}");
+    }
+
+    /// Review F5: the implementer ran `--host 127.0.0.1` twice, so the live
+    /// URL never answered 200 through the sprite's public routing. The floor
+    /// protocol must require an all-interfaces bind explicitly and forbid
+    /// loopback binds.
+    #[test]
+    fn floor_protocol_requires_0_0_0_0_bind() {
+        assert!(CURL_FLOOR_PROTOCOL.contains("0.0.0.0"));
+        assert!(CURL_FLOOR_PROTOCOL.contains("--bind 0.0.0.0"));
+        assert!(CURL_FLOOR_PROTOCOL.contains("NEVER 127.0.0.1"));
     }
 
     /// Failure round: a gateway response carrying reasoning_content with empty

@@ -18,6 +18,11 @@ pub struct MockState {
     pub url_auth_public: bool,
     #[serde(default)]
     pub transient_failures: u32,
+    /// Review F5: executed subcommand log ("<sub> <sprite-name>"), in issue
+    /// order — lets tests prove pipeline ordering (e.g. url-auth public is
+    /// issued right after create, before the implementer session).
+    #[serde(default)]
+    pub command_log: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -138,6 +143,7 @@ pub fn run() -> i32 {
 }
 
 pub fn execute(args: &[String]) -> Result<String, (i32, String)> {
+    record_command(args);
     match args.first().map(String::as_str) {
         Some("create") => create(args),
         Some("exec") => exec(args),
@@ -148,6 +154,22 @@ pub fn execute(args: &[String]) -> Result<String, (i32, String)> {
         Some("list") => list(),
         _ => Err((2, format!("mock-sprite-cli: unsupported command: {args:?}"))),
     }
+}
+
+/// Append "<sub> <sprite-name>" to MockState::command_log (review F5).
+fn record_command(args: &[String]) {
+    let sub = args.first().cloned().unwrap_or_default();
+    let name = args
+        .iter()
+        .position(|a| a == "-s")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .or_else(|| args.get(1).cloned())
+        .unwrap_or_default();
+    let _ = with_state(|state| {
+        state.command_log.push(format!("{sub} {name}"));
+        Ok(())
+    });
 }
 
 /// URL a created sprite reports: `MOCK_URL_TEMPLATE` (with a `{name}`
