@@ -115,6 +115,28 @@ fn role_prompts_include_schema_and_untrusted_data_rule() {
     assert!(validator.system.contains("\"quality_score\""));
     assert!(validator.user.contains("https://lane.sprites.app"));
     assert!(validator.user.contains("/workdir"));
+    // Review F8: the validator emitted an implementer-shaped object with an
+    // extra `files` field and failed the schema gate, so the prompt must
+    // restate its exact allowed output keys.
+    assert!(
+        validator.user.contains("exactly these keys and no others"),
+        "exact-keys restatement missing: {}",
+        validator.user
+    );
+    assert!(
+        validator
+            .user
+            .contains("verdict, features, bugs, security, quality_score, summary"),
+        "exact key list missing: {}",
+        validator.user
+    );
+    assert!(
+        validator
+            .user
+            .contains("files, run_command, done, blockers"),
+        "implementer-only keys must be called out: {}",
+        validator.user
+    );
 
     let report = ValidatorOutput {
         verdict: Verdict::Pass,
