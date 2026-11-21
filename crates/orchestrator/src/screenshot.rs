@@ -82,17 +82,48 @@ async fn write_test_png(dest: &std::path::Path) -> Result<(), String> {
         .map_err(|e| format!("write {}: {e}", dest.display()))
 }
 
-/// Render a lane's live URL to a PNG with headless Chromium (chromiumoxide).
-async fn render_chromium(url: &str, dest: &std::path::Path) -> Result<(), String> {
-    let bin = std::env::var_os("CHROMIUM_BIN")
-        .map(PathBuf::from)
-        .ok_or_else(|| "CHROMIUM_BIN not set; no chromium available".to_owned())?;
-    let config = chromiumoxide::BrowserConfig::builder()
+/// Review F4: which Chromium sandbox mode served a render. Sandboxed is the
+/// default (the browser is untrusted-content-facing); NoSandbox is the
+/// escape-hatch fallback (env opt-in or sandboxed-launch retry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderMode {
+    Sandbox,
+    NoSandbox,
+}
+
+impl RenderMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Sandbox => "sandboxed",
+            Self::NoSandbox => "no-sandbox",
+        }
+    }
+}
+
+/// Review F4 escape hatch: SWARM_CHROMIUM_NO_SANDBOX=1 opts into running
+/// Chromium with --no-sandbox from the start (environments where the
+/// sandboxed launch is known to fail, e.g. root without user namespaces).
+fn no_sandbox_env() -> bool {
+    std::env::var("SWARM_CHROMIUM_NO_SANDBOX").ok().as_deref() == Some("1")
+}
+
+/// One Chromium launch + navigate + screenshot attempt with the given
+/// sandbox configuration.
+async fn render_chromium_once(
+    bin: &PathBuf,
+    no_sandbox: bool,
+    url: &str,
+    dest: &std::path::Path,
+) -> Result<(), String> {
+    let mut config = chromiumoxide::BrowserConfig::builder()
         .chrome_executable(bin)
-        .no_sandbox()
         .window_size(1280, 800)
         .launch_timeout(std::time::Duration::from_secs(30))
-        .request_timeout(std::time::Duration::from_secs(45))
+        .request_timeout(std::time::Duration::from_secs(45));
+    if no_sandbox {
+        config = config.no_sandbox();
+    }
+    let config = config
         .build()
         .map_err(|e| format!("chromium config: {e}"))?;
     let (mut browser, mut handler) = chromiumoxide::Browser::launch(config)
@@ -125,6 +156,45 @@ async fn render_chromium(url: &str, dest: &std::path::Path) -> Result<(), String
     let _ = browser.wait().await;
     let _ = handler_task.await;
     result
+}
+
+/// Review F4: the browser renders untrusted lane content, so the Chromium
+/// sandbox defaults to ON (the Fly runtime image runs non-root). The
+/// SWARM_CHROMIUM_NO_SANDBOX=1 env var is a loud escape hatch for hosts
+/// where the sandboxed launch cannot work; and if the sandboxed launch
+/// fails at runtime (launch error only — navigation/render failures are not
+/// retried), the render retries exactly once with the escape hatch. The
+/// returned mode records which configuration actually served the render.
+async fn render_chromium(url: &str, dest: &std::path::Path) -> Result<RenderMode, String> {
+    let bin = std::env::var_os("CHROMIUM_BIN")
+        .map(PathBuf::from)
+        .ok_or_else(|| "CHROMIUM_BIN not set; no chromium available".to_owned())?;
+    if no_sandbox_env() {
+        tracing::warn!(
+            "SWARM_CHROMIUM_NO_SANDBOX=1: launching headless Chromium WITHOUT its sandbox \
+             (--no-sandbox) — this weakens isolation for untrusted content and is an \
+             escape hatch, not a supported configuration"
+        );
+        render_chromium_once(&bin, true, url, dest).await?;
+        return Ok(RenderMode::NoSandbox);
+    }
+    match render_chromium_once(&bin, false, url, dest).await {
+        Ok(()) => Ok(RenderMode::Sandbox),
+        Err(e) if e.starts_with("chromium launch:") => {
+            tracing::warn!(
+                "sandboxed Chromium launch failed ({e}); retrying once with the \
+                 SWARM_CHROMIUM_NO_SANDBOX escape hatch (--no-sandbox) — untrusted-content \
+                 isolation is reduced for this render"
+            );
+            render_chromium_once(&bin, true, url, dest)
+                .await
+                .map_err(|retry| {
+                    format!("sandboxed launch failed ({e}); no-sandbox retry: {retry}")
+                })?;
+            Ok(RenderMode::NoSandbox)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -207,10 +277,24 @@ impl ScreenshotQueue {
                 } else {
                     // Real Chromium rendering: serial worker (this loop is the
                     // only consumer). Requires CHROMIUM_BIN; without it the
-                    // screenshot fails honestly instead of blocking.
+                    // screenshot fails honestly instead of blocking. The
+                    // sandbox mode that served the render (review F4) is
+                    // recorded in lane_events.
                     let dest = render_dest(&data_dir_worker, &job.run_id, job.lane_idx);
                     match render_chromium(&job.url, &dest).await {
-                        Ok(()) => ("done".to_owned(), Some(dest.to_string_lossy().into_owned())),
+                        Ok(mode) => {
+                            let ts = now_ms();
+                            let _ = store_worker
+                                .append_lane_event(
+                                    &job.run_id,
+                                    job.lane_idx,
+                                    ts,
+                                    "state",
+                                    &format!("screenshot_render_mode={}", mode.as_str()),
+                                )
+                                .await;
+                            ("done".to_owned(), Some(dest.to_string_lossy().into_owned()))
+                        }
                         Err(e) => {
                             tracing::warn!(error = %e, "screenshot render failed");
                             ("failed".to_owned(), None)
@@ -385,5 +469,48 @@ impl ScreenshotQueue {
     pub async fn evict_terminal(&self, run_id: &str) {
         let mut map = self.pending.write().await;
         map.retain(|(rid, _), state| !(rid == run_id && Self::is_terminal_state(state)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review F4: the escape hatch env var decides whether the FIRST launch
+    /// already runs --no-sandbox (env set) or sandboxed with a no-sandbox
+    /// retry only on a sandboxed launch failure (default).
+    #[test]
+    fn no_sandbox_escape_hatch_env() {
+        let key = "SWARM_CHROMIUM_NO_SANDBOX";
+        // Default: sandbox on, escape hatch unused.
+        std::env::remove_var(key);
+        assert!(!no_sandbox_env());
+        // Opt-in: first launch is already unsandboxed.
+        std::env::set_var(key, "1");
+        assert!(no_sandbox_env());
+        // Any other value keeps the sandbox.
+        std::env::set_var(key, "0");
+        assert!(!no_sandbox_env());
+        std::env::remove_var(key);
+    }
+
+    #[test]
+    fn launch_failure_marker_gates_the_no_sandbox_retry() {
+        // Only a launch error ("chromium launch: ...") is retried with the
+        // escape hatch; config/goto/screenshot errors surface as-is.
+        for e in [
+            "chromium config: bad",
+            "goto: timeout",
+            "screenshot: failed",
+        ] {
+            assert!(!e.starts_with("chromium launch:"));
+        }
+        assert!("chromium launch: no such binary".starts_with("chromium launch:"));
+    }
+
+    #[test]
+    fn render_mode_is_recordable() {
+        assert_eq!(RenderMode::Sandbox.as_str(), "sandboxed");
+        assert_eq!(RenderMode::NoSandbox.as_str(), "no-sandbox");
     }
 }
