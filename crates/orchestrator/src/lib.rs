@@ -13,6 +13,6 @@ pub mod sse;
 
 pub use config::PipelineConfig;
 pub use pipeline::{start_run, HarnessMode, PipelineCtx, RunRequest};
-pub use screenshot::{HubRegistry, ScreenshotQueue};
+pub use screenshot::{render_dest, HubRegistry, ScreenshotQueue};
 pub use slots::SlotSemaphore;
 pub use sse::SseHub;

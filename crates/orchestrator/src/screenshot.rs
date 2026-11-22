@@ -68,15 +68,23 @@ async fn publish_state_change(store: &Store, hubs: &Option<HubRegistry>, run_id:
 const TEST_PNG_BASE64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
+/// F14: every screenshot destination directory must exist before the render
+/// writes into it (chromiumoxide's save_screenshot does not mkdir, so a
+/// missing `DATA_DIR/screenshots/{run}` failed the render with ENOENT).
+async fn ensure_dest_dir(dest: &std::path::Path) -> Result<(), String> {
+    let Some(parent) = dest.parent() else {
+        return Ok(());
+    };
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|e| format!("mkdir {}: {e}", parent.display()))
+}
+
 async fn write_test_png(dest: &std::path::Path) -> Result<(), String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(TEST_PNG_BASE64)
         .map_err(|e| format!("test png decode: {e}"))?;
-    if let Some(parent) = dest.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-    }
+    ensure_dest_dir(dest).await?;
     tokio::fs::write(dest, bytes)
         .await
         .map_err(|e| format!("write {}: {e}", dest.display()))
@@ -281,7 +289,13 @@ impl ScreenshotQueue {
                     // sandbox mode that served the render (review F4) is
                     // recorded in lane_events.
                     let dest = render_dest(&data_dir_worker, &job.run_id, job.lane_idx);
-                    match render_chromium(&job.url, &dest).await {
+                    // F14: create the destination directory before the render
+                    // (save_screenshot does not mkdir; a missing
+                    // DATA_DIR/screenshots/{run} failed real renders with ENOENT).
+                    match ensure_dest_dir(&dest)
+                        .await
+                        .and_then(|()| render_chromium(&job.url, &dest))
+                    {
                         Ok(mode) => {
                             let ts = now_ms();
                             let _ = store_worker
@@ -512,5 +526,36 @@ mod tests {
     fn render_mode_is_recordable() {
         assert_eq!(RenderMode::Sandbox.as_str(), "sandboxed");
         assert_eq!(RenderMode::NoSandbox.as_str(), "no-sandbox");
+    }
+
+    /// F14: render_dest derives from the configured data dir (never a
+    /// hardcoded /data segment) and always points under DATA_DIR.
+    #[test]
+    fn render_dest_is_derived_from_data_dir() {
+        let data_dir = std::path::Path::new("/tmp/squadron-data");
+        let dest = render_dest(data_dir, "run-abc", 2);
+        assert_eq!(
+            dest,
+            data_dir
+                .join("screenshots")
+                .join("run-abc")
+                .join("lane-2.png")
+        );
+        assert!(dest.starts_with(data_dir));
+    }
+
+    /// F14 regression: with a DATA_DIR that does NOT pre-create the
+    /// screenshots subtree, ensure_dest_dir creates the full parent chain so
+    /// the render's save never fails with ENOENT.
+    #[tokio::test]
+    async fn ensure_dest_dir_creates_missing_screenshots_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data"); // only DATA_DIR exists
+        let dest = render_dest(&data_dir, "run-f14", 0);
+        ensure_dest_dir(&dest).await.unwrap();
+        assert!(dest.parent().unwrap().is_dir(), "screenshots/run created");
+        assert!(data_dir.is_dir());
+        // Idempotent on a second call (real retries / test mode).
+        ensure_dest_dir(&dest).await.unwrap();
     }
 }

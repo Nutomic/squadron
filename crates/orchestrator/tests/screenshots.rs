@@ -154,3 +154,49 @@ async fn screenshot_state_changes_reach_the_sse_hub() {
         .await;
     assert_eq!(state, "done");
 }
+
+/// F14 regression: in real (non-test) mode the destination directory is
+/// created BEFORE the render attempt, so a render can never fail with ENOENT
+/// because `DATA_DIR/screenshots/{run}` was missing. The browser is mocked by
+/// pointing CHROMIUM_BIN at a nonexistent binary: the launch fails (expected),
+/// but the destination dir must already exist — the old code created no dirs,
+/// so this proves the mkdir happens ahead of the render.
+#[tokio::test(flavor = "multi_thread")]
+async fn real_mode_creates_dest_dir_before_render_attempt() {
+    let key = "CHROMIUM_BIN";
+    let prev = std::env::var(key).ok();
+    std::env::set_var(key, "/nonexistent/chromium-for-f14-test");
+
+    let store = Store::connect_in_memory().await.unwrap();
+    store.migrate().await.unwrap();
+    store.create_run("brief", 1, 0).await.unwrap();
+    let run = store.list_runs().await.unwrap().remove(0);
+    store.insert_lane(&run.id, 0, "{}").await.unwrap();
+
+    let (_dir, data_dir) = queue_data_dir(); // does NOT pre-create screenshots/
+    let queue = ScreenshotQueue::with_data_dir(store.clone(), false, data_dir.clone());
+    let state = queue
+        .ensure_rendered(
+            &run.id,
+            0,
+            "https://example.invalid",
+            Duration::from_secs(15),
+        )
+        .await;
+    assert_eq!(
+        state, "failed",
+        "bogus chromium binary must fail the render"
+    );
+
+    let dest = orchestrator::render_dest(&data_dir, &run.id, 0);
+    assert!(dest.starts_with(&data_dir), "dest is under DATA_DIR");
+    assert!(
+        dest.parent().unwrap().is_dir(),
+        "DATA_DIR/screenshots/{run} was created before the render attempt"
+    );
+
+    match prev {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    }
+}
