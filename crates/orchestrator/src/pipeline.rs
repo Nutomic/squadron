@@ -844,6 +844,7 @@ async fn run_implementer_phase(
     })
 }
 
+#[allow(clippy::too_many_arguments)] // phase fn mirrors the pipeline's call shape
 async fn run_validator_phase(
     ctx: &PipelineCtx,
     run_id: &str,
@@ -1110,6 +1111,7 @@ async fn run_implementer(
     })
 }
 
+#[allow(clippy::too_many_arguments)] // phase fn mirrors the pipeline's call shape
 async fn run_validator(
     ctx: &PipelineCtx,
     run_id: &str,

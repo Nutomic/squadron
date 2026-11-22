@@ -192,7 +192,7 @@ async fn real_mode_creates_dest_dir_before_render_attempt() {
     assert!(dest.starts_with(&data_dir), "dest is under DATA_DIR");
     assert!(
         dest.parent().unwrap().is_dir(),
-        "DATA_DIR/screenshots/{run} was created before the render attempt"
+        "DATA_DIR/screenshots/<run> was created before the render attempt"
     );
 
     match prev {

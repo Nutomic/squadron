@@ -292,10 +292,11 @@ impl ScreenshotQueue {
                     // F14: create the destination directory before the render
                     // (save_screenshot does not mkdir; a missing
                     // DATA_DIR/screenshots/{run} failed real renders with ENOENT).
-                    match ensure_dest_dir(&dest)
-                        .await
-                        .and_then(|()| render_chromium(&job.url, &dest))
-                    {
+                    let rendered = match ensure_dest_dir(&dest).await {
+                        Ok(()) => render_chromium(&job.url, &dest).await,
+                        Err(e) => Err(e),
+                    };
+                    match rendered {
                         Ok(mode) => {
                             let ts = now_ms();
                             let _ = store_worker
@@ -488,6 +489,8 @@ impl ScreenshotQueue {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
+
     use super::*;
 
     /// Review F4: the escape hatch env var decides whether the FIRST launch
