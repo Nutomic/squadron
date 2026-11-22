@@ -82,7 +82,11 @@ async fn foundation_pipeline_composes_against_mock_sprite_and_stub_llm() {
     .to_string();
     let judge_content = json!({
         "ranking": [1, 0], "winner": 1, "verdict_card": "Playful and polished. It wins.",
-        "reasons": ["better layout"]
+        "reasons": ["better layout"],
+        "brief_fulfillment": {
+            "state": "fulfilled",
+            "evidence": "lane 1's validator report confirms the score loop the brief asked for"
+        }
     })
     .to_string();
 
