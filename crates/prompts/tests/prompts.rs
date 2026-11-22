@@ -298,6 +298,15 @@ fn role_prompts_include_schema_and_untrusted_data_rule() {
     );
     assert!(judge.user.contains("build a small arcade game"));
     assert!(judge.user.contains("sanitized page text"));
+    // F18: the judge must be told which lanes are candidates — failed lanes
+    // are excluded from ranking and winner eligibility.
+    assert!(
+        judge
+            .user
+            .contains("lanes that failed validation (or never completed it) are excluded"),
+        "candidate-lane eligibility rule missing: {}",
+        judge.user
+    );
     // Fulfillment calibration: unfulfilled requires affirmative evidence;
     // unverifiable is its own state, never a synonym for unfulfilled.
     assert!(
