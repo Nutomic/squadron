@@ -96,8 +96,12 @@ impl SpriteRecipe {
             .collect::<Vec<_>>()
             .join(" ");
         let escaped = body.replace('\'', "'\\''");
+        // F17: the HTTP status is written on the last stdout line so the
+        // harness curl-loop can classify responses: 5xx/429/408 are transient
+        // (retried with backoff), other 4xx (e.g. a schema 400) are permanent
+        // and fail fast. Bodies without the suffix still classify by shape.
         Ok(format!(
-            "curl -sS --max-time 600 -X POST '{endpoint}' {headers} -H 'content-type: application/json' --data '{escaped}'",
+            "curl -sS --max-time 600 -w '\\n%{{http_code}}' -X POST '{endpoint}' {headers} -H 'content-type: application/json' --data '{escaped}'",
             endpoint = self.endpoint
         ))
     }

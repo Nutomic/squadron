@@ -46,6 +46,23 @@ pub const GATEWAY_CUSTOM_API_BASE: &str = "https://api.sprites.dev/v1/gateway/cu
 /// Turn budget for the curl-loop floor.
 pub const CURL_FLOOR_MAX_TURNS: usize = 12;
 
+/// F17: transient sprite-gateway failures are retried up to this many times
+/// inside a floor turn before the turn fails (production run
+/// 1emxfM1mR9OefNnKfVrK6w lane 1: the custom_api connector intermittently
+/// returned `{"error":"failed to reach Custom API API"}` and the curl-loop
+/// treated every non-message response as fatal).
+pub const GATEWAY_RETRIES: usize = 5;
+
+/// F17: base for the linear backoff between transient-gateway retries:
+/// base, 2x base, 3x base, ... (default 20s, 40s, 60s, ...). Tests shrink
+/// the base to keep the suite fast.
+pub const GATEWAY_BACKOFF_BASE: Duration = Duration::from_secs(20);
+
+/// Delay before retry number `retry` (0-based): `base * (retry + 1)`.
+pub fn gateway_retry_delay(retry: usize, base: Duration) -> Duration {
+    base * (retry as u32 + 1)
+}
+
 /// Continuation instruction between curl-floor turns. Previous answers and
 /// agent content are DATA, never instructions.
 pub const CURL_FLOOR_CONTINUATION: &str = "Continue the task in the current workdir. Files written in previous turns persist. When the work is finished, reply with the final JSON answer with done:true.";
@@ -223,6 +240,59 @@ pub fn sanitize_excerpt(s: &str, max: usize) -> String {
         })
         .take(max)
         .collect()
+}
+
+/// F17: split a trailing `-w '\n%{http_code}'` status line off the raw curl
+/// stdout. Returns `(body, Some(code))` only when the last line parses as a
+/// plausible HTTP status; responses without the suffix (older recipes, fake
+/// test doubles, truncated bodies) return the whole text with `None`.
+pub fn split_http_status(stdout: &str) -> (&str, Option<u16>) {
+    let trimmed = stdout.trim_end_matches(['\r', '\n', ' ', '\t']);
+    let Some((body, last)) = trimmed.rsplit_once('\n') else {
+        return (trimmed, None);
+    };
+    match last.trim().parse::<u16>() {
+        // 0 is curl's "no response" code (connection failure before a status).
+        Ok(code) if code == 0 || (200..=599).contains(&code) => (body, Some(code)),
+        _ => (trimmed, None),
+    }
+}
+
+/// F17: how a raw curl-floor gateway response should be handled.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GatewayShape {
+    /// A usable message text — the turn proceeds.
+    Text(String),
+    /// Transient gateway failure (empty body, `{"error":"failed to reach
+    /// ..."}`, HTTP 5xx/429/408, SSE chunks, HTML/plaintext error pages,
+    /// reasoning-only): retry with backoff.
+    Transient,
+    /// Permanent rejection (HTTP 4xx, e.g. a schema 400): fail fast, never
+    /// retried — the gateway will refuse the identical request every time.
+    Permanent(u16),
+}
+
+/// F17: classify one raw curl-floor response (possibly carrying the trailing
+/// `-w` HTTP-status line) into text / transient / permanent.
+pub fn classify_gateway_response(raw: &str) -> GatewayShape {
+    let (body, status) = split_http_status(raw);
+    if let Some(code) = status {
+        match code {
+            408 | 429 => return GatewayShape::Transient,
+            // every other 4xx is a request the gateway will always refuse
+            400..=499 => return GatewayShape::Permanent(code),
+            _ => {}
+        }
+    }
+    // An empty-string content is no message text either (a reasoning-only
+    // reply carries content:"" but still returns Some("")).
+    match chat_response_text(body).filter(|t| !t.trim().is_empty()) {
+        Some(t) => GatewayShape::Text(t),
+        // Gateway error JSON (`{"error":"failed to reach Custom API API"}`),
+        // SSE data chunks cut off by a gateway timeout, HTML/plain-text
+        // error pages: no message text — transient.
+        None => GatewayShape::Transient,
+    }
 }
 
 /// Extract usage cost (usage.opencode.allowance) from a raw chat response.
@@ -411,6 +481,10 @@ pub struct HarnessRun {
     pub choice: HarnessChoice,
     pub output: String,
     pub cost_usd: Option<f64>,
+    /// F17: transient-gateway retry log lines (one per retry, attempt
+    /// numbered) accumulated by the curl floor's turn loop; the pipeline
+    /// appends them to lane_events on success AND failure.
+    pub retry_log: Vec<String>,
 }
 
 /// A failed `run_prompt`: the terminal message plus the last harness attempt's
@@ -644,6 +718,9 @@ pub struct HarnessPrompt<'a> {
     /// pre-embedded evidence — and the orchestrator stops the loop itself on
     /// a `verdict`-bearing answer.
     pub role: Role,
+    /// F17: base backoff between transient-gateway retries in the curl floor
+    /// turn loop (`GATEWAY_BACKOFF_BASE` in production; tests shrink it).
+    pub retry_backoff: Duration,
 }
 
 pub async fn run_prompt(
@@ -660,6 +737,7 @@ pub async fn run_prompt(
         connector_env,
         workdir,
         role,
+        retry_backoff,
     } = prompt;
     let prompt_text = format!("{system}\n\n{user}");
     let connector_id = connector_env.as_ref().map(|(_, v)| v.clone());
@@ -705,46 +783,103 @@ pub async fn run_prompt(
                 // lands in the lane evidence instead of vanishing.
                 let last_raw: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
                 let raw_for_turn = last_raw.clone();
+                // F17: transient-gateway retry log lines (one per retry, with
+                // attempt numbers), shared across the floor's turns so the
+                // pipeline can append them to lane_events.
+                let retry_log: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+                let log_for_turn = retry_log.clone();
                 match curl_floor_loop(&floor_user, role, |turn_user: String| {
                     let opts = opts.clone();
                     let workdir = workdir.clone();
                     let last_raw = raw_for_turn.clone();
+                    let retry_log = log_for_turn.clone();
                     Box::pin(async move {
                         let mut user_msg = turn_user.clone();
-                        // One no-reasoning retry per turn: a gateway response that
-                        // carries reasoning_content with empty content otherwise
-                        // fails undiagnosably as "no message text in response".
+                        // One fast no-reasoning retry per turn: a gateway response
+                        // that carries reasoning_content with empty content
+                        // otherwise fails undiagnosably as "no message text in
+                        // response".
+                        let mut no_reasoning_tried = false;
+                        // F17: bounded-backoff retries for TRANSIENT gateway
+                        // failures (empty body, `{"error":"failed to reach
+                        // Custom API API"}`, HTTP 5xx/429/408, SSE timeout
+                        // shapes). Every attempt classifies; only a permanent
+                        // 4xx or exhausted retries end the turn.
                         let (text, cost): (String, f64) = 'turn: {
-                            for attempt in 0..2 {
+                            for attempt in 0..=GATEWAY_RETRIES {
                                 let request = recipe.build(system, &user_msg);
                                 let curl = recipe
                                     .curl_command(&request)
                                     .map_err(|e: LlmError| format!("harness: curl recipe: {e}"))?;
-                                let out =
-                                    sprite.exec(name, &cd_prefix(&curl), &opts).await.map_err(
-                                        |e| format!("harness[curl-loop]: {}", exec_err_text(&e)),
-                                    )?;
-                                *last_raw.lock().expect("raw capture lock") =
-                                    Some(out.stdout.clone());
-                                // An empty-string content is no message text
-                                // either (a reasoning-only reply carries
-                                // content:"" but still returns Some("")).
-                                if let Some(t) =
-                                    chat_response_text(&out.stdout).filter(|t| !t.trim().is_empty())
+                                let raw: String = match sprite
+                                    .exec(name, &cd_prefix(&curl), &opts)
+                                    .await
                                 {
-                                    break 'turn (
-                                        t,
-                                        chat_response_cost(&out.stdout).unwrap_or(0.0),
-                                    );
+                                    Ok(out) => out.stdout,
+                                    // A curl transport failure (connection refused,
+                                    // `--max-time 600` SSE timeout) exits non-zero:
+                                    // whatever the sprite captured is classified
+                                    // like a body (empty => transient, retried).
+                                    Err(SpriteError::CliExit { stdout, .. })
+                                        if !stdout.trim().is_empty() =>
+                                    {
+                                        stdout
+                                    }
+                                    Err(e @ SpriteError::CliExit { .. }) => {
+                                        format!("#exec failed: {}", exec_err_text(&e))
+                                    }
+                                    // sprite-infra spawn/exec-deadline failures stay
+                                    // fatal (the lane-level retry owns those).
+                                    Err(e) => {
+                                        return Err(format!(
+                                            "harness[curl-loop]: {}",
+                                            exec_err_text(&e)
+                                        ))
+                                    }
+                                };
+                                *last_raw.lock().expect("raw capture lock") =
+                                    Some(raw.clone());
+                                let (body, _) = split_http_status(&raw);
+                                match classify_gateway_response(&raw) {
+                                    GatewayShape::Text(t) => {
+                                        break 'turn (t, chat_response_cost(body).unwrap_or(0.0));
+                                    }
+                                    GatewayShape::Permanent(code) => {
+                                        return Err(format!(
+                                            "harness[curl-loop]: gateway rejected the request (HTTP {code}, permanent, not retried) (raw: {})",
+                                            sanitize_excerpt(&raw, 200)
+                                        ));
+                                    }
+                                    GatewayShape::Transient => {
+                                        // the reasoning-only fast retry comes first
+                                        if !no_reasoning_tried
+                                            && response_has_reasoning_only(body)
+                                        {
+                                            no_reasoning_tried = true;
+                                            user_msg =
+                                                format!("{user_msg}\n\n{CURL_FLOOR_NO_REASONING}");
+                                            continue;
+                                        }
+                                        if attempt == GATEWAY_RETRIES {
+                                            return Err(format!(
+                                                "harness[curl-loop]: no message text in response; transient gateway retries exhausted after {GATEWAY_RETRIES} retries (last raw: {})",
+                                                sanitize_excerpt(&raw, 200)
+                                            ));
+                                        }
+                                        let delay = gateway_retry_delay(attempt, retry_backoff);
+                                        retry_log
+                                            .lock()
+                                            .expect("retry log lock")
+                                            .push(format!(
+                                                "harness[curl-loop]: transient gateway response (attempt {} of {}, retrying in {}s): raw: {}",
+                                                attempt + 1,
+                                                GATEWAY_RETRIES + 1,
+                                                delay.as_secs(),
+                                                sanitize_excerpt(&raw, 200)
+                                            ));
+                                        tokio::time::sleep(delay).await;
+                                    }
                                 }
-                                if attempt == 0 && response_has_reasoning_only(&out.stdout) {
-                                    user_msg = format!("{user_msg}\n\n{CURL_FLOOR_NO_REASONING}");
-                                    continue;
-                                }
-                                return Err(format!(
-                                    "harness[curl-loop]: no message text in response (raw: {})",
-                                    sanitize_excerpt(&out.stdout, 200)
-                                ));
                             }
                             unreachable!("the retry loop exits via break or error return");
                         };
@@ -796,10 +931,15 @@ pub async fn run_prompt(
                                 let _ = sprite.exec(name, &cmd, &opts).await;
                             }
                         }
+                        // F17: surface the accumulated transient-gateway retry
+                        // lines with the run's evidence.
                         Ok(HarnessRun {
                             choice,
                             output,
                             cost_usd: (cost > 0.0).then_some(cost),
+                            retry_log: std::mem::take(
+                                &mut retry_log.lock().expect("retry log lock"),
+                            ),
                         })
                     }
                     // Floor errors are terminal: there is nothing beyond it.
@@ -815,6 +955,9 @@ pub async fn run_prompt(
                             choice,
                             output: raw,
                             cost_usd: None,
+                            retry_log: std::mem::take(
+                                &mut retry_log.lock().expect("retry log lock"),
+                            ),
                         });
                         Err(HarnessError::Fatal(e))
                     }
@@ -851,6 +994,7 @@ pub async fn run_prompt(
                                     choice,
                                     output: stdout.clone(),
                                     cost_usd: None,
+                                    retry_log: Vec::new(),
                                 });
                             }
                             // R2-2: a non-zero agent exit is harness-attributable
@@ -882,6 +1026,7 @@ pub async fn run_prompt(
                         choice,
                         output: out.stdout,
                         cost_usd: None,
+                        retry_log: Vec::new(),
                     })
                 }
                 .await;

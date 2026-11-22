@@ -1003,6 +1003,7 @@ async fn run_implementer(
                     connector_env: Some(connector_env),
                     workdir: Some(&sprite_workdir(run_id, idx)),
                     role: Role::Implementer,
+                    retry_backoff: harness::GATEWAY_BACKOFF_BASE,
                 },
             )
             .await
@@ -1010,8 +1011,16 @@ async fn run_implementer(
                 Ok(run) => run,
                 // Failure round: the failed attempt's captured stdout tail is
                 // logged too, so a 0-byte capture is visible in the evidence.
+                // F17: the transient-gateway retry lines are logged first so
+                // the evidence shows each backoff attempt with its number.
                 Err(f) => {
                     if let Some(attempt) = &f.last {
+                        for line in &attempt.retry_log {
+                            let _ = ctx
+                                .store
+                                .append_lane_event(run_id, idx, now_ms(), "log", line)
+                                .await;
+                        }
                         let _ = ctx
                             .store
                             .append_lane_event(
@@ -1026,6 +1035,14 @@ async fn run_implementer(
                     return Err(format!("implementer: {}", f.msg));
                 }
             };
+            // F17: transient-gateway retries that preceded the success are
+            // part of the run's evidence.
+            for line in &run.retry_log {
+                let _ = ctx
+                    .store
+                    .append_lane_event(run_id, idx, now_ms(), "log", line)
+                    .await;
+            }
             let _ = ctx
                 .store
                 .append_lane_event(
@@ -1190,6 +1207,7 @@ async fn run_validator(
                     connector_env: Some(connector_env),
                     workdir: Some(&sprite_workdir(run_id, idx)),
                     role: Role::Validator,
+                    retry_backoff: harness::GATEWAY_BACKOFF_BASE,
                 },
             )
             .await
@@ -1197,8 +1215,16 @@ async fn run_validator(
                 Ok(run) => run,
                 // Failure round: the failed attempt's captured stdout tail is
                 // logged too, so a 0-byte capture is visible in the evidence.
+                // F17: the transient-gateway retry lines are logged first so
+                // the evidence shows each backoff attempt with its number.
                 Err(f) => {
                     if let Some(attempt) = &f.last {
+                        for line in &attempt.retry_log {
+                            let _ = ctx
+                                .store
+                                .append_lane_event(run_id, idx, now_ms(), "log", line)
+                                .await;
+                        }
                         let _ = ctx
                             .store
                             .append_lane_event(
@@ -1213,6 +1239,14 @@ async fn run_validator(
                     return Err(format!("validator: {}", f.msg));
                 }
             };
+            // F17: transient-gateway retries that preceded the success are
+            // part of the run's evidence.
+            for line in &run.retry_log {
+                let _ = ctx
+                    .store
+                    .append_lane_event(run_id, idx, now_ms(), "log", line)
+                    .await;
+            }
             used_choice = Some(run.choice);
             // Failure round: the captured stdout tail is logged even on
             // success so a 0-byte capture shows up in the tail evidence.
@@ -1616,6 +1650,7 @@ mod tests {
             choice: harness::HarnessChoice::Opencode,
             output: String::new(),
             cost_usd: None,
+            retry_log: Vec::new(),
         };
         let msg = harness_tail_log(&run);
         assert!(msg.contains("harness[opencode]"), "msg: {msg}");
@@ -1627,6 +1662,7 @@ mod tests {
             choice: harness::HarnessChoice::Curl,
             output: "ok\u{1}\u{7}done".to_owned(),
             cost_usd: Some(0.02),
+            retry_log: Vec::new(),
         };
         let msg = harness_tail_log(&run);
         assert!(msg.contains("ok  done"), "msg: {msg}");
@@ -1639,6 +1675,7 @@ mod tests {
             choice: harness::HarnessChoice::Claude,
             output: long,
             cost_usd: None,
+            retry_log: Vec::new(),
         };
         let msg = harness_tail_log(&run);
         assert!(msg.contains("20000 bytes"), "msg: {msg}");
@@ -1758,6 +1795,7 @@ mod tests {
             choice: harness::HarnessChoice::Curl,
             output: r#"{"summary":"s","usage":{"opencode":{"allowance":999.0}}}"#.to_owned(),
             cost_usd: Some(0.25),
+            retry_log: Vec::new(),
         };
         assert_eq!(harness_cost_of(&run), Some(0.25));
         run.cost_usd = None;

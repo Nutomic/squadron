@@ -219,6 +219,9 @@ async fn sprite_recipe_uses_gateway_headers_without_auth() {
     assert!(curl.contains("example.invalid"));
     assert!(curl.contains(SESSION_HEADER));
     assert!(!curl.to_ascii_lowercase().contains("authorization"));
+    // F17: the HTTP status lands on the last stdout line so the harness
+    // curl-loop can classify transient (5xx/429/408) vs permanent (4xx).
+    assert!(curl.contains("-w '\\n%{http_code}'"), "curl: {curl}");
 }
 
 #[tokio::test]

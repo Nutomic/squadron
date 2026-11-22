@@ -131,6 +131,7 @@ async fn floor_validator_turn_carries_evidence_and_exact_keys_in_the_request_pay
             )),
             workdir: Some(dir.path().join("lane-0").to_str().unwrap()),
             role: prompts::Role::Validator,
+            retry_backoff: Duration::ZERO,
         },
     )
     .await

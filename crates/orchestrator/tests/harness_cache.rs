@@ -193,6 +193,7 @@ async fn run_prompt_runs_the_curl_floor_and_parses_cost() {
             // source tree (leaked swarm-work/ artifacts).
             workdir: Some(dir.path().join("lane-0").to_str().unwrap()),
             role: prompts::Role::Implementer,
+            retry_backoff: Duration::ZERO,
         },
     )
     .await
@@ -238,6 +239,7 @@ async fn run_prompt_cli_choice_returns_agent_stdout() {
             // R3-B: lane workdir in the test tempdir (leaked artifacts fix).
             workdir: Some(dir.path().join("lane-1").to_str().unwrap()),
             role: prompts::Role::Implementer,
+            retry_backoff: Duration::ZERO,
         },
     )
     .await
@@ -325,6 +327,7 @@ async fn run_prompt_retries_reasoning_only_floor_response() {
             connector_env: None,
             workdir: Some(dir.path().join("lane-0").to_str().unwrap()),
             role: prompts::Role::Implementer,
+            retry_backoff: Duration::ZERO,
         },
     )
     .await
@@ -381,6 +384,7 @@ async fn run_prompt_failure_carries_the_captured_attempt() {
             connector_env: None,
             workdir: Some(dir.path().join("lane-0").to_str().unwrap()),
             role: prompts::Role::Implementer,
+            retry_backoff: Duration::ZERO,
         },
     )
     .await
@@ -405,8 +409,9 @@ async fn run_prompt_failure_carries_the_captured_attempt() {
     assert_eq!(exec_count("dying-sprite"), 6);
 }
 
-/// A floor response that never yields message text fails with a sanitized
-/// raw-response excerpt in the error string (was: bare "no message text").
+/// A floor response that never yields message text fails after the F17
+/// transient-gateway retries are exhausted, with a sanitized raw-response
+/// excerpt in the error string (was: bare "no message text").
 #[tokio::test(flavor = "multi_thread")]
 async fn run_prompt_reports_raw_excerpt_when_floor_response_has_no_text() {
     let _env = ENV_LOCK.lock().await;
@@ -432,6 +437,7 @@ async fn run_prompt_reports_raw_excerpt_when_floor_response_has_no_text() {
             connector_env: None,
             workdir: None,
             role: prompts::Role::Implementer,
+            retry_backoff: Duration::ZERO,
         },
     )
     .await
@@ -439,12 +445,13 @@ async fn run_prompt_reports_raw_excerpt_when_floor_response_has_no_text() {
     .msg;
 
     assert!(err.contains("no message text in response"), "err: {err}");
+    assert!(err.contains("retries exhausted"), "err: {err}");
     assert!(err.contains("raw:"), "err: {err}");
     assert!(
         err.contains("reasoning_content"),
         "error must carry the sanitized raw-response excerpt, got: {err}"
     );
-    // Five probes + one turn (first attempt + one retry); no start script,
-    // because the loop failed.
-    assert_eq!(exec_count("reasoning-fail-sprite"), 7);
+    // Five probes + one turn (first attempt + one no-reasoning retry + five
+    // transient backoff retries); no start script, because the loop failed.
+    assert_eq!(exec_count("reasoning-fail-sprite"), 11);
 }
