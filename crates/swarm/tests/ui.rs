@@ -887,6 +887,139 @@ async fn full_csp_snapshot_and_inline_script_escaped() {
     );
 }
 
+/// Review F15: the deployed surface round — empty-state placement, sample
+/// chip labels, robots.txt, HSTS, Secure CSRF cookie.
+#[tokio::test]
+async fn runs_page_empty_state_renders_outside_the_table() {
+    let (app, _) = app().await;
+    for uri in ["/runs", "/runs/table"] {
+        let res = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let html = body_string(res.into_body()).await;
+        assert!(html.contains("No runs yet"), "GET {uri}");
+        assert!(html.contains("Launch one"), "GET {uri}");
+        assert!(html.contains("your-first-run.fly.dev"), "GET {uri}");
+        // No runs means no <table> at all: the empty state must not sit
+        // inside the min-width table that clips it on small screens.
+        assert!(!html.contains("<table"), "GET {uri}");
+    }
+}
+
+#[tokio::test]
+async fn runs_page_with_rows_renders_the_table() {
+    let (app, store) = app().await;
+    store
+        .create_run("table test", 3, 1_732_020_000_000)
+        .await
+        .unwrap();
+    let res = app
+        .clone()
+        .oneshot(Request::builder().uri("/runs").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("<table"));
+    assert!(!html.contains("No runs yet"));
+}
+
+#[tokio::test]
+async fn index_sample_chips_use_complete_short_labels() {
+    let (app, _) = app().await;
+    let res = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("1996 Netscape homepage"));
+    assert!(html.contains("VM product marketing site"));
+    assert!(html.contains("90s arcade clone"));
+    assert!(!html.contains("&gt;..."), "chips must not be ellipsis-truncated");
+}
+
+#[tokio::test]
+async fn index_meta_and_mobile_nav_present() {
+    let (app, _) = app().await;
+    let res = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains(r#"<meta name="description""#));
+    assert!(html.contains(r#"property="og:title""#));
+    assert!(html.contains(r#"name="theme-color""#));
+    assert!(html.contains("one brief, N agents, one winner"));
+    // The lone nav link is visible at all widths (no `hidden sm:flex`).
+    assert!(!html.contains("hidden sm:flex"));
+}
+
+#[tokio::test]
+async fn runs_nav_pill_has_aria_current() {
+    let (app, _) = app().await;
+    let res = app
+        .clone()
+        .oneshot(Request::builder().uri("/runs").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains(r#"aria-current="page""#));
+}
+
+#[tokio::test]
+async fn robots_txt_served() {
+    let (app, _) = app().await;
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/robots.txt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/plain"
+    );
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("User-agent: *"));
+    assert!(body.contains("Allow: /"));
+}
+
+#[tokio::test]
+async fn hsts_and_secure_csrf_cookie_set() {
+    let (app, _) = app().await;
+    let res = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let hsts = res
+        .headers()
+        .get("strict-transport-security")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert_eq!(hsts, "max-age=31536000; includeSubDomains");
+    let cookie = res
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .expect("form GET must set the swarm_csrf cookie")
+        .to_owned();
+    assert!(cookie.contains("Secure"), "cookie: {cookie}");
+    assert!(cookie.contains("HttpOnly"), "cookie: {cookie}");
+    assert!(cookie.contains("SameSite=Lax"), "cookie: {cookie}");
+}
+
 /// R2 finding 6: a stream attached to an already-terminal run sends exactly
 /// one snapshot and ends — no perpetual DB polling.
 #[tokio::test]

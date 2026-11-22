@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Squadron — runs{% endblock %}
 {% block nav_runs %}text-primary font-medium bg-[#EEF2FF]{% endblock %}
+{% block nav_runs_attr %}aria-current="page"{% endblock %}
 {% block content %}
 <div class="max-w-7xl mx-auto px-4 pt-8 pb-6 flex flex-wrap items-center gap-3">
   <div>
     <h1 class="text-2xl font-semibold tracking-tight">Runs</h1>
-    <p class="text-sm text-base-content/55 mt-0.5">Every brief submitted to the swarm, newest first.</p>
+    <p class="text-sm text-base-content/65 mt-0.5">Every brief submitted to the swarm, newest first.</p>
   </div>
   <div class="flex-1"></div>
 </div>

@@ -3,18 +3,18 @@
 {% block content %}
 <div class="bg-base-200 border-b border-base-300">
   <div class="max-w-7xl mx-auto px-4 py-4 flex flex-wrap items-center gap-3">
-    <a href="/{{ run_id }}" class="text-sm text-base-content/55 hover:text-base-content">&larr; Gallery</a>
+    <a href="/{{ run_id }}" class="text-sm text-base-content/65 hover:text-base-content">&larr; Gallery</a>
     <span class="text-base-content/25">/</span>
     <h1 class="text-[15px] font-semibold flex items-center gap-2.5">
       <span class="lane-dot lane-hue-{{ idx % 6 }}"></span>Lane {{ idx }}
     </h1>
-    {% if model.len() > 0 %}<span class="mono-num text-base-content/50">{{ model }}</span>{% endif %}
+    {% if model.len() > 0 %}<span class="mono-num text-base-content/60">{{ model }}</span>{% endif %}
     {% if state == "validated" %}<span class="chip chip-success">verified</span>
     {% else if state == "failed" %}<span class="chip chip-error">failed</span>
     {% else if state == "running" %}<span class="chip chip-info chip-pulse">running</span>
     {% else %}<span class="chip chip-neutral">{{ state }}</span>{% endif %}
     <div class="flex-1"></div>
-    <span class="mono-num text-base-content/40">{{ run_id }}</span>
+    <span class="mono-num text-base-content/60">{{ run_id }}</span>
   </div>
 </div>
 
@@ -81,7 +81,7 @@
       <div class="card-body p-6 gap-3">
         <div class="flex items-center justify-between gap-3">
           <h2 class="text-[17px] font-semibold tracking-tight">Console</h2>
-          <span class="mono-num text-base-content/40">tail &middot; last 200 lines</span>
+          <span class="mono-num text-base-content/60">tail &middot; last 200 lines</span>
         </div>
         <pre class="console-block max-h-72 whitespace-pre-wrap">{{ console_tail }}</pre>
       </div>
@@ -103,10 +103,10 @@
       <div class="card-body p-6 gap-3">
         <h2 class="text-[17px] font-semibold tracking-tight">Properties</h2>
         <dl class="text-[13px] divide-y divide-base-300">
-          <div class="flex items-center justify-between gap-3 py-2"><dt class="text-base-content/50">Agent / model</dt><dd class="mono-num text-right">{{ model }}</dd></div>
-          <div class="flex items-center justify-between gap-3 py-2"><dt class="text-base-content/50">Build time</dt><dd class="mono-num text-right">{{ build }}</dd></div>
-          <div class="flex items-center justify-between gap-3 py-2"><dt class="text-base-content/50">Cost</dt><dd class="mono-num text-right">{{ cost }}</dd></div>
-          <div class="flex items-center justify-between gap-3 py-2"><dt class="text-base-content/50">Screenshot</dt><dd class="mono-num text-right">{{ screenshot_state }}</dd></div>
+          <div class="flex items-center justify-between gap-3 py-2"><dt class="text-base-content/65">Agent / model</dt><dd class="mono-num text-right">{{ model }}</dd></div>
+          <div class="flex items-center justify-between gap-3 py-2"><dt class="text-base-content/65">Build time</dt><dd class="mono-num text-right">{{ build }}</dd></div>
+          <div class="flex items-center justify-between gap-3 py-2"><dt class="text-base-content/65">Cost</dt><dd class="mono-num text-right">{{ cost }}</dd></div>
+          <div class="flex items-center justify-between gap-3 py-2"><dt class="text-base-content/65">Screenshot</dt><dd class="mono-num text-right">{{ screenshot_state }}</dd></div>
         </dl>
         {% if tokei_json.len() > 0 %}
         <details class="mt-1">

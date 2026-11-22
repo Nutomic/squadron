@@ -4,7 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="htmx-config" content='{"includeIndicatorStyles": false}'>
-  <title>{% block title %}Squadron{% endblock %}</title>
+  <title>{% block title %}Squadron — one brief, N agents, one winner{% endblock %}</title>
+  <meta name="description" content="Submit one project brief and N parallel AI agents build it on isolated VMs — a judge crowns the winner in a live gallery.">
+  <meta property="og:title" content="Squadron — one brief, N agents, one winner">
+  <meta property="og:description" content="One brief, N agents build it in parallel on isolated VMs. A judge crowns the winner.">
+  <meta property="og:type" content="website">
+  <meta name="theme-color" content="#4f46e5">
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/island.css">
   <script src="/static/htmx.min.js" defer></script>
@@ -20,8 +25,8 @@
         </svg>
         Squadron
       </a>
-      <nav class="hidden sm:flex items-center gap-1 text-sm" aria-label="Main">
-        <a href="/runs" class="px-3 py-1.5 rounded-full whitespace-nowrap {% block nav_runs %}text-base-content/70 hover:text-base-content{% endblock %}">Runs</a>
+      <nav class="flex items-center gap-1 text-sm" aria-label="Main">
+        <a href="/runs" class="inline-flex items-center min-h-[40px] px-3 rounded-full whitespace-nowrap {% block nav_runs %}text-base-content/70 hover:text-base-content{% endblock %}" {% block nav_runs_attr %}{% endblock %}>Runs</a>
       </nav>
       <div class="flex-1"></div>
       {% block header_cta %}
@@ -35,14 +40,14 @@
   </main>
 
   <footer class="bg-base-200 border-t border-base-300">
-    <div class="max-w-7xl mx-auto px-4 py-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px] text-base-content/55">
-      <nav class="flex items-center gap-x-4 gap-y-1" aria-label="Footer">
-        <a href="/" class="hover:text-base-content">New run</a>
-        <a href="/runs" class="hover:text-base-content">Runs</a>
-        <span>One brief, N agents in parallel</span>
+    <div class="max-w-7xl mx-auto px-1 py-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] text-base-content/65 sm:px-4 sm:py-5">
+      <nav class="flex items-center gap-x-1 gap-y-1" aria-label="Footer">
+        <a href="/" class="inline-flex items-center min-h-[40px] px-3 hover:text-base-content">New run</a>
+        <a href="/runs" class="inline-flex items-center min-h-[40px] px-3 hover:text-base-content">Runs</a>
+        <span class="ml-1">One brief, many agents in parallel</span>
       </nav>
       <div class="flex-1"></div>
-      <span class="mono-num !text-[11px] text-base-content/40 flex items-center gap-2">
+      <span class="mono-num !text-[11px] text-base-content/60 flex items-center gap-2 pr-3 sm:pr-0">
         <span class="inline-block w-1.5 h-1.5 rounded-full bg-success"></span>
         squadron v1.4 &middot; all systems normal
       </span>

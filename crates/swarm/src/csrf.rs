@@ -20,10 +20,10 @@ pub fn new_token() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
-/// Cookie value for the token (HttpOnly: the page reads the token from its
-/// own data attribute, never from document.cookie).
+/// Cookie value for the token (HttpOnly + Secure: the page reads the token
+/// from its own data attribute, never from document.cookie).
 pub fn cookie_value(token: &str) -> String {
-    format!("{CSRF_COOKIE}={token}; Path=/; Max-Age=7200; SameSite=Lax; HttpOnly")
+    format!("{CSRF_COOKIE}={token}; Path=/; Max-Age=7200; SameSite=Lax; Secure; HttpOnly")
 }
 
 pub fn set_cookie_header(token: &str) -> (HeaderName, HeaderValue) {

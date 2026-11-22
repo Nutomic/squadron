@@ -6,7 +6,7 @@
   <div class="max-w-2xl mx-auto px-4 pt-10 pb-8">
     <p class="label-meta">Parallel builds</p>
     <h1 class="mt-2 text-3xl font-semibold tracking-tight leading-tight">Describe your project</h1>
-    <p class="mt-2 text-[15px] text-base-content/60">One brief, N agents build it in parallel on isolated VMs. A judge crowns the winner.</p>
+    <p class="mt-2 text-[15px] text-base-content/65">One brief, N agents build it in parallel on isolated VMs. A judge crowns the winner.</p>
   </div>
 </section>
 
@@ -16,14 +16,14 @@
     <div>
       <label class="label-meta" for="brief">Project brief</label>
       <textarea id="brief" name="brief" rows="6" required
-        class="textarea textarea-bordered w-full mt-2 bg-base-100 border-[#E4E4E7] rounded-lg text-sm leading-relaxed placeholder:text-base-content/30 focus:border-primary focus:outline-none"
+        class="textarea textarea-bordered w-full mt-2 bg-base-100 border-[#E4E4E7] rounded-lg text-sm leading-relaxed placeholder:text-base-content/50 focus:border-primary focus:outline-none"
         placeholder="Describe the web project to build — audience, features, tone."></textarea>
     </div>
 
     <div class="flex flex-wrap gap-2 items-center">
       <span class="label-meta mr-1">Samples</span>
       {% for brief in briefs %}
-      <button type="button" class="chip-sample" data-brief="{{ brief.text }}">{{ brief.short }}</button>
+      <button type="button" class="chip-sample" data-brief="{{ brief.text }}" title="{{ brief.text }}">{{ brief.short }}</button>
       {% endfor %}
     </div>
 
@@ -39,7 +39,27 @@
       <div class="flex-1"></div>
       <button type="submit" class="btn btn-primary rounded-full px-7 font-semibold border-0">Launch run</button>
     </div>
-    <p class="mono-num text-base-content/40 -mt-2">Runs N agents on isolated VMs &middot; each lane judged on the live site</p>
+    <p class="mono-num text-base-content/60 -mt-2">Agents run on isolated VMs &middot; every lane judged on the live site</p>
   </form>
+</section>
+
+<section class="max-w-2xl mx-auto px-4 pb-12 w-full">
+  <ol class="grid gap-3 sm:grid-cols-3 text-[13px] text-base-content/65">
+    <li class="bg-base-100 border border-base-300 rounded-xl px-4 py-3">
+      <span class="label-meta">1</span>
+      <p class="mt-1 font-medium text-base-content">Brief</p>
+      <p class="mt-0.5">Write one short project brief.</p>
+    </li>
+    <li class="bg-base-100 border border-base-300 rounded-xl px-4 py-3">
+      <span class="label-meta">2</span>
+      <p class="mt-1 font-medium text-base-content">N agents build in parallel</p>
+      <p class="mt-0.5">Each lane ships a live site on its own VM.</p>
+    </li>
+    <li class="bg-base-100 border border-base-300 rounded-xl px-4 py-3">
+      <span class="label-meta">3</span>
+      <p class="mt-1 font-medium text-base-content">Judged live gallery</p>
+      <p class="mt-0.5">A judge crowns the winner; you watch it happen.</p>
+    </li>
+  </ol>
 </section>
 {% endblock %}

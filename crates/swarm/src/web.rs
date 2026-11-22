@@ -30,6 +30,9 @@ const SAMPLE_BRIEFS: [&str; 3] = [
     "Build the most fun 90s arcade clone you can in one hour.",
 ];
 
+/// Review F15 #3: complete short chip labels (never truncation ellipses).
+const SAMPLE_SHORTS: [&str; 3] = ["1996 Netscape homepage", "VM product marketing site", "90s arcade clone"];
+
 pub fn router(state: SharedState) -> Router {
     Router::new()
         .route("/", get(index))
@@ -43,6 +46,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/{run_id}/thumb/{idx}", get(thumb))
         .route("/{run_id}/source/{idx}", get(source))
         .route("/{run_id}/promote", post(promote))
+        .route("/robots.txt", get(robots_txt))
         .route("/static/{*path}", get(serve_static))
         .with_state(state)
 }
@@ -65,9 +69,10 @@ async fn index() -> Response {
     let tpl = IndexTemplate {
         briefs: SAMPLE_BRIEFS
             .iter()
-            .map(|b| Brief {
+            .zip(SAMPLE_SHORTS)
+            .map(|(b, short)| Brief {
                 text: b.to_string(),
-                short: truncate(b, 34),
+                short: short.to_string(),
             })
             .collect(),
         csrf_token: token.clone(),
@@ -373,8 +378,24 @@ pub struct GalleryTemplate {
     pub csrf_token: String,
 }
 
-async fn serve_static(State(state): State<SharedState>, Path(path): Path<String>) -> Response {
-    if path.is_empty()
+/// Review F15 #13: minimal robots policy; the static file wins when present,
+/// otherwise the built-in default keeps crawlers fully allowed.
+async fn robots_txt(State(state): State<SharedState>) -> Response {
+    const DEFAULT: &str = "User-agent: *\nAllow: /\n";
+    let body = tokio::fs::read_to_string(state.static_dir.join("robots.txt"))
+        .await
+        .unwrap_or_else(|_| DEFAULT.to_owned());
+    (
+        [
+            (header::CONTENT_TYPE, "text/plain"),
+            (header::CACHE_CONTROL, "max-age=300"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+async fn serve_static(State(state): State<SharedState>, Path(path): Path<String>) -> Response {    if path.is_empty()
         || path
             .split('/')
             .any(|seg| seg.is_empty() || seg == ".." || seg == ".")

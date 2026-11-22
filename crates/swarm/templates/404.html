@@ -2,9 +2,12 @@
 {% block title %}Squadron — not found{% endblock %}
 {% block content %}
 <div class="text-center py-24">
-  <p class="mono-num text-base-content/40 mb-2">404</p>
+  <p class="mono-num text-base-content/60 mb-2">404</p>
   <h1 class="text-2xl font-semibold tracking-tight mb-2">No such run or page</h1>
-  <p class="text-sm text-base-content/55 mb-6">The link may be stale — check the runs list.</p>
-  <a href="/" class="btn btn-primary btn-sm rounded-full px-5 font-semibold border-0">Back home</a>
+  <p class="text-sm text-base-content/65 mb-6">The link may be stale — check the runs list.</p>
+  <div class="flex items-center justify-center gap-3">
+    <a href="/" class="btn btn-primary btn-sm rounded-full px-5 font-semibold border-0 min-h-[40px]">Back home</a>
+    <a href="/runs" class="btn btn-outline btn-sm rounded-full px-5 font-semibold border-base-300 min-h-[40px]">View runs</a>
+  </div>
 </div>
 {% endblock %}
