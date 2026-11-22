@@ -13,7 +13,8 @@ impl Default for SpriteConfig {
     fn default() -> Self {
         Self {
             cli_path: PathBuf::from("sprite"),
-            name_prefix: "swarm".to_owned(),
+            // Wave E: lane sprite names are `squadron-<run>-impl-<n>`.
+            name_prefix: "squadron".to_owned(),
             org: "felix-382".to_owned(),
             command_timeout: Duration::from_secs(120),
         }

@@ -40,6 +40,10 @@ pub struct MockSprite {
     /// that execs while still private can never pass the public 200-check).
     #[serde(default)]
     pub url_auth_public: bool,
+    /// Wave E: labels applied at create (`--label key=value`, repeatable —
+    /// the platform API maps them onto the sprite's `labels` object).
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -200,24 +204,80 @@ pub fn valid_sprite_name(name: &str) -> bool {
 }
 
 fn create(args: &[String]) -> Result<String, (i32, String)> {
-    let name = args
-        .get(1)
-        .ok_or_else(|| (2, "create: missing name".to_owned()))?;
-    if !valid_sprite_name(name) {
+    // Real CLI (cobra) grammar: `sprite create [flags] [sprite-name]` — flags
+    // may appear anywhere; `-s/--sprite <name>` names the sprite explicitly
+    // and `-o/--org <org>` is accepted and ignored. `--label <key=value>` is
+    // repeatable and maps onto the API's `labels` object; a value without the
+    // `key=value` shape is a usage error (exit 2), like the real CLI.
+    let mut name: Option<String> = None;
+    let mut skip_console = false;
+    let mut labels: BTreeMap<String, String> = BTreeMap::new();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--skip-console" => {
+                skip_console = true;
+                i += 1;
+            }
+            "--label" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| (2, "create: --label needs a key=value value".to_owned()))?
+                    .clone();
+                let (key, value) = value.split_once('=').ok_or_else(|| {
+                    (
+                        2,
+                        format!("create: invalid label {value:?}: expected key=value"),
+                    )
+                })?;
+                if key.is_empty() {
+                    return Err((2, "create: invalid label: empty key".to_owned()));
+                }
+                labels.insert(key.to_owned(), value.to_owned());
+                i += 2;
+            }
+            "-o" | "--org" => {
+                i = args
+                    .get(i + 1)
+                    .map(|_| i + 2)
+                    .ok_or_else(|| (2, "create: -o/--org needs a value".to_owned()))?;
+            }
+            "-s" | "--sprite" => {
+                if name.is_some() {
+                    return Err((2, "create: sprite name given more than once".to_owned()));
+                }
+                name = Some(
+                    args.get(i + 1)
+                        .ok_or_else(|| (2, "create: -s/--sprite needs a name".to_owned()))?
+                        .clone(),
+                );
+                i += 2;
+            }
+            positional => {
+                if name.is_some() {
+                    return Err((2, "create: unexpected extra argument".to_owned()));
+                }
+                name = Some(positional.to_owned());
+                i += 1;
+            }
+        }
+    }
+    let name = name.ok_or_else(|| (2, "create: missing name".to_owned()))?;
+    if !valid_sprite_name(&name) {
         return Err((
             2,
             "create: sprite name must contain only lowercase letters, numbers, and hyphens, and start/end with a letter or number"
                 .to_owned(),
         ));
     }
-    if !args.iter().any(|a| a == "--skip-console") {
+    if !skip_console {
         return Err((2, "create: --skip-console required".to_owned()));
     }
     delay_ms("MOCK_CREATE_MS", 0);
     with_state(|state| {
         // Model the real CLI: creating an existing sprite fails until it is
         // destroyed (pipeline retry must destroy --force before recreating).
-        if state.sprites.contains_key(name) {
+        if state.sprites.contains_key(&name) {
             return Err(format!("create: sprite {name} already exists"));
         }
         state.sprites.insert(
@@ -228,7 +288,8 @@ fn create(args: &[String]) -> Result<String, (i32, String)> {
                 cold_started: false,
                 exec_count: 0,
                 http_200: false,
-                url: sprite_url(name),
+                url: sprite_url(&name),
+                labels,
                 ..MockSprite::default()
             },
         );

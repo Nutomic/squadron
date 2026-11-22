@@ -44,6 +44,11 @@ pub struct CommandOutput {
     pub exit_code: i32,
 }
 
+/// Wave E: production lane sprites are labeled `squadron=prod` at create —
+/// the real CLI takes repeatable `--label key=value` flags, which the platform
+/// maps onto the `labels` object of `POST /v1/sprites`.
+pub const PROD_SPRITE_LABEL: &str = "squadron=prod";
+
 #[derive(Debug, Clone)]
 pub struct SpriteClient {
     config: SpriteConfig,
@@ -68,7 +73,13 @@ impl SpriteClient {
 
     pub async fn create(&self, name: &str) -> Result<CommandOutput, SpriteError> {
         self.run(
-            vec!["create".into(), name.into(), "--skip-console".into()],
+            vec![
+                "create".into(),
+                name.into(),
+                "--skip-console".into(),
+                "--label".into(),
+                PROD_SPRITE_LABEL.into(),
+            ],
             None,
         )
         .await

@@ -24,7 +24,7 @@ fn fixture_client() -> (SpriteClient, PathBuf, tempfile::TempDir) {
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_sprite-fixture"), &cli).unwrap();
     let config = SpriteConfig {
         cli_path: cli,
-        name_prefix: "swarm".into(),
+        name_prefix: "squadron".into(),
         org: "felix-382".into(),
         command_timeout: Duration::from_secs(5),
     };
@@ -35,7 +35,7 @@ fn fixture_client() -> (SpriteClient, PathBuf, tempfile::TempDir) {
 async fn create_exec_destroy_checkpoint_and_config_use_verified_syntax() {
     let (client, log, _dir) = fixture_client();
     let name = client.name("abc-impl-0");
-    assert_eq!(name, "swarm-abc-impl-0");
+    assert_eq!(name, "squadron-abc-impl-0");
     assert_eq!(client.config().org, "felix-382");
 
     client.create(&name).await.unwrap();
@@ -52,24 +52,24 @@ async fn create_exec_destroy_checkpoint_and_config_use_verified_syntax() {
 
     let lines = fs::read_to_string(&log).unwrap();
     assert!(
-        lines.contains("create swarm-abc-impl-0 --skip-console"),
+        lines.contains("create squadron-abc-impl-0 --skip-console --label squadron=prod"),
         "{lines}"
     );
     assert!(
-        lines.contains("checkpoint create swarm-abc-impl-0"),
+        lines.contains("checkpoint create squadron-abc-impl-0"),
         "{lines}"
     );
     assert!(
-        lines.contains("config update -s swarm-abc-impl-0 --url-auth public"),
+        lines.contains("config update -s squadron-abc-impl-0 --url-auth public"),
         "{lines}"
     );
-    assert!(lines.contains("info swarm-abc-impl-0"), "{lines}");
+    assert!(lines.contains("info squadron-abc-impl-0"), "{lines}");
     assert!(
-        lines.contains("destroy swarm-abc-impl-0 --force"),
+        lines.contains("destroy squadron-abc-impl-0 --force"),
         "{lines}"
     );
     assert!(
-        lines.contains("exec -s swarm-abc-impl-0 --no-stdin -- sh -c echo hi"),
+        lines.contains("exec -s squadron-abc-impl-0 --no-stdin -- sh -c echo hi"),
         "{lines}"
     );
 }
@@ -273,18 +273,127 @@ async fn mock_cli_create_rejects_uppercase_names() {
     let args = |v: Vec<&str>| v.into_iter().map(str::to_owned).collect::<Vec<_>>();
     let err = mock_cli::execute(&args(vec![
         "create",
-        "swarm-oHplwdUQ-impl-0",
+        "squadron-oHplwdUQ-impl-0",
         "--skip-console",
     ]))
     .unwrap_err();
     assert_eq!(err.0, 2, "uppercase name is rejected");
     assert!(err.1.contains("lowercase"), "message: {}", err.1);
 
-    let name = "swarm-ohplwdu-impl-0";
+    let name = "squadron-ohplwdu-impl-0";
     assert!(mock_cli::valid_sprite_name(name));
     mock_cli::execute(&args(vec!["create", name, "--skip-console"])).unwrap();
     let listing = mock_cli::execute(&args(vec!["list"])).unwrap();
     assert!(listing.contains(name));
+
+    std::env::remove_var("MOCK_SPRITE_STATE");
+}
+
+/// Wave E: `create` carries the production label through to the mock state —
+/// the real CLI applies repeatable `--label key=value` flags onto the
+/// sprite's `labels` object (`POST /v1/sprites`).
+#[tokio::test(flavor = "multi_thread")]
+async fn create_records_the_squadron_prod_label() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("label-state.json");
+    std::env::set_var("MOCK_SPRITE_STATE", &state);
+    let client = SpriteClient::new(SpriteConfig {
+        cli_path: PathBuf::from(env!("CARGO_BIN_EXE_mock-sprite-cli")),
+        command_timeout: Duration::from_secs(5),
+        ..SpriteConfig::default()
+    });
+
+    let name = client.name("labeled");
+    client.create(&name).await.unwrap();
+
+    let state: MockState = serde_json::from_str(&fs::read_to_string(&state).unwrap()).unwrap();
+    assert_eq!(
+        state.sprites[&name]
+            .labels
+            .get("squadron")
+            .map(String::as_str),
+        Some("prod"),
+        "production lane sprites must carry squadron=prod"
+    );
+    std::env::remove_var("MOCK_SPRITE_STATE");
+}
+
+/// Wave E: the mock mirrors the real CLI's label syntax — `--label` takes
+/// `key=value` (repeatable; later flags win per key), and a bare word without
+/// `=`, an empty key, or a missing value is a usage error (exit 2) that
+/// creates nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn mock_cli_create_validates_labels_like_the_real_cli() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("label-syntax-state.json");
+    std::env::set_var("MOCK_SPRITE_STATE", &state);
+    let args = |v: Vec<&str>| v.into_iter().map(str::to_owned).collect::<Vec<_>>();
+
+    // a bare word without '=' is rejected
+    let err = mock_cli::execute(&args(vec![
+        "create",
+        "label-syntax",
+        "--skip-console",
+        "--label",
+        "noequals",
+    ]))
+    .unwrap_err();
+    assert_eq!(err.0, 2, "malformed label is a usage error: {}", err.1);
+    assert!(err.1.contains("label"), "message: {}", err.1);
+
+    // an empty label key is rejected
+    let err = mock_cli::execute(&args(vec![
+        "create",
+        "label-syntax",
+        "--skip-console",
+        "--label",
+        "=value",
+    ]))
+    .unwrap_err();
+    assert_eq!(err.0, 2, "empty label key is a usage error: {}", err.1);
+
+    // a missing --label value is rejected
+    let err = mock_cli::execute(&args(vec![
+        "create",
+        "label-syntax",
+        "--skip-console",
+        "--label",
+    ]))
+    .unwrap_err();
+    assert_eq!(
+        err.0, 2,
+        "missing --label value is a usage error: {}",
+        err.1
+    );
+
+    // none of the rejected forms created a sprite (the command log records
+    // the attempt, but the sprite map must stay empty)
+    let parsed: MockState = serde_json::from_str(&fs::read_to_string(&state).unwrap()).unwrap();
+    assert!(
+        parsed.sprites.is_empty(),
+        "rejected creates must not leave a sprite behind: {:?}",
+        parsed.sprites
+    );
+
+    // the accepted form: repeatable --label, later flag wins per key
+    mock_cli::execute(&args(vec![
+        "create",
+        "label-syntax",
+        "--skip-console",
+        "--label",
+        "squadron=prod",
+        "--label",
+        "tier=dev",
+        "--label",
+        "tier=prod",
+    ]))
+    .unwrap();
+    let parsed: MockState = serde_json::from_str(&fs::read_to_string(&state).unwrap()).unwrap();
+    let labels = &parsed.sprites["label-syntax"].labels;
+    assert_eq!(labels.get("squadron").map(String::as_str), Some("prod"));
+    assert_eq!(labels.get("tier").map(String::as_str), Some("prod"));
 
     std::env::remove_var("MOCK_SPRITE_STATE");
 }
