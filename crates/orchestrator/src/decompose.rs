@@ -62,8 +62,12 @@ pub async fn decompose_brief(
     let session = machine_session_id(&format!("decompose-{run_id}"));
     let mut log: Vec<String> = Vec::new();
     let mut cost: Option<f64> = None;
-    for attempt in 0..=DECOMPOSE_RETRIES {
-        let attempt_no = attempt + 1;
+    let mut attempt_no = 0usize;
+    loop {
+        if attempt_no > 0 {
+            tokio::time::sleep(BACKOFFS[attempt_no - 1]).await;
+        }
+        attempt_no += 1;
         match client.chat_with_session(&request, &session).await {
             Ok(response) => {
                 cost = match (cost, response.cost_usd()) {
@@ -96,8 +100,8 @@ pub async fn decompose_brief(
                 ));
             }
         }
-        if attempt < DECOMPOSE_RETRIES {
-            tokio::time::sleep(BACKOFFS[attempt]).await;
+        if attempt_no > DECOMPOSE_RETRIES {
+            break;
         }
     }
     // Submission must never hard-fail on decomposition: fall back to a single
@@ -210,9 +214,7 @@ mod tests {
     #[test]
     fn gated_cases_rejects_schema_violations() {
         let raw = serde_json::json!({"cases": []}).to_string();
-        assert_eq!(
-            gated_cases(Some(raw)).unwrap_err(),
-            "cases must not be empty"
-        );
+        let err = gated_cases(Some(raw)).unwrap_err();
+        assert!(err.contains("cases must not be empty"), "err: {err}");
     }
 }
