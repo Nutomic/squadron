@@ -5,8 +5,8 @@ use std::time::Duration;
 use base64::Engine as _;
 use llm_gateway::{MachineLlmClient, IMPLEMENTER_MODEL, VALIDATOR_MODEL};
 use prompts::{
-    gate_and_scan_injections, gate_with_options, parse, BriefFulfillment, BriefFulfillmentState,
-    DiversityOutput, GateOptions, ImplementerOutput, JudgeOutput, Role, ValidatorOutput, Verdict,
+    gate_and_scan_injections, parse, BriefFulfillment, BriefFulfillmentState, GateOptions,
+    ImplementerOutput, JudgeOutput, Role, ValidatorOutput, Verdict,
 };
 use serde_json::Value;
 use sprites_client::{ExecOptions, SpriteClient};
@@ -14,6 +14,7 @@ use store::{now_ms, Run, Store};
 
 use crate::artifacts;
 use crate::config::{ms_after, PipelineConfig};
+use crate::decompose::{self, MAX_DECOMPOSE_CASES};
 use crate::evidence;
 use crate::harness::{self, HarnessCache};
 use crate::judge;
@@ -66,17 +67,20 @@ impl Default for HarnessMode {
 #[derive(Debug, Clone)]
 pub struct RunRequest {
     pub brief: String,
+    /// DEPRECATED (Wave B): the brief-decomposition output decides the lane
+    /// count; this field is only kept for the API validation contract and
+    /// drives the deterministic no-LLM template fallback. Decomposition output
+    /// always wins when a machine LLM is available.
     pub n_lanes: usize,
     pub harness: HarnessMode,
 }
 
 pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, String> {
-    let n = req.n_lanes;
-    PipelineConfig::validate_n(n)?;
+    PipelineConfig::validate_n(req.n_lanes)?;
     let created = now_ms();
     let run = ctx
         .store
-        .create_run(&req.brief, n as i64, created)
+        .create_run(&req.brief, req.n_lanes as i64, created)
         .await
         .map_err(|e| e.to_string())?;
     if let Some(reg) = &ctx.hub_registry {
@@ -84,14 +88,41 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
         hubs.insert(run.id.clone(), ctx.sse.clone());
     }
 
-    // diversity
-    let (variants, diversity_cost) = generate_variants(&ctx, &run.id, &req.brief, n).await;
-    for (idx, v) in variants.iter().enumerate() {
-        let vjson = serde_json::to_string(v).unwrap_or_else(|_| "{}".to_owned());
+    // Wave B: brief decomposition decides the cases (and so the lane count).
+    let (cases, decompose_cost, decompose_log, truncated_from) =
+        generate_cases(&ctx, &run.id, &req.brief, req.n_lanes).await;
+    ctx.store
+        .set_run_n_lanes(&run.id, cases.len() as i64)
+        .await
+        .map_err(|e| e.to_string())?;
+    for (idx, case) in cases.iter().enumerate() {
+        let vjson = serde_json::to_string(case).unwrap_or_else(|_| "{}".to_owned());
         ctx.store
             .insert_lane(&run.id, idx as i64, &vjson)
             .await
             .map_err(|e| e.to_string())?;
+    }
+    // Decomposition diagnostics land on lane 0's event log: no lanes existed
+    // while the attempts ran, so retry/fallback notes are appended here.
+    for line in &decompose_log {
+        let _ = ctx
+            .store
+            .append_lane_event(&run.id, 0, now_ms(), "log", line)
+            .await;
+    }
+    if let Some(original) = truncated_from {
+        let _ = ctx
+            .store
+            .append_lane_event(
+                &run.id,
+                0,
+                now_ms(),
+                "log",
+                &format!(
+                    "decomposition truncated from {original} to {MAX_DECOMPOSE_CASES} cases (hard cap)"
+                ),
+            )
+            .await;
     }
     ctx.store
         .update_run_status(&run.id, "running")
@@ -101,13 +132,14 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
 
     let run_id = run.id.clone();
     let ctx_bg = ctx.clone();
+    let lane_count = cases.len();
     tokio::spawn(async move {
         if let Err(e) =
-            execute_run(ctx_bg.clone(), run_id.clone(), req.harness, diversity_cost).await
+            execute_run(ctx_bg.clone(), run_id.clone(), req.harness, decompose_cost).await
         {
             let _ = ctx_bg.store.update_run_status(&run_id, "failed").await;
             let ts = now_ms();
-            for i in 0..n as i64 {
+            for i in 0..lane_count as i64 {
                 let _ = ctx_bg
                     .store
                     .append_lane_event(&run_id, i, ts, "log", &format!("run_failed: {e}"))
@@ -125,71 +157,36 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
         .ok_or_else(|| "run missing".to_owned())
 }
 
-/// Diversity variant generation. The cost is Option: None = the spend is
-/// unknown (machine LLM answered without usage data) and must never be
-/// rendered as $0.00 (R3-A #5). The deterministic fallback and a failed
-/// request genuinely cost nothing.
-async fn generate_variants(
+/// Wave B: produce the per-lane case values. With a machine LLM the brief
+/// decomposition decides the cases; without one the deterministic template
+/// fallback keeps the pre-decomposition behavior (requested lane count).
+async fn generate_cases(
     ctx: &PipelineCtx,
     run_id: &str,
     brief: &str,
-    n: usize,
-) -> (Vec<Value>, Option<f64>) {
-    let fallback = || {
-        prompts::template_variants(n)
+    n_requested: usize,
+) -> (Vec<Value>, Option<f64>, Vec<String>, Option<usize>) {
+    let Some(llm) = &ctx.machine_llm else {
+        let cases = prompts::template_variants(n_requested)
             .into_iter()
             .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
-            .collect::<Vec<Value>>()
+            .collect::<Vec<Value>>();
+        return (cases, Some(0.0), Vec::new(), None);
     };
-    // try machine LLM diversity generator if available
-    if let Some(llm) = &ctx.machine_llm {
-        let prompt = prompts::diversity_prompt(brief, n);
-        let request = llm_gateway::ChatRequest::new(llm_gateway::DIVERSITY_MODEL)
-            .system(&prompt.system)
-            .user(&prompt.user);
-        // R2 finding 3: a diversity call costs real allowance even when its
-        // output is rejected; count it against the run either way.
-        // F12: stable per-run x-opencode-session (opencode-go endpoint).
-        match llm
-            .chat_with_session(&request, &llm_gateway::machine_session_id(run_id))
-            .await
-        {
-            Ok(resp) => {
-                let cost = resp.cost_usd();
-                if let Some(text) = resp.text() {
-                    let opts = GateOptions {
-                        expected_variants: Some(n),
-                        max_verdict_sentences: None,
-                        expected_lane_indices: None,
-                    };
-                    if gate_with_options(Role::Diversity, &text, &opts).is_ok() {
-                        if let Ok(parsed) = parse::<DiversityOutput>(Role::Diversity, &text) {
-                            return (
-                                parsed
-                                    .variants
-                                    .into_iter()
-                                    .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
-                                    .collect(),
-                                cost,
-                            );
-                        }
-                    }
-                }
-                (fallback(), cost)
-            }
-            Err(_) => (fallback(), Some(0.0)),
-        }
-    } else {
-        // fallback
-        (fallback(), Some(0.0))
-    }
+    let outcome = decompose::decompose_brief(llm, run_id, brief).await;
+    (
+        outcome.cases,
+        outcome.cost,
+        outcome.log,
+        outcome.truncated_from,
+    )
 }
 
 async fn execute_run(
     ctx: Arc<PipelineCtx>,
     run_id: String,
     harness: HarnessMode,
-    diversity_cost: Option<f64>,
+    decompose_cost: Option<f64>,
 ) -> Result<(), String> {
     let lanes = ctx
         .store
@@ -225,7 +222,7 @@ async fn execute_run(
         .cloned()
         .collect();
     if validated.len() >= 2 {
-        run_judge_phase(&ctx, &run_id, &validated, diversity_cost).await?;
+        run_judge_phase(&ctx, &run_id, &validated, decompose_cost).await?;
     } else {
         // mark run failed if not enough
         let _ = ctx.store.update_run_status(&run_id, "failed").await;
@@ -986,7 +983,13 @@ async fn run_implementer(
         HarnessMode::Real { .. } => {
             let variant: Value = serde_json::from_str(variant_json)
                 .map_err(|e| format!("implementer variant: {e}"))?;
-            let prompt = prompts::implementer_prompt(&variant);
+            // Wave B: decomposition lanes carry a full self-contained
+            // `impl_prompt`; template-fallback lanes keep the classic variant
+            // shape. Both paths get the standard site constraints.
+            let prompt = match variant.get("impl_prompt").and_then(Value::as_str) {
+                Some(case_impl_prompt) => prompts::implementer_case_prompt(case_impl_prompt),
+                None => prompts::implementer_prompt(&variant),
+            };
             let recipe =
                 llm_gateway::SpriteRecipe::for_model(format!("{run_id}-{idx}"), model.to_owned());
             let connector_env = (
@@ -1375,7 +1378,7 @@ async fn run_judge_phase(
     ctx: &PipelineCtx,
     run_id: &str,
     validated: &[store::Lane],
-    diversity_cost: Option<f64>,
+    decompose_cost: Option<f64>,
 ) -> Result<(), String> {
     ensure_judge_renders(ctx, run_id, validated).await;
     // Wave A: the judge sees the user's ORIGINAL brief (from the run row) so
@@ -1441,12 +1444,11 @@ async fn run_judge_phase(
         .list_lanes(run_id)
         .await
         .map_err(|e| e.to_string())?;
-    // R2 finding 3: total run cost = per-lane costs + judge cost + diversity
-    // call cost. R3-A #5: unknown components are skipped, never zero-filled;
-    // with nothing known the total stays NULL ("—").
+    // R2 finding 3: total run cost = per-lane costs + judge cost +
+    // decomposition call cost (Wave B; each retry attempt's spend included).
     let mut known: Vec<f64> = lanes.iter().filter_map(|l| l.cost_usd).collect();
     known.extend(judge_cost);
-    known.extend(diversity_cost);
+    known.extend(decompose_cost);
     let total_cost = if known.is_empty() {
         None
     } else {

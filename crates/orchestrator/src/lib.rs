@@ -1,5 +1,6 @@
 pub mod artifacts;
 pub mod config;
+pub mod decompose;
 pub mod evidence;
 pub mod harness;
 pub mod judge;
@@ -12,6 +13,7 @@ pub mod snapshot;
 pub mod sse;
 
 pub use config::PipelineConfig;
+pub use decompose::{decompose_brief, DecomposeOutcome, MAX_DECOMPOSE_CASES};
 pub use pipeline::{start_run, HarnessMode, PipelineCtx, RunRequest};
 pub use screenshot::{render_dest, HubRegistry, ScreenshotQueue};
 pub use slots::SlotSemaphore;

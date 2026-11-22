@@ -238,3 +238,16 @@ async fn judge_brief_fulfillment_round_trips() {
         None
     );
 }
+
+/// Wave B: decomposition decides the lane count after run creation;
+/// set_run_n_lanes persists it and rejects unknown ids.
+#[tokio::test]
+async fn set_run_n_lanes_updates_the_run_row() {
+    let store = Store::connect_in_memory().await.unwrap();
+    store.migrate().await.unwrap();
+    let run = store.create_run("brief", 3, 100).await.unwrap();
+    store.set_run_n_lanes(&run.id, 6).await.unwrap();
+    let updated = store.get_run(&run.id).await.unwrap().unwrap();
+    assert_eq!(updated.n_lanes, 6);
+    assert!(store.set_run_n_lanes("missing-run", 6).await.is_err());
+}
