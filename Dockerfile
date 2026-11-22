@@ -39,17 +39,17 @@ VOLUME /data
 EXPOSE 3000
 ENTRYPOINT ["/usr/bin/tini", "--"]
 # Boot step (audit #5): the swarm orchestrator shells out to `sprite`, so auth
-# must be provisioned at boot from the SPRITE_TOKEN Fly secret — never
-# hardcoded here. Fail fast with a clear log if the secret is missing or the
-# token is rejected; `sprite auth setup` is the documented non-interactive
-# subcommand (see `sprite auth --help`), and `sprite list` is a real call that
-# proves the token works before the orchestrator starts.
+# is provisioned at boot from the SPRITE_TOKEN Fly secret — never hardcoded
+# here. With the secret set, `sprite auth setup` + a real `sprite list` call
+# prove the token works before the orchestrator starts. Without the secret,
+# the machine still boots and serves the dashboard (runs fail per-lane with a
+# clear error until the secret is set — setting it restarts the machine).
 CMD ["/bin/sh", "-ec", "\
   if [ -z \"${SPRITE_TOKEN:-}\" ]; then \
-    echo 'FATAL: SPRITE_TOKEN is not set. Run: fly secrets set SPRITE_TOKEN=<org-slug/org-id/token-id/token-value> (generate via sprite org --help)'; \
-    exit 1; \
+    echo 'WARN: SPRITE_TOKEN is not set — dashboard will serve, but lane runs cannot spawn sprites. Run: fly secrets set SPRITE_TOKEN=<org-slug/org-id/token-id/token-value> (generate via the sprites.dev console)'; \
+  else \
+    sprite auth setup --token \"$SPRITE_TOKEN\" || { echo 'FATAL: sprite auth setup rejected the SPRITE_TOKEN secret'; exit 1; }; \
+    sprite list >/dev/null || { echo 'FATAL: sprite list failed after auth setup — token may be invalid or org unreachable'; exit 1; }; \
+    echo 'sprite auth OK'; \
   fi; \
-  sprite auth setup --token \"$SPRITE_TOKEN\" || { echo 'FATAL: sprite auth setup rejected the SPRITE_TOKEN secret'; exit 1; }; \
-  sprite list >/dev/null || { echo 'FATAL: sprite list failed after auth setup — token may be invalid or org unreachable'; exit 1; }; \
-  echo 'sprite auth OK'; \
   exec /usr/local/bin/swarm"]
