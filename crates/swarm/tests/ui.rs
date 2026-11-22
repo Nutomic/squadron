@@ -939,7 +939,10 @@ async fn index_sample_chips_use_complete_short_labels() {
     assert!(html.contains("1996 Netscape homepage"));
     assert!(html.contains("VM product marketing site"));
     assert!(html.contains("90s arcade clone"));
-    assert!(!html.contains("&gt;..."), "chips must not be ellipsis-truncated");
+    assert!(
+        !html.contains("&gt;..."),
+        "chips must not be ellipsis-truncated"
+    );
 }
 
 #[tokio::test]

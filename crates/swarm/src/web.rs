@@ -31,7 +31,11 @@ const SAMPLE_BRIEFS: [&str; 3] = [
 ];
 
 /// Review F15 #3: complete short chip labels (never truncation ellipses).
-const SAMPLE_SHORTS: [&str; 3] = ["1996 Netscape homepage", "VM product marketing site", "90s arcade clone"];
+const SAMPLE_SHORTS: [&str; 3] = [
+    "1996 Netscape homepage",
+    "VM product marketing site",
+    "90s arcade clone",
+];
 
 pub fn router(state: SharedState) -> Router {
     Router::new()
@@ -395,7 +399,8 @@ async fn robots_txt(State(state): State<SharedState>) -> Response {
         .into_response()
 }
 
-async fn serve_static(State(state): State<SharedState>, Path(path): Path<String>) -> Response {    if path.is_empty()
+async fn serve_static(State(state): State<SharedState>, Path(path): Path<String>) -> Response {
+    if path.is_empty()
         || path
             .split('/')
             .any(|seg| seg.is_empty() || seg == ".." || seg == ".")
