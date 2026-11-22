@@ -1521,13 +1521,15 @@ fn tail_4k(s: &str) -> String {
     tail_chars(s, 4096)
 }
 
-/// Failure round (harness output capture): the LAST ~2KB of the captured
+/// Failure round (harness output capture): the LAST ~10KB of the captured
 /// harness stdout goes into lane_events as kind="log", on success AND failure,
 /// so a 0-byte capture is visible in the tail evidence instead of leaving an
-/// undiagnosable "error said nothing else". Control characters are stripped
-/// with the shared sanitizer; the payload is untrusted agent output.
+/// undiagnosable "error said nothing else". F13: 10KB (up from 2KB) so a full
+/// agent output that tripped the injection scan is diagnosable from the tail
+/// alone. Control characters are stripped with the shared sanitizer; the
+/// payload is untrusted agent output.
 fn harness_tail_log(run: &harness::HarnessRun) -> String {
-    let tail = harness::sanitize_excerpt(&tail_chars(&run.output, 2048), 2048);
+    let tail = harness::sanitize_excerpt(&tail_chars(&run.output, 10_240), 10_240);
     format!(
         "harness[{}] stdout ({} bytes) tail: {tail}",
         run.choice.as_str(),
@@ -1628,16 +1630,21 @@ mod tests {
         assert!(msg.contains("ok  done"), "msg: {msg}");
         assert!(msg.contains("8 bytes"), "msg: {msg}");
 
-        // long outputs are capped at the last ~2KB
-        let long = "x".repeat(10_000);
+        // long outputs are capped at the last ~10KB (F13: raised from ~2KB so
+        // gate failures like an injection-scan marker are fully diagnosable)
+        let long = "x".repeat(20_000);
         let run = harness::HarnessRun {
             choice: harness::HarnessChoice::Claude,
             output: long,
             cost_usd: None,
         };
         let msg = harness_tail_log(&run);
-        assert!(msg.contains("10000 bytes"), "msg: {msg}");
-        assert!(msg.len() < 2300, "tail must stay ~2KB: {}", msg.len());
+        assert!(msg.contains("20000 bytes"), "msg: {msg}");
+        assert!(
+            msg.len() > 10_000 && msg.len() < 10_400,
+            "tail must stay ~10KB: {}",
+            msg.len()
+        );
     }
 
     /// R2-2: harness-attributable failures escalate on retry; lane-level
