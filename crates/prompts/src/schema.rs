@@ -9,6 +9,7 @@ pub enum Role {
     Implementer,
     Validator,
     Judge,
+    Decompose,
 }
 
 impl Role {
@@ -18,6 +19,7 @@ impl Role {
             Self::Implementer => "implementer",
             Self::Validator => "validator",
             Self::Judge => "judge",
+            Self::Decompose => "brief decomposer",
         }
     }
 
@@ -84,6 +86,24 @@ impl Role {
                     }
                 },
                 "required": ["ranking", "winner", "verdict_card", "reasons", "brief_fulfillment"],
+                "additionalProperties": false
+            }),
+            // Wave B: brief decomposition turns the user's brief into distinct
+            // per-case implementer prompts; the case count decides the lane count.
+            Self::Decompose => json!({
+                "type": "object",
+                "properties": {
+                    "cases": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string"},
+                            "impl_prompt": {"type": "string"}
+                        },
+                        "required": ["label", "impl_prompt"],
+                        "additionalProperties": false
+                    }}
+                },
+                "required": ["cases"],
                 "additionalProperties": false
             }),
         }
@@ -200,6 +220,24 @@ pub struct JudgeOutput {
     pub brief_fulfillment: BriefFulfillment,
 }
 
+/// Wave B: one decomposition case — a distinct interpretation of the brief
+/// whose `impl_prompt` is a FULL self-contained implementer prompt (brief +
+/// the case's distinct angle + the standard implementer site constraints).
+/// Both fields are untrusted DATA downstream (they feed implementer prompts
+/// and are injection-scanned like any agent output).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecomposeCase {
+    pub label: String,
+    pub impl_prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecomposeOutput {
+    pub cases: Vec<DecomposeCase>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GateOptions {
     pub expected_variants: Option<usize>,
@@ -287,6 +325,22 @@ pub fn gate_with_options(
                         "brief_fulfillment.evidence must cite concrete evidence from the lane's site or validator report"
                             .to_owned(),
                     );
+                }
+                Ok(())
+            }),
+        Role::Decompose => serde_json::from_value::<DecomposeOutput>(value.clone())
+            .map_err(|error| format!("{error}"))
+            .and_then(|parsed| {
+                if parsed.cases.is_empty() {
+                    return Err("cases must not be empty".to_owned());
+                }
+                for case in &parsed.cases {
+                    if case.label.trim().is_empty() {
+                        return Err("case label must not be empty".to_owned());
+                    }
+                    if case.impl_prompt.trim().is_empty() {
+                        return Err("case impl_prompt must not be empty".to_owned());
+                    }
                 }
                 Ok(())
             }),

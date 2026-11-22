@@ -6,8 +6,8 @@
 //! and the judge stays glm-5.3.
 
 use llm_gateway::{
-    lane_model, SpriteRecipe, DIVERSITY_MODEL, IMPLEMENTER_MODEL, JUDGE_MODEL, LANE_MODELS,
-    VALIDATOR_MODEL,
+    lane_model, SpriteRecipe, DECOMPOSE_MODEL, DIVERSITY_MODEL, IMPLEMENTER_MODEL, JUDGE_MODEL,
+    LANE_MODELS, VALIDATOR_MODEL,
 };
 
 #[test]
@@ -24,6 +24,7 @@ fn pinned_models_have_their_contracted_values() {
     assert_eq!(VALIDATOR_MODEL, "deepseek-v4.1-flash");
     assert_eq!(JUDGE_MODEL, "glm-5.3");
     assert_eq!(DIVERSITY_MODEL, "glm-5.3");
+    assert_eq!(DECOMPOSE_MODEL, "glm-5.3");
 }
 
 #[test]

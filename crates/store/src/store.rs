@@ -155,6 +155,19 @@ impl Store {
         ensure(result.rows_affected(), id)
     }
 
+    /// Wave B: brief decomposition decides the real lane count after run
+    /// creation; persist it so the run row reflects the lanes that actually
+    /// exist. Runtime (macro-free) query on purpose: this trivial UPDATE
+    /// needs no entry in the checked-in sqlx offline cache.
+    pub async fn set_run_n_lanes(&self, id: &str, n_lanes: i64) -> Result<(), StoreError> {
+        let result = sqlx::query("UPDATE runs SET n_lanes = ? WHERE id = ?")
+            .bind(n_lanes)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        ensure(result.rows_affected(), id)
+    }
+
     pub async fn finish_run(
         &self,
         id: &str,

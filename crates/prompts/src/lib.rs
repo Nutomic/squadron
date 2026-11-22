@@ -8,9 +8,13 @@ pub use preamble::{
     data_block, data_rule, neutralize_data_closers, preamble, DATA_RULE, PREAMBLE_TEMPLATE,
     PROSE_DATA_RULE, PROSE_REPORT_RULE,
 };
-pub use roles::{diversity_prompt, implementer_prompt, judge_prompt, validator_prompt, Prompt};
+pub use roles::{
+    decompose_prompt, diversity_prompt, implementer_case_prompt, implementer_prompt, judge_prompt,
+    validator_prompt, Prompt, IMPLEMENTER_SITE_CONSTRAINTS,
+};
 pub use schema::{
     gate, gate_and_scan_injections, gate_with_options, injection_markers, parse, sentence_count,
-    BriefFulfillment, BriefFulfillmentState, DiversityOutput, GateOptions, ImplementerOutput,
-    JudgeOutput, LaneJudgeReport, Role, SchemaError, TextOrList, ValidatorOutput, Variant, Verdict,
+    BriefFulfillment, BriefFulfillmentState, DecomposeCase, DecomposeOutput, DiversityOutput,
+    GateOptions, ImplementerOutput, JudgeOutput, LaneJudgeReport, Role, SchemaError, TextOrList,
+    ValidatorOutput, Variant, Verdict,
 };

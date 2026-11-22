@@ -30,11 +30,47 @@ pub fn diversity_prompt(brief: &str, n: usize) -> Prompt {
     )
 }
 
+/// The standard implementer site constraints, shared by the variant-driven
+/// implementer prompt and the Wave B decomposition case prompt so both paths
+/// always carry them (self-contained work, port 8080, public-URL self
+/// verification, no external services, detached server).
+pub const IMPLEMENTER_SITE_CONSTRAINTS: &str = "BIND REQUIREMENT: the server MUST listen on ALL interfaces — pass `--host 0.0.0.0` (or the stack's equivalent: `HOST=0.0.0.0`, `-o 0.0.0.0`, `server.host = '0.0.0.0'`). NEVER bind to 127.0.0.1/localhost: the sprite's public HTTPS URL routes port 8080 from outside, and a loopback bind is unreachable there. Your own verification may still curl 127.0.0.1:8080. HARD REQUIREMENT: start the site DETACHED so it survives your session end, e.g. `nohup <run_command> --host 0.0.0.0 > server.log 2>&1 &` — a server you only run in the foreground dies when the session ends. Verify YOURSELF that `curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8080` returns 200, and only then declare done:true. PUBLIC-URL CHECK: a local 200 is not enough. Your sprite name is in your environment/task; its public URL follows the pattern `https://<sprite-name>-b5t5x.sprites.app/` (the suffix is platform-assigned — check your sprite info if unsure). You MUST also curl that public URL and require HTTP 200 there. If the public URL 403s while 127.0.0.1:8080 works, your dev server is blocking non-local Host headers (vite and similar dev servers answer \"Blocked request. This host is not allowed\" regardless of bind address) — fix by serving the built output statically (`python3 -m http.server 8080` from the build dir) or allowing all hosts (`vite preview --allowedHosts true` / `allowedHosts: true` in the vite config, or your server's equivalent). done:true only when the PUBLIC URL answers 200. The detached server must still be serving after your session ends.";
+
 pub fn implementer_prompt(variant: &Value) -> Prompt {
     build(
         Role::Implementer,
-        "Build the web project described by the variant. Work in the sprite workdir, serve on port 8080, use no external services and no secrets. BIND REQUIREMENT: the server MUST listen on ALL interfaces — pass `--host 0.0.0.0` (or the stack's equivalent: `HOST=0.0.0.0`, `-o 0.0.0.0`, `server.host = '0.0.0.0'`). NEVER bind to 127.0.0.1/localhost: the sprite's public HTTPS URL routes port 8080 from outside, and a loopback bind is unreachable there. Your own verification may still curl 127.0.0.1:8080. HARD REQUIREMENT: start the site DETACHED so it survives your session end, e.g. `nohup <run_command> --host 0.0.0.0 > server.log 2>&1 &` — a server you only run in the foreground dies when the session ends. Verify YOURSELF that `curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8080` returns 200, and only then declare done:true. PUBLIC-URL CHECK: a local 200 is not enough. Your sprite name is in your environment/task; its public URL follows the pattern `https://<sprite-name>-b5t5x.sprites.app/` (the suffix is platform-assigned — check your sprite info if unsure). You MUST also curl that public URL and require HTTP 200 there. If the public URL 403s while 127.0.0.1:8080 works, your dev server is blocking non-local Host headers (vite and similar dev servers answer \"Blocked request. This host is not allowed\" regardless of bind address) — fix by serving the built output statically (`python3 -m http.server 8080` from the build dir) or allowing all hosts (`vite preview --allowedHosts true` / `allowedHosts: true` in the vite config, or your server's equivalent). done:true only when the PUBLIC URL answers 200. The detached server must still be serving after your session ends.",
+        &format!(
+            "Build the web project described by the variant. Work in the sprite workdir, serve on port 8080, use no external services and no secrets. {IMPLEMENTER_SITE_CONSTRAINTS}"
+        ),
         data_block("variant", &serde_json::to_string_pretty(variant).unwrap_or_default()),
+    )
+}
+
+/// Wave B: decomposition lanes carry a full self-contained case prompt (the
+/// brief + the case's distinct angle). The system prompt still carries the
+/// standard site constraints and the report-schema requirement so even a thin
+/// case prompt (or the raw-brief fallback lane) cannot drop them.
+pub fn implementer_case_prompt(case_impl_prompt: &str) -> Prompt {
+    let schema = serde_json::to_string_pretty(&Role::Implementer.schema()).unwrap_or_default();
+    Prompt {
+        system: format!(
+            "{}\n{}\nOutput JSON matching this schema exactly, with no other text:\n{schema}\n",
+            preamble(Role::Implementer.as_str()),
+            IMPLEMENTER_SITE_CONSTRAINTS
+        ),
+        user: case_impl_prompt.to_owned(),
+    }
+}
+
+/// Wave B: brief decomposition. The LLM decides the lane count with the rules
+/// below (or-splitting, explicit numbers, the 6-case default); the pipeline
+/// enforces the 8-case hard cap authoritatively in Rust and treats the output
+/// as untrusted DATA (schema gate + injection scan).
+pub fn decompose_prompt(brief: &str) -> Prompt {
+    build(
+        Role::Decompose,
+        "Decompose the brief into DISTINCT per-case implementer prompts. Decide the number of cases with these rules, in order:\n1. OR-SPLITTING: independent alternatives joined by \"or\" multiply — take the cartesian product of the independent alternative groups (\"green or red product website in framework A or B\" means 2 colors x 2 frameworks = 4 cases).\n2. EXPLICIT NUMBER: an explicit count in the brief (\"5 different colors\") means exactly that many cases.\n3. DEFAULT 6: with no \"or\" alternatives and no explicit number, produce exactly 6 cases — 6 fills the 3-column gallery layout (2 rows of 3).\nHARD CAP 8: never produce more than 8 cases; if the rules above yield more than 8, merge the least distinct cases until at most 8 remain.\nThe cases must be mutually distinct interpretations. Each case's impl_prompt must be a FULL, self-contained implementer prompt: it repeats the user's brief, adds that case's distinct angle, and includes the standard implementer constraints: work self-contained in one directory; serve on port 8080 bound to 0.0.0.0; verify yourself that the site's PUBLIC URL answers HTTP 200, not just localhost; use no external CDNs or network services; finish within a 1 hour deadline. Output JSON only.",
+        data_block("brief", brief),
     )
 }
 

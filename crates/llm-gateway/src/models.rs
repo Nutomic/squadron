@@ -27,6 +27,11 @@ pub const JUDGE_MODEL: &str = "glm-5.3";
 /// Machine-side diversity generator (prompt-level diversity stays).
 pub const DIVERSITY_MODEL: &str = "glm-5.3";
 
+/// Wave B: machine-side brief decomposition (lane count + per-case implementer
+/// prompts). Full-strength glm-5.3 at low reasoning effort, same tier as the
+/// judge/diversity machine calls.
+pub const DECOMPOSE_MODEL: &str = "glm-5.3";
+
 /// Alternation removed: every implementer lane runs the pinned model. Kept as
 /// a one-element list so `lane_model` call sites stay valid.
 pub const LANE_MODELS: [&str; 1] = [IMPLEMENTER_MODEL];
