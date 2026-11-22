@@ -7,6 +7,7 @@ use prompts::{gate_with_options, parse, GateOptions, JudgeOutput, Role, Validato
 
 pub async fn run_judge(
     client: &MachineLlmClient,
+    session: &str,
     reports: &[LaneJudgeReport],
     extracts: &[String],
     images: &[Option<String>],
@@ -31,7 +32,7 @@ pub async fn run_judge(
     // an unresponsive judge cannot stall a run forever.
     timeout(
         deadline,
-        judge_once(client, reports, extracts, images, &opts),
+        judge_once(client, session, reports, extracts, images, &opts),
     )
     .await
     .map_err(|_| "judge: deadline exceeded".to_owned())?
@@ -39,6 +40,7 @@ pub async fn run_judge(
 
 async fn judge_once(
     client: &MachineLlmClient,
+    session: &str,
     reports: &[LaneJudgeReport],
     extracts: &[String],
     images: &[Option<String>],
@@ -72,7 +74,12 @@ async fn judge_once(
             .user(&prompt.user)
             .temperature(0.2)
     };
-    let response = client.chat(&request).await.map_err(|e| e.to_string())?;
+    // F12: the machine-side request carries a stable x-opencode-session id
+    // (opencode-go endpoint requires it; per-run for prompt caching).
+    let response = client
+        .chat_with_session(&request, session)
+        .await
+        .map_err(|e| e.to_string())?;
     let text = response
         .text()
         .ok_or_else(|| "judge: empty response".to_owned())?;

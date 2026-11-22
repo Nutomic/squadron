@@ -6,7 +6,7 @@ pub mod transport;
 pub mod types;
 
 pub use error::LlmError;
-pub use machine::{MachineLlmClient, REASONING_EFFORT_ENV};
+pub use machine::{machine_session_id, MachineLlmClient, REASONING_EFFORT_ENV};
 pub use sprites_gateway::{
     gateway_endpoint, lane_model, SpriteRecipe, DIVERSITY_MODEL, GATEWAY_CONNECTOR_ID, JUDGE_MODEL,
     LANE_MODELS, SESSION_HEADER,

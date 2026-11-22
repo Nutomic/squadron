@@ -85,7 +85,7 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
     }
 
     // diversity
-    let (variants, diversity_cost) = generate_variants(&ctx, &req.brief, n).await;
+    let (variants, diversity_cost) = generate_variants(&ctx, &run.id, &req.brief, n).await;
     for (idx, v) in variants.iter().enumerate() {
         let vjson = serde_json::to_string(v).unwrap_or_else(|_| "{}".to_owned());
         ctx.store
@@ -129,7 +129,12 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
 /// unknown (machine LLM answered without usage data) and must never be
 /// rendered as $0.00 (R3-A #5). The deterministic fallback and a failed
 /// request genuinely cost nothing.
-async fn generate_variants(ctx: &PipelineCtx, brief: &str, n: usize) -> (Vec<Value>, Option<f64>) {
+async fn generate_variants(
+    ctx: &PipelineCtx,
+    run_id: &str,
+    brief: &str,
+    n: usize,
+) -> (Vec<Value>, Option<f64>) {
     let fallback = || {
         prompts::template_variants(n)
             .into_iter()
@@ -144,7 +149,11 @@ async fn generate_variants(ctx: &PipelineCtx, brief: &str, n: usize) -> (Vec<Val
             .user(&prompt.user);
         // R2 finding 3: a diversity call costs real allowance even when its
         // output is rejected; count it against the run either way.
-        match llm.chat(&request).await {
+        // F12: stable per-run x-opencode-session (opencode-go endpoint).
+        match llm
+            .chat_with_session(&request, &llm_gateway::machine_session_id(run_id))
+            .await
+        {
             Ok(resp) => {
                 let cost = resp.cost_usd();
                 if let Some(text) = resp.text() {
@@ -1350,7 +1359,15 @@ async fn run_judge_phase(
     }
     let (verdict, judge_cost) = if let Some(llm) = &ctx.machine_llm {
         let images = collect_lane_screenshot_images(&ctx.config.data_dir, run_id, validated).await;
-        judge::run_judge(llm, &reports, &extracts, &images, ctx.config.judge_deadline).await?
+        judge::run_judge(
+            llm,
+            &llm_gateway::machine_session_id(run_id),
+            &reports,
+            &extracts,
+            &images,
+            ctx.config.judge_deadline,
+        )
+        .await?
     } else {
         // fallback deterministic judge (should not happen in proper runs; but keep safe)
         let winner = validated.first().map(|l| l.idx as usize).unwrap_or(0);

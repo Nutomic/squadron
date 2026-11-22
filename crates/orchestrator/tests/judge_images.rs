@@ -82,6 +82,7 @@ async fn judge_sends_screenshot_image_parts_when_available() {
 
     let (out, _cost) = judge::run_judge(
         &client,
+        "squadron-test-run",
         &[report],
         &["<extract>".to_owned()],
         &[Some(data_url.clone())],
@@ -129,6 +130,7 @@ async fn judge_without_images_uses_text_only_request() {
     );
     let (out, _cost) = judge::run_judge(
         &client,
+        "squadron-test-run",
         &[report],
         &["<extract>".to_owned()],
         &[None],
@@ -190,6 +192,7 @@ async fn judge_winner_outside_validated_lanes_is_rejected() {
 
     let err = judge::run_judge(
         &client,
+        "squadron-test-run",
         &reports,
         &extracts,
         &images,
@@ -241,6 +244,7 @@ async fn judge_labels_each_image_with_its_lane_idx() {
 
     let (out, _cost) = judge::run_judge(
         &client,
+        "squadron-test-run",
         &[report(0), report(1)],
         &["<extract 0>".to_owned(), "<extract 1>".to_owned()],
         &[None, Some(data_url.clone())],

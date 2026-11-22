@@ -10,8 +10,9 @@ use axum::routing::post;
 use axum::Router;
 use llm_gateway::sprites_gateway::{gateway_endpoint, GATEWAY_CONNECTOR_ID, SESSION_HEADER};
 use llm_gateway::{
-    lane_model, parse_allowance, ChatMessage, ChatRequest, ContentPart, LlmError, MachineLlmClient,
-    MessageContent, SpriteRecipe, DIVERSITY_MODEL, JUDGE_MODEL, USER_AGENT,
+    lane_model, machine_session_id, parse_allowance, ChatMessage, ChatRequest, ContentPart,
+    LlmError, MachineLlmClient, MessageContent, SpriteRecipe, DIVERSITY_MODEL, JUDGE_MODEL,
+    USER_AGENT,
 };
 use serde_json::{json, Value};
 
@@ -111,6 +112,81 @@ async fn machine_client_sends_key_and_user_agent_and_parses_cost() {
     assert_eq!(body["messages"][1]["content"], json!("user prompt"));
     assert_eq!(body["reasoning_effort"], json!("low"));
     assert_eq!(capture.attempts(), 1);
+}
+
+#[tokio::test]
+async fn machine_client_sends_stable_session_header() {
+    // F12: the opencode-go endpoint 400s with MissingSessionID without
+    // x-opencode-session; machine-side calls (judge + diversity) must carry a
+    // stable per-run id (machine_session_id(run_id)) on every request.
+    let capture = Capture::default();
+    let seen = capture.clone();
+    let router = Router::new().route(
+        "/chat/completions",
+        post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let seen = seen.clone();
+            async move {
+                seen.record(&headers, &body);
+                Json(response("ok", json!(0.0)))
+            }
+        }),
+    );
+    let port = serve(router).await;
+    let client = MachineLlmClient::new(
+        "test-key",
+        format!("http://127.0.0.1:{port}/chat/completions"),
+    );
+    let session = machine_session_id("lqwrB_5ETGGs3LyoiVQHWA");
+    // Per-call session (judge path).
+    client
+        .chat_with_session(&ChatRequest::new("model").user("hi"), &session)
+        .await
+        .unwrap();
+    assert_eq!(
+        capture.header(SESSION_HEADER).as_deref(),
+        Some(session.as_str())
+    );
+    // Client-level session (builder) — same stable id on the next call.
+    let client = client.with_session(session.clone());
+    assert_eq!(client.session_id(), Some(session.as_str()));
+    client
+        .chat(&ChatRequest::new("model").user("hi again"))
+        .await
+        .unwrap();
+    assert_eq!(
+        capture.header(SESSION_HEADER).as_deref(),
+        Some(session.as_str())
+    );
+    // machine_session_id is stable and header-friendly for mixed-case run ids.
+    assert_eq!(session, "squadron-lqwrB_5ETGGs3LyoiVQHWA");
+    let cleaned = machine_session_id("weird/id with.chars");
+    assert_eq!(cleaned, "squadron-weird-id-with-chars");
+}
+
+#[tokio::test]
+async fn machine_client_without_session_omits_the_header() {
+    let capture = Capture::default();
+    let seen = capture.clone();
+    let router = Router::new().route(
+        "/chat/completions",
+        post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let seen = seen.clone();
+            async move {
+                seen.record(&headers, &body);
+                Json(response("ok", json!(0.0)))
+            }
+        }),
+    );
+    let port = serve(router).await;
+    let client = MachineLlmClient::new(
+        "test-key",
+        format!("http://127.0.0.1:{port}/chat/completions"),
+    );
+    client
+        .chat(&ChatRequest::new("model").user("hi"))
+        .await
+        .unwrap();
+    assert!(capture.header(SESSION_HEADER).is_none());
 }
 
 #[tokio::test]
