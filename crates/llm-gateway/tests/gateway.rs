@@ -198,7 +198,7 @@ async fn sprite_recipe_uses_gateway_headers_without_auth() {
     assert_eq!(GATEWAY_CONNECTOR_ID, "sanCSEiLn9Np-G_Y5q2jKA");
     assert_eq!(JUDGE_MODEL, "glm-5.3");
     assert_eq!(lane_model(0), "glm-5.3-flash");
-    assert_eq!(lane_model(1), "deepseek-v4.1-flash");
+    assert_eq!(lane_model(1), "glm-5.3-flash"); // pinned: no per-lane alternation
     let recipe = SpriteRecipe::for_model("lane-7", lane_model(0));
     assert_eq!(recipe.session_id(), "swarm-lane-7");
     let headers = recipe.headers();

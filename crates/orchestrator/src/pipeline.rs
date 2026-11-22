@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
-use llm_gateway::{lane_model, MachineLlmClient};
+use llm_gateway::{MachineLlmClient, IMPLEMENTER_MODEL, VALIDATOR_MODEL};
 use prompts::{
     gate_and_scan_injections, gate_with_options, parse, DiversityOutput, GateOptions,
     ImplementerOutput, JudgeOutput, Role, ValidatorOutput, Verdict,
@@ -712,7 +712,7 @@ async fn run_implementer_phase(
 
     let started = now_ms();
     let deadline = ms_after(started, ctx.config.impl_deadline);
-    let model = lane_model(idx as usize).to_owned();
+    let model = IMPLEMENTER_MODEL.to_owned(); // pinned: every impl lane glm-5.3-flash
     ctx.store
         .start_impl(
             &run_id,
@@ -859,7 +859,9 @@ async fn run_validator_phase(
     let _val_permit = ctx.slots.acquire().await;
     let val_started = now_ms();
     let val_deadline = ms_after(val_started, ctx.config.val_deadline);
-    let val_model = lane_model(idx as usize).to_owned(); // alternate same scheme; spec states validators alternate per lane too
+    // Wave A pinning: the reviewer is deepseek-v4.1-flash — a different model
+    // than the implementer (glm-5.3-flash), never same-model self-review.
+    let val_model = VALIDATOR_MODEL.to_owned();
     ctx.store
         .start_validation(run_id, idx, &val_model, val_started, val_deadline)
         .await
@@ -1189,7 +1191,7 @@ async fn run_validator(
             let prompt = prompts::validator_prompt(impl_summary, impl_url, &workdir, &evidence);
             let recipe = llm_gateway::SpriteRecipe::for_model(
                 format!("{run_id}-{idx}-val"),
-                lane_model(idx as usize).to_owned(),
+                VALIDATOR_MODEL.to_owned(),
             );
             let connector_env = (
                 "OPENCODE_GATEWAY_CONNECTOR".to_owned(),

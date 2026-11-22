@@ -45,7 +45,7 @@ pub fn fixture_snapshot() -> Snapshot {
             LaneSnapshot {
                 idx: 1,
                 state: "validated".to_owned(),
-                model: Some("deepseek-v4.1-flash".to_owned()),
+                model: Some("glm-5.3-flash".to_owned()),
                 impl_url: Some("https://swarm-fixture-1.sprites.app".to_owned()),
                 cost_usd: Some(0.87),
                 build_ms: Some(2_640_000),
@@ -55,7 +55,7 @@ pub fn fixture_snapshot() -> Snapshot {
                 val_verdict: Some("pass".to_owned()),
                 verdict_card: Some("Winner: crisp arcade loop, authentic CRT styling, zero dead links.".to_owned()),
                 console_tail: Some(
-                    "harness=opencode-cli model=deepseek-v4.1-flash\n[12:00:05] sprite created, deadline 60m\n[12:02:19] variant: CRT arcade cabinet, scanlines, hiscore table\n[12:44:09] build done: 14 files, site 200\n[12:52:41] validator: pass, quality 8.5\n[12:58:02] screenshot rendered\n".to_owned(),
+                    "harness=opencode-cli model=glm-5.3-flash\n[12:00:05] sprite created, deadline 60m\n[12:02:19] variant: CRT arcade cabinet, scanlines, hiscore table\n[12:44:09] build done: 14 files, site 200\n[12:52:41] validator (deepseek-v4.1-flash): pass, quality 8.5\n[12:58:02] screenshot rendered\n".to_owned(),
                 ),
                 cost_series: Some(vec![0.31, 0.55, 0.71, 0.87]),
                 thumbnail_data_url: Some(thumb),

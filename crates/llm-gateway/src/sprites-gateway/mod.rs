@@ -12,13 +12,11 @@ pub fn gateway_endpoint() -> String {
     format!("{GATEWAY_API_BASE}/{GATEWAY_CONNECTOR_ID}/chat/completions")
 }
 pub const SESSION_HEADER: &str = "x-opencode-session";
-pub const DIVERSITY_MODEL: &str = "glm-5.3";
-pub const JUDGE_MODEL: &str = "glm-5.3";
-pub const LANE_MODELS: [&str; 2] = ["glm-5.3-flash", "deepseek-v4.1-flash"];
-
-pub fn lane_model(index: usize) -> &'static str {
-    LANE_MODELS[index % LANE_MODELS.len()]
-}
+// Model pinning moved to crate::models (single source of truth: implementer
+// lanes pinned to glm-5.3-flash, validator deepseek-v4.1-flash, judge glm-5.3).
+pub use crate::models::{
+    lane_model, DIVERSITY_MODEL, IMPLEMENTER_MODEL, JUDGE_MODEL, LANE_MODELS, VALIDATOR_MODEL,
+};
 
 #[derive(Debug, Clone)]
 pub struct SpriteRecipe {
@@ -31,7 +29,7 @@ pub struct SpriteRecipe {
 
 impl SpriteRecipe {
     pub fn new(lane_id: impl AsRef<str>) -> Self {
-        Self::for_model(lane_id, LANE_MODELS[0])
+        Self::for_model(lane_id, crate::models::IMPLEMENTER_MODEL)
     }
 
     pub fn for_model(lane_id: impl AsRef<str>, model: impl Into<String>) -> Self {
