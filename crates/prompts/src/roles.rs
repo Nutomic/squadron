@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::preamble::{data_block, preamble, DATA_RULE};
+use crate::preamble::{data_block, data_rule, preamble};
 use crate::schema::Role;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,7 +16,7 @@ fn build(role: Role, task: &str, data: String) -> Prompt {
             "{}\nOutput JSON matching this schema exactly, with no other text:\n{schema}\n",
             preamble(role.as_str())
         ),
-        user: format!("{task}\n\n{DATA_RULE}{data}"),
+        user: format!("{task}\n\n{}{data}", data_rule(role.as_str())),
     }
 }
 
