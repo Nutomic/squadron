@@ -8,6 +8,7 @@ use prompts::{gate_with_options, parse, GateOptions, JudgeOutput, Role, Validato
 pub async fn run_judge(
     client: &MachineLlmClient,
     session: &str,
+    brief: &str,
     reports: &[LaneJudgeReport],
     extracts: &[String],
     images: &[Option<String>],
@@ -32,7 +33,7 @@ pub async fn run_judge(
     // an unresponsive judge cannot stall a run forever.
     timeout(
         deadline,
-        judge_once(client, session, reports, extracts, images, &opts),
+        judge_once(client, session, brief, reports, extracts, images, &opts),
     )
     .await
     .map_err(|_| "judge: deadline exceeded".to_owned())?
@@ -41,12 +42,15 @@ pub async fn run_judge(
 async fn judge_once(
     client: &MachineLlmClient,
     session: &str,
+    brief: &str,
     reports: &[LaneJudgeReport],
     extracts: &[String],
     images: &[Option<String>],
     opts: &GateOptions,
 ) -> Result<(JudgeOutput, Option<f64>), String> {
-    let prompt = prompts::judge_prompt(reports, extracts);
+    // Wave A: the judge sees the user's ORIGINAL brief so its verdict carries
+    // a brief_fulfillment assessment for the winning lane.
+    let prompt = prompts::judge_prompt(brief, reports, extracts);
     // #12: when lane screenshots exist, attach them as image parts so the judge
     // can see the rendered sites, not just the text extracts. Audit R3 finding:
     // images must stay keyed to their lane, never flattened — after one missing

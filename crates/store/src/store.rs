@@ -178,6 +178,36 @@ impl Store {
         ensure(result.rows_affected(), id)
     }
 
+    /// Wave A: persist the judge's brief_fulfillment verdict ({state, evidence}
+    /// JSON) for the run page's verdict card. Kept separate from `finish_run`
+    /// so the plain verdict-card text contract is untouched.
+    pub async fn set_judge_brief_fulfillment(
+        &self,
+        id: &str,
+        fulfillment_json: &str,
+    ) -> Result<(), StoreError> {
+        let result = sqlx::query!(
+            "UPDATE runs SET judge_brief_fulfillment = ? WHERE id = ?",
+            fulfillment_json,
+            id
+        )
+        .execute(&self.pool)
+        .await?;
+        ensure(result.rows_affected(), id)
+    }
+
+    /// Wave A: read back the judge's brief_fulfillment verdict JSON, if the
+    /// run has one (runs judged before the column existed return None).
+    pub async fn get_judge_brief_fulfillment(
+        &self,
+        id: &str,
+    ) -> Result<Option<String>, StoreError> {
+        let row = sqlx::query!("SELECT judge_brief_fulfillment FROM runs WHERE id = ?", id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.and_then(|row| row.judge_brief_fulfillment))
+    }
+
     pub async fn insert_lane(
         &self,
         run_id: &str,

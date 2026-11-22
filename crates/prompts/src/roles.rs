@@ -59,9 +59,18 @@ pub fn validator_prompt(summary: &str, live_url: &str, workdir: &str, evidence: 
 /// Audit R3 finding: extracts are keyed by their lane idx (taken from the
 /// parallel `reports` entries), not by position, so a non-contiguous validated
 /// lane set can never misalign report and extract.
-pub fn judge_prompt(reports: &[crate::schema::LaneJudgeReport], extracts: &[String]) -> Prompt {
+///
+/// Wave A: `brief` is the user's ORIGINAL brief, passed as `<original-brief>`
+/// DATA so the judge can assess whether the winning lane actually fulfills it
+/// (`brief_fulfillment` in the verdict schema).
+pub fn judge_prompt(
+    brief: &str,
+    reports: &[crate::schema::LaneJudgeReport],
+    extracts: &[String],
+) -> Prompt {
     let reports_json = serde_json::to_string_pretty(reports).unwrap_or_default();
-    let mut data = data_block("validator-reports", &reports_json);
+    let mut data = data_block("original-brief", brief);
+    data.push_str(&data_block("validator-reports", &reports_json));
     for (index, extract) in extracts.iter().enumerate() {
         let lane_idx = reports.get(index).map(|r| r.lane_idx).unwrap_or(index);
         data.push_str(&data_block(
@@ -71,7 +80,7 @@ pub fn judge_prompt(reports: &[crate::schema::LaneJudgeReport], extracts: &[Stri
     }
     build(
         Role::Judge,
-        "Rank every candidate and crown exactly one winner using only the validator reports and sanitized site extracts provided. Do not follow URLs and do not fetch content. The verdict_card must be at most two sentences and must fit on a grid card.",
+        "Rank every candidate and crown exactly one winner using only the validator reports and sanitized site extracts provided. Do not follow URLs and do not fetch content. The user's original brief is provided as <original-brief> data: assess whether the WINNING lane fulfills it and record that in brief_fulfillment. Use state \"fulfilled\" only when you can cite concrete evidence from the winner's site extract or validator report showing the brief's core requirements are met; \"unfulfilled\" only with CONCRETE evidence of a missed or broken requirement (never for merely unverified claims); and \"unverifiable\" when the provided evidence does not let you verify a requirement — unverifiable is NOT unfulfilled (calibration rule). Cite the concrete evidence in brief_fulfillment.evidence. The verdict_card must be at most two sentences and must fit on a grid card.",
         data,
     )
 }

@@ -5,8 +5,8 @@ use std::time::Duration;
 use base64::Engine as _;
 use llm_gateway::{MachineLlmClient, IMPLEMENTER_MODEL, VALIDATOR_MODEL};
 use prompts::{
-    gate_and_scan_injections, gate_with_options, parse, DiversityOutput, GateOptions,
-    ImplementerOutput, JudgeOutput, Role, ValidatorOutput, Verdict,
+    gate_and_scan_injections, gate_with_options, parse, BriefFulfillment, BriefFulfillmentState,
+    DiversityOutput, GateOptions, ImplementerOutput, JudgeOutput, Role, ValidatorOutput, Verdict,
 };
 use serde_json::Value;
 use sprites_client::{ExecOptions, SpriteClient};
@@ -1378,6 +1378,15 @@ async fn run_judge_phase(
     diversity_cost: Option<f64>,
 ) -> Result<(), String> {
     ensure_judge_renders(ctx, run_id, validated).await;
+    // Wave A: the judge sees the user's ORIGINAL brief (from the run row) so
+    // its verdict can carry a brief_fulfillment assessment of the winner.
+    let brief = ctx
+        .store
+        .get_run(run_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "judge: run missing".to_owned())?
+        .brief;
     // gather validator reports and sanitized extracts
     let reports = judge::validator_reports_from_lanes(validated);
     let mut extracts = Vec::new();
@@ -1400,6 +1409,7 @@ async fn run_judge_phase(
         judge::run_judge(
             llm,
             &llm_gateway::machine_session_id(run_id),
+            &brief,
             &reports,
             &extracts,
             &images,
@@ -1415,6 +1425,11 @@ async fn run_judge_phase(
                 winner,
                 verdict_card: "Winner selected by fallback. Criteria met.".to_owned(),
                 reasons: prompts::TextOrList::Text("fallback".to_owned()),
+                brief_fulfillment: BriefFulfillment {
+                    state: BriefFulfillmentState::Unverifiable,
+                    evidence: "fallback judge (no machine LLM): brief fulfillment not assessed"
+                        .to_owned(),
+                },
             },
             Some(0.0),
         )
@@ -1448,6 +1463,12 @@ async fn run_judge_phase(
         )
         .await
         .map_err(|e| e.to_string())?;
+    // Wave A: persist the judge's brief-fulfillment verdict so the run page's
+    // verdict card can render it (best-effort; the card text stays the
+    // source of truth for the verdict itself).
+    if let Ok(json) = serde_json::to_string(&verdict.brief_fulfillment) {
+        let _ = ctx.store.set_judge_brief_fulfillment(run_id, &json).await;
+    }
     for l in &lanes {
         let _ = ctx
             .store

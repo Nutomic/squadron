@@ -204,3 +204,37 @@ async fn set_artifacts_never_clobbers_screenshot_state() {
 fn generated_ids_are_distinct() {
     assert_ne!(new_run_id(), new_run_id());
 }
+
+/// Wave A: the judge's brief_fulfillment verdict round-trips through the runs
+/// table, and reads back as None for runs that never had one set.
+#[tokio::test]
+async fn judge_brief_fulfillment_round_trips() {
+    let store = Store::connect_in_memory().await.unwrap();
+    store.migrate().await.unwrap();
+    let run = store.create_run("brief", 1, 100).await.unwrap();
+
+    // No fulfillment recorded yet.
+    assert_eq!(
+        store.get_judge_brief_fulfillment(&run.id).await.unwrap(),
+        None
+    );
+
+    let json = r#"{"state":"fulfilled","evidence":"winner's site extract shows the requested arcade loop"}"#;
+    store
+        .set_judge_brief_fulfillment(&run.id, json)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get_judge_brief_fulfillment(&run.id).await.unwrap(),
+        Some(json.to_owned())
+    );
+
+    // Unknown run id: no row -> None (not an error).
+    assert_eq!(
+        store
+            .get_judge_brief_fulfillment("does-not-exist")
+            .await
+            .unwrap(),
+        None
+    );
+}

@@ -21,6 +21,10 @@ pub fn fixture_snapshot() -> Snapshot {
                 "Most polished arcade feel with crisp controls and authentic CRT aesthetics; the pricing-page lane reads better as marketing copy.".to_owned(),
             ),
             winner_lane: Some(1),
+            judge_brief_fulfillment: Some(orchestrator::snapshot::BriefFulfillmentView {
+                state: "fulfilled".to_owned(),
+                evidence: "winner's site extract shows the arcade loop, hiscore table, and CRT styling the brief asked for; validator report confirms HTTP 200 with zero dead links".to_owned(),
+            }),
         },
         lanes: vec![
             LaneSnapshot {

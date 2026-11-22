@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use store::{now_ms, Lane, Run, Store};
 
 /// Canonical run snapshot serialized through the SSE hub. The hub payload is
@@ -12,6 +12,17 @@ pub struct Snapshot {
     pub ts: i64,
 }
 
+/// Wave A: the judge's brief-fulfillment verdict for the winning lane, as
+/// rendered on the run page's verdict card. `state` is one of
+/// "fulfilled" | "unfulfilled" | "unverifiable" (verbatim from the judge
+/// schema); `evidence` is judge-written text (untrusted DATA — the island
+/// renders it escaped).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BriefFulfillmentView {
+    pub state: String,
+    pub evidence: String,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RunSnapshot {
@@ -19,6 +30,10 @@ pub struct RunSnapshot {
     pub status: String,
     pub judge_verdict: Option<String>,
     pub winner_lane: Option<i64>,
+    /// Wave A: None for runs judged before the field existed (or when the
+    /// stored JSON failed to parse) — the island omits the line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judge_brief_fulfillment: Option<BriefFulfillmentView>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -51,6 +66,7 @@ pub fn run_snapshot(run: &Run) -> RunSnapshot {
         status: run.status.clone(),
         judge_verdict: run.judge_verdict.clone(),
         winner_lane: run.winner_lane,
+        judge_brief_fulfillment: None,
     }
 }
 
@@ -97,7 +113,17 @@ fn tokei_totals(json: Option<&str>) -> (Option<i64>, Option<i64>) {
 pub async fn build_snapshot(store: &Store, run_id: &str) -> Option<Snapshot> {
     let run = store.get_run(run_id).await.ok()??;
     let lanes = store.list_lanes(run_id).await.ok()?;
-    let run_snap = run_snapshot(&run);
+    let mut run_snap = run_snapshot(&run);
+    // Wave A: hydrate the judge's brief-fulfillment verdict (None for runs
+    // judged before the column existed or with unparsable JSON).
+    if let Some(json) = store
+        .get_judge_brief_fulfillment(run_id)
+        .await
+        .ok()
+        .flatten()
+    {
+        run_snap.judge_brief_fulfillment = serde_json::from_str::<BriefFulfillmentView>(&json).ok();
+    }
     let mut lane_snaps = Vec::with_capacity(lanes.len());
     for lane in lanes {
         let series = cost_series(store, &run.id, lane.idx).await;
@@ -176,6 +202,25 @@ mod tests {
             total_cost_usd: None,
             finished_at: None,
         }
+    }
+
+    /// Wave A: a run judged after the brief_fulfillment column existed.
+    fn judged_run_with_fulfillment() -> Run {
+        Run {
+            judge_verdict: Some("Bold and playable. It wins.".to_owned()),
+            winner_lane: Some(1),
+            ..run()
+        }
+    }
+
+    #[test]
+    fn run_snapshot_hydrates_nothing_without_a_store() {
+        // run_snapshot alone has no brief fulfillment (hydrated in
+        // build_snapshot from the store).
+        assert_eq!(
+            run_snapshot(&judged_run_with_fulfillment()).judge_brief_fulfillment,
+            None
+        );
     }
 
     /// #7: build_ms is computed from the implementer session, not hardcoded None.

@@ -72,9 +72,18 @@ impl Role {
                     "ranking": {"type": "array", "items": {"type": "integer", "minimum": 0}},
                     "winner": {"type": "integer", "minimum": 0},
                     "verdict_card": {"type": "string", "maxLength": 320},
-                    "reasons": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}
+                    "reasons": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+                    "brief_fulfillment": {
+                        "type": "object",
+                        "properties": {
+                            "state": {"type": "string", "enum": ["fulfilled", "unfulfilled", "unverifiable"]},
+                            "evidence": {"type": "string"}
+                        },
+                        "required": ["state", "evidence"],
+                        "additionalProperties": false
+                    }
                 },
-                "required": ["ranking", "winner", "verdict_card", "reasons"],
+                "required": ["ranking", "winner", "verdict_card", "reasons", "brief_fulfillment"],
                 "additionalProperties": false
             }),
         }
@@ -159,6 +168,28 @@ impl LaneJudgeReport {
     }
 }
 
+/// Brief-fulfillment states for the judge's verdict (Wave A). Calibration
+/// follows the validator rules: `unfulfilled` requires AFFIRMATIVE evidence
+/// of a missed requirement; "cannot verify from evidence" is NOT
+/// unfulfilled — it is the separate `unverifiable` state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BriefFulfillmentState {
+    Fulfilled,
+    Unfulfilled,
+    Unverifiable,
+}
+
+/// The judge's brief-fulfillment verdict for the winning lane. `evidence`
+/// must cite something concrete from the winner's site extract or validator
+/// report — the gate rejects empty evidence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BriefFulfillment {
+    pub state: BriefFulfillmentState,
+    pub evidence: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JudgeOutput {
@@ -166,6 +197,7 @@ pub struct JudgeOutput {
     pub winner: usize,
     pub verdict_card: String,
     pub reasons: TextOrList,
+    pub brief_fulfillment: BriefFulfillment,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -249,6 +281,12 @@ pub fn gate_with_options(
                 let limit = options.max_verdict_sentences.unwrap_or(2);
                 if sentence_count(&parsed.verdict_card) > limit {
                     return Err(format!("verdict_card must be at most {limit} sentences"));
+                }
+                if parsed.brief_fulfillment.evidence.trim().is_empty() {
+                    return Err(
+                        "brief_fulfillment.evidence must cite concrete evidence from the lane's site or validator report"
+                            .to_owned(),
+                    );
                 }
                 Ok(())
             }),

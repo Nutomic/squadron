@@ -25,6 +25,7 @@
   let judged = $derived(snap?.run?.status === 'judged' || snap?.run?.status === 'promoted');
   let winner = $derived(judged ? snap?.run?.winnerLane : null);
   let verdict = $derived(snap?.run?.judgeVerdict);
+  let briefFulfillment = $derived(snap?.run?.judgeBriefFulfillment);
   let totalCost = $derived(
     snap?.lanes?.reduce((acc, l) => acc + (l.costUsd ?? 0), 0) ?? null
   );
@@ -117,7 +118,17 @@
   <div class="card bg-base-100 border border-base-300 rounded-xl mb-6">
     <div class="card-body p-5 flex-row items-start gap-4">
       <span class="chip chip-info chip-no-dot flex-none mt-0.5">Judge</span>
-      <p class="text-sm leading-relaxed text-base-content/80">{verdict}</p>
+      <div class="min-w-0 flex-1">
+        <p class="text-sm leading-relaxed text-base-content/80">{verdict}</p>
+        {#if briefFulfillment}
+          <div class="mt-2.5 flex items-start gap-2.5">
+            <span class="chip chip-no-dot flex-none {briefFulfillment.state === 'fulfilled' ? 'chip-success' : briefFulfillment.state === 'unfulfilled' ? 'chip-error' : 'chip-neutral'}">
+              {briefFulfillment.state === 'fulfilled' ? 'brief fulfilled' : briefFulfillment.state === 'unfulfilled' ? 'brief not fulfilled' : 'brief: cannot verify from evidence'}
+            </span>
+            <p class="text-xs leading-relaxed text-base-content/60">{briefFulfillment.evidence}</p>
+          </div>
+        {/if}
+      </div>
     </div>
   </div>
 {/if}

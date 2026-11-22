@@ -35,7 +35,11 @@ async fn spawn_stub() -> (String, Arc<Mutex<Vec<Value>>>) {
     let content = json!({
         "ranking": [0], "winner": 0,
         "verdict_card": "Lane 0 wins; criteria met.",
-        "reasons": "only lane"
+        "reasons": "only lane",
+        "brief_fulfillment": {
+            "state": "fulfilled",
+            "evidence": "validator report confirms the site answers 200 with the brief's core page"
+        }
     });
     spawn_stub_with(content).await
 }
@@ -83,6 +87,7 @@ async fn judge_sends_screenshot_image_parts_when_available() {
     let (out, _cost) = judge::run_judge(
         &client,
         "squadron-test-run",
+        "build a small arcade game",
         &[report],
         &["<extract>".to_owned()],
         &[Some(data_url.clone())],
@@ -109,6 +114,14 @@ async fn judge_sends_screenshot_image_parts_when_available() {
             .contains("validator-reports"),
         "judge prompt rides in the text part"
     );
+    // Wave A: the original user brief rides with it, as <original-brief> DATA.
+    assert!(
+        content[0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("original-brief"),
+        "judge prompt must carry the original brief"
+    );
 }
 
 /// #12: without screenshots the judge falls back to the plain text request.
@@ -131,6 +144,7 @@ async fn judge_without_images_uses_text_only_request() {
     let (out, _cost) = judge::run_judge(
         &client,
         "squadron-test-run",
+        "build a small arcade game",
         &[report],
         &["<extract>".to_owned()],
         &[None],
@@ -155,7 +169,8 @@ async fn judge_winner_outside_validated_lanes_is_rejected() {
                 "choices": [{"index": 0, "message": {"role": "assistant", "content": json!({
                     "ranking": [0, 9], "winner": 9,
                     "verdict_card": "Lane 9 wins; criteria met.",
-                    "reasons": "rogue lane"
+                    "reasons": "rogue lane",
+                    "brief_fulfillment": {"state": "fulfilled", "evidence": "extract shows the brief's requirements"}
                 }).to_string()}}],
                 "usage": {"opencode": {"allowance": {"usd": 0.01}}}
             })),
@@ -193,6 +208,7 @@ async fn judge_winner_outside_validated_lanes_is_rejected() {
     let err = judge::run_judge(
         &client,
         "squadron-test-run",
+        "build a small arcade game",
         &reports,
         &extracts,
         &images,
@@ -214,7 +230,11 @@ async fn judge_labels_each_image_with_its_lane_idx() {
     let (endpoint, captured) = spawn_stub_with(json!({
         "ranking": [0, 1], "winner": 0,
         "verdict_card": "Lane 0 wins; criteria met.",
-        "reasons": "lane 0 rendered correctly"
+        "reasons": "lane 0 rendered correctly",
+        "brief_fulfillment": {
+            "state": "fulfilled",
+            "evidence": "lane 0's extract shows the brief's landing page and pricing table"
+        }
     }))
     .await;
     let client = MachineLlmClient::new("test-key", &endpoint);
@@ -245,6 +265,7 @@ async fn judge_labels_each_image_with_its_lane_idx() {
     let (out, _cost) = judge::run_judge(
         &client,
         "squadron-test-run",
+        "build a small arcade game",
         &[report(0), report(1)],
         &["<extract 0>".to_owned(), "<extract 1>".to_owned()],
         &[None, Some(data_url.clone())],

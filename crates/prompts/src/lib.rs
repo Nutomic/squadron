@@ -11,6 +11,6 @@ pub use preamble::{
 pub use roles::{diversity_prompt, implementer_prompt, judge_prompt, validator_prompt, Prompt};
 pub use schema::{
     gate, gate_and_scan_injections, gate_with_options, injection_markers, parse, sentence_count,
-    DiversityOutput, GateOptions, ImplementerOutput, JudgeOutput, LaneJudgeReport, Role,
-    SchemaError, TextOrList, ValidatorOutput, Variant, Verdict,
+    BriefFulfillment, BriefFulfillmentState, DiversityOutput, GateOptions, ImplementerOutput,
+    JudgeOutput, LaneJudgeReport, Role, SchemaError, TextOrList, ValidatorOutput, Variant, Verdict,
 };

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE runs SET judge_brief_fulfillment = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "2ddc970d9f63a1ced03c176da365014fda95aedd59d4a2db3f9b4b5b98b3e897"
+}

@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT judge_brief_fulfillment FROM runs WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "judge_brief_fulfillment",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "50d2c09aacbc9cf916a55551eaefda0a062d80156fc4499a4f53f0f2d9e4e6fb"
+}
