@@ -186,6 +186,7 @@ async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
         slots,
         harness_cache: Arc::new(orchestrator::harness::HarnessCache::new()),
         hub_registry: Some(hub_registry.clone()),
+        lane_queue: None,
     });
 
     let harness = HarnessMode::Command {
@@ -466,6 +467,7 @@ async fn persistent_auth_wall_fails_the_lane_after_one_retry() {
         slots,
         harness_cache: Arc::new(orchestrator::harness::HarnessCache::new()),
         hub_registry: None,
+        lane_queue: None,
     });
 
     let harness = HarnessMode::Command {
@@ -597,6 +599,7 @@ async fn failing_config_update_fails_the_lane_before_any_exec() {
         slots,
         harness_cache: Arc::new(orchestrator::harness::HarnessCache::new()),
         hub_registry: None,
+        lane_queue: None,
     });
 
     let harness = HarnessMode::Command {
@@ -779,6 +782,7 @@ async fn auth_wall_retry_verifies_public_before_reprobe() {
         slots,
         harness_cache: Arc::new(orchestrator::harness::HarnessCache::new()),
         hub_registry: None,
+        lane_queue: None,
     });
 
     let harness = HarnessMode::Command {

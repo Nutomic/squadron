@@ -11,6 +11,7 @@ use prompts::{
 use serde_json::Value;
 use sprites_client::{ExecOptions, SpriteClient};
 use store::{now_ms, Run, Store};
+use tokio::sync::OwnedSemaphorePermit;
 
 use crate::artifacts;
 use crate::config::{ms_after, PipelineConfig};
@@ -19,6 +20,7 @@ use crate::evidence;
 use crate::harness::{self, HarnessCache};
 use crate::judge;
 use crate::lane::LaneState;
+use crate::queue;
 use crate::screenshot::ScreenshotQueue;
 use crate::slots::SlotSemaphore;
 use crate::snapshot;
@@ -37,6 +39,19 @@ pub struct PipelineCtx {
     pub harness_cache: Arc<HarnessCache>,
     pub hub_registry:
         Option<std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, SseHub>>>>,
+    /// Wave D: the process-wide lane-slot queue. None keeps the pre-queue
+    /// behavior (every run starts immediately, lanes block on the semaphore).
+    pub lane_queue: Option<Arc<queue::LaneQueue>>,
+}
+
+impl PipelineCtx {
+    /// Wave D: wake the queue dispatcher after a slot freed (a lane's
+    /// implementer or validator session ended). No-op without a queue.
+    pub fn notify_slots_free(&self) {
+        if let Some(q) = &self.lane_queue {
+            q.notify_slots_free();
+        }
+    }
 }
 
 /// How to obtain implementer/validator outputs for a lane.
@@ -124,6 +139,80 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
             )
             .await;
     }
+    // Wave D: run creation counts its lanes against the free lane-slot pool.
+    // When all lanes fit, the run proceeds exactly like before (with its lane
+    // permits pre-reserved so nothing can overtake it); otherwise the run
+    // stays `queued` in the DB and the FIFO dispatcher promotes it later as
+    // slots free (lane ends/destroyed → slot freed → dispatcher woken).
+    let need = cases.len();
+    let mut reservation: Option<Vec<OwnedSemaphorePermit>> = None;
+    if let Some(q) = &ctx.lane_queue {
+        let capacity = ctx.slots.capacity();
+        if need <= capacity {
+            match ctx.slots.try_reserve_n(need) {
+                Some(reserve) => reservation = Some(reserve),
+                None => {
+                    // Not enough free slots for every lane: queue the run.
+                    let _ = ctx
+                        .store
+                        .append_lane_event(
+                            &run.id,
+                            0,
+                            now_ms(),
+                            "log",
+                            &format!(
+                                "run queued: {need} lanes do not fit {} free lane slots; waiting for FIFO promotion",
+                                ctx.slots.available()
+                            ),
+                        )
+                        .await;
+                    publish(&ctx, &run.id).await;
+                    q.enqueue(queue::QueuedRun {
+                        ctx: ctx.clone(),
+                        run_id: run.id.clone(),
+                        lanes: need,
+                        harness: req.harness,
+                        decompose_cost,
+                    });
+                    return ctx
+                        .store
+                        .get_run(&run.id)
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .ok_or_else(|| "run missing".to_owned());
+                }
+            }
+        } else if ctx.slots.available() != capacity {
+            // An oversized run (more lanes than the pool holds) may only start
+            // when the pool is completely free; otherwise queue it the same way.
+            let _ = ctx
+                .store
+                .append_lane_event(
+                    &run.id,
+                    0,
+                    now_ms(),
+                    "log",
+                    &format!(
+                        "run queued: {need} lanes exceed the {capacity} slot pool; waiting for a fully free pool",
+                    ),
+                )
+                .await;
+            publish(&ctx, &run.id).await;
+            q.enqueue(queue::QueuedRun {
+                ctx: ctx.clone(),
+                run_id: run.id.clone(),
+                lanes: need,
+                harness: req.harness,
+                decompose_cost,
+            });
+            return ctx
+                .store
+                .get_run(&run.id)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "run missing".to_owned());
+        }
+    }
     ctx.store
         .update_run_status(&run.id, "running")
         .await
@@ -133,28 +222,55 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
     let run_id = run.id.clone();
     let ctx_bg = ctx.clone();
     let lane_count = cases.len();
-    tokio::spawn(async move {
-        if let Err(e) =
-            execute_run(ctx_bg.clone(), run_id.clone(), req.harness, decompose_cost).await
-        {
-            let _ = ctx_bg.store.update_run_status(&run_id, "failed").await;
-            let ts = now_ms();
-            for i in 0..lane_count as i64 {
-                let _ = ctx_bg
-                    .store
-                    .append_lane_event(&run_id, i, ts, "log", &format!("run_failed: {e}"))
-                    .await;
-            }
-            publish(&ctx_bg, &run_id).await;
-            drop_hub(&ctx_bg, &run_id).await;
-        }
-    });
+    spawn_execute_run(
+        ctx_bg,
+        run_id,
+        lane_count,
+        req.harness,
+        decompose_cost,
+        reservation,
+    );
 
     ctx.store
         .get_run(&run.id)
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "run missing".to_owned())
+}
+
+/// Wave D: the background pipeline task shared by immediate starts and queue
+/// promotions. On failure the run is marked failed and its hub dropped, exactly
+/// like the pre-queue flow.
+pub fn spawn_execute_run(
+    ctx: Arc<PipelineCtx>,
+    run_id: String,
+    lane_count: usize,
+    harness: HarnessMode,
+    decompose_cost: Option<f64>,
+    reservation: Option<Vec<OwnedSemaphorePermit>>,
+) {
+    tokio::spawn(async move {
+        if let Err(e) = execute_run(
+            ctx.clone(),
+            run_id.clone(),
+            harness,
+            decompose_cost,
+            reservation,
+        )
+        .await
+        {
+            let _ = ctx.store.update_run_status(&run_id, "failed").await;
+            let ts = now_ms();
+            for i in 0..lane_count as i64 {
+                let _ = ctx
+                    .store
+                    .append_lane_event(&run_id, i, ts, "log", &format!("run_failed: {e}"))
+                    .await;
+            }
+            publish(&ctx, &run_id).await;
+            drop_hub(&ctx, &run_id).await;
+        }
+    });
 }
 
 /// Wave B: produce the per-lane case values. With a machine LLM the brief
@@ -187,6 +303,7 @@ async fn execute_run(
     run_id: String,
     harness: HarnessMode,
     decompose_cost: Option<f64>,
+    reservation: Option<Vec<OwnedSemaphorePermit>>,
 ) -> Result<(), String> {
     let lanes = ctx
         .store
@@ -195,14 +312,19 @@ async fn execute_run(
         .map_err(|e| e.to_string())?;
     let _n = lanes.len();
 
-    // Run lanes concurrently, bounded by slot semaphore inside lane execution
+    // Run lanes concurrently, bounded by slot semaphore inside lane execution.
+    // Wave D: a queue-promoted run's first attempt per lane uses its
+    // pre-reserved permit; retries acquire fresh permits like before. Lanes
+    // come back idx-ordered, so the reserved permits map positionally.
+    let mut reserved_permits = reservation.map(std::collections::VecDeque::from);
     let mut handles = Vec::new();
     for lane in lanes {
         let ctx2 = ctx.clone();
         let run_id2 = run_id.clone();
         let harness2 = harness.clone();
+        let permit = reserved_permits.as_mut().and_then(|q| q.pop_front());
         handles.push(tokio::spawn(async move {
-            run_lane(ctx2, run_id2, lane.idx, harness2).await
+            run_lane(ctx2, run_id2, lane.idx, harness2, permit).await
         }));
     }
     for h in handles {
@@ -255,6 +377,7 @@ async fn run_lane(
     run_id: String,
     idx: i64,
     harness: HarnessMode,
+    mut reserved: Option<OwnedSemaphorePermit>,
 ) -> Result<(), String> {
     let mut attempts = 0;
     // R3-A #4: two independent retry budgets. Lane-level failures (transient
@@ -266,16 +389,51 @@ async fn run_lane(
     let max_harness_retries = harness::HARNESS_CHAIN.len();
     let mut lane_retries = 0;
     let mut harness_retries = 0;
+    // Wave D: slot-exhaustion spawn failures (org-limit error shape) requeue
+    // the lane with backoff instead of failing it — the platform limit frees
+    // when other lanes finish.
+    let mut slot_requeues = 0;
 
     // --- Implementer phase (F9): sprite creation + implementer session +
     // 200 gate + artifacts. ONLY implementer-phase failures destroy the
     // sprite and recreate it.
     let phase = loop {
         attempts += 1;
-        let res = run_implementer_phase(ctx.clone(), run_id.clone(), idx, &harness).await;
+        let res =
+            run_implementer_phase(ctx.clone(), run_id.clone(), idx, &harness, reserved.take())
+                .await;
         match res {
             Ok(p) => break p,
             Err(e) => {
+                // Wave D: a slot-exhaustion spawn failure requeues the lane
+                // with a growing backoff and never counts against the retry
+                // budgets (nor fails the run) until the requeue budget runs
+                // out. The permit dropped with the failed attempt, so the
+                // slot is back in the pool for the wait.
+                if queue::is_slot_exhaustion_error(&e)
+                    && slot_requeues < queue::SLOT_REQUEUE_MAX_ATTEMPTS
+                {
+                    slot_requeues += 1;
+                    let delay =
+                        queue::slot_requeue_delay(slot_requeues, ctx.config.slot_requeue_backoff);
+                    let _ = ctx
+                        .store
+                        .append_lane_event(
+                            &run_id,
+                            idx,
+                            now_ms(),
+                            "log",
+                            &format!(
+                                "slot exhaustion on spawn; requeueing lane with backoff (attempt {slot_requeues}/{}, retry in {}ms): {e}",
+                                queue::SLOT_REQUEUE_MAX_ATTEMPTS,
+                                delay.as_millis()
+                            ),
+                        )
+                        .await;
+                    ctx.notify_slots_free();
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
                 let harness_failure = is_harness_error(&e);
                 let transient = is_transient_error(&e);
                 let retry_lane = !harness_failure && transient && lane_retries < max_lane_retries;
@@ -298,6 +456,7 @@ async fn run_lane(
                         ),
                     )
                     .await;
+                ctx.notify_slots_free();
                 if retry_lane || retry_harness {
                     if retry_harness {
                         harness_retries += 1;
@@ -656,9 +815,14 @@ async fn run_implementer_phase(
     run_id: String,
     idx: i64,
     harness: &HarnessMode,
+    reserved: Option<OwnedSemaphorePermit>,
 ) -> Result<ImplPhaseOutcome, String> {
-    // --- Implementer phase: acquire slot ---
-    let permit = ctx.slots.acquire().await;
+    // --- Implementer phase: acquire slot (a queue-promoted lane reuses its
+    // pre-reserved permit on the first attempt).
+    let permit = match reserved {
+        Some(p) => p,
+        None => ctx.slots.acquire().await,
+    };
     transition(&ctx, &run_id, idx, LaneState::Creating).await?;
 
     let lane = ctx
@@ -671,8 +835,26 @@ async fn run_implementer_phase(
 
     let sprite_name = lane_sprite_name(&run_id, idx);
     // create sprite; if a stale sprite still holds the deterministic name,
-    // destroy --force it once and retry the create.
+    // destroy --force it once and retry the create. Wave D: an org-limit
+    // (slot-exhaustion) spawn failure is NOT a stale-name problem — it
+    // requeues the lane with backoff (run_lane) instead of retrying or failing.
     if let Err(e) = ctx.sprite.create(&sprite_name).await {
+        let e = e.to_string();
+        if queue::is_slot_exhaustion_error(&e) {
+            let _ = ctx
+                .store
+                .append_lane_event(
+                    &run_id,
+                    idx,
+                    now_ms(),
+                    "log",
+                    &format!("create refused by org limit; requeueing lane: {e}"),
+                )
+                .await;
+            // the permit drops with the return: the slot goes back to the
+            // pool while the lane waits out its requeue backoff
+            return Err(format!("slot exhaustion: {e}"));
+        }
         let _ = ctx
             .store
             .append_lane_event(
@@ -744,6 +926,7 @@ async fn run_implementer_phase(
     .await;
     // slot freed after implementer session ends (sprite warm)
     drop(permit);
+    ctx.notify_slots_free();
     let _ = ctx
         .store
         .append_lane_event(&run_id, idx, now_ms(), "log", "impl_session_end_slot_freed")
@@ -887,6 +1070,8 @@ async fn run_validator_phase(
     )
     .await;
     drop(_val_permit);
+    // Wave D: the slot is back in the pool — wake the queue dispatcher.
+    ctx.notify_slots_free();
 
     let val_out = match val_result {
         Ok(Ok(v)) => v,

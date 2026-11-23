@@ -26,6 +26,9 @@ async fn main() {
         config.data_dir = dir.into();
     }
     config.test_mode = std::env::var("SWARM_TEST_MODE").as_deref() == Ok("1");
+    // Wave D: global lane-slot cap, env-overridable (default 8; org limit is
+    // 10 concurrent sprites and headroom matters).
+    config.max_running_slots = orchestrator::config::max_concurrent_lanes_from_env();
 
     let mut state = AppState::new(store, SpriteClient::from_env(), config)
         .with_fixtures(std::env::var("SWARM_FIXTURES").as_deref() == Ok("1"))

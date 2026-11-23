@@ -78,6 +78,7 @@ async fn test_ctx(dir: &std::path::Path, retries: usize) -> Arc<PipelineCtx> {
         slots,
         harness_cache: std::sync::Arc::new(orchestrator::harness::HarnessCache::new()),
         hub_registry: None,
+        lane_queue: None,
     })
 }
 

@@ -217,6 +217,7 @@ async fn test_ctx(
         slots: SlotSemaphore::new(10),
         harness_cache: Arc::new(orchestrator::harness::HarnessCache::new()),
         hub_registry: None,
+        lane_queue: None,
     });
     (ctx, store)
 }

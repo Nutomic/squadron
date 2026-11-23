@@ -148,6 +148,32 @@ impl Store {
         Ok(n)
     }
 
+    /// Wave D queue query: the FIFO promotion order — every run still waiting
+    /// in `queued` status, oldest first. Runtime (macro-free) query on
+    /// purpose: new queries without an offline-cache entry follow the
+    /// `set_run_n_lanes` precedent.
+    pub async fn list_queued_runs(&self) -> Result<Vec<Run>, StoreError> {
+        use sqlx::Row;
+        let rows =
+            sqlx::query("SELECT id, brief, status, n_lanes, created_at, judge_verdict, winner_lane, total_cost_usd, finished_at FROM runs WHERE status = 'queued' ORDER BY created_at ASC, id ASC")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| Run {
+                id: row.try_get("id").unwrap_or_default(),
+                brief: row.try_get("brief").unwrap_or_default(),
+                status: row.try_get("status").unwrap_or_default(),
+                n_lanes: row.try_get::<i64, _>("n_lanes").unwrap_or(0),
+                created_at: row.try_get::<i64, _>("created_at").unwrap_or(0),
+                judge_verdict: row.try_get("judge_verdict").ok(),
+                winner_lane: row.try_get("winner_lane").ok(),
+                total_cost_usd: row.try_get("total_cost_usd").ok(),
+                finished_at: row.try_get("finished_at").ok(),
+            })
+            .collect())
+    }
+
     pub async fn update_run_status(&self, id: &str, status: &str) -> Result<(), StoreError> {
         let result = sqlx::query!("UPDATE runs SET status = ? WHERE id = ?", status, id)
             .execute(&self.pool)
