@@ -16,7 +16,7 @@ use sprites_client::SpriteClient;
 use store::Store;
 use tower::ServiceExt;
 
-use swarm::{router, AppState};
+use squadron::{router, AppState};
 
 const STATIC_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/static");
 

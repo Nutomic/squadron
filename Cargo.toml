@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/swarm",
+    "crates/squadron",
     "crates/sprites-client",
     "crates/llm-gateway",
     "crates/store",

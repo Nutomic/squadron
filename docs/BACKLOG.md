@@ -34,24 +34,24 @@
 
 - **B3 — rate limiter is best-effort, in-memory, and proxy-blind.** The F3
   limiter keys on the socket remote addr
-  (crates/swarm/src/ratelimit.rs:42-60); behind a reverse proxy every client
+  (crates/squadron/src/ratelimit.rs:42-60); behind a reverse proxy every client
   shares one bucket, and a X-Forwarded-For mis-reader would make the cap
   trivially bypassable or self-DoS. The per-IP map also grows without
   eviction, and limits reset on restart. Follow-up: document the deployment
   assumption, add bounded eviction, and evaluate trusted-proxy header
-  handling (crates/swarm/src/ratelimit.rs, crates/swarm/src/api.rs:62-130).
+  handling (crates/squadron/src/ratelimit.rs, crates/squadron/src/api.rs:62-130).
 
 - **B4 — CSRF token lifetime and rotation.** The double-submit token is
   generated per form render and never expires or rotates on use
-  (crates/swarm/src/csrf.rs, crates/swarm/src/web.rs:54-97, 371-433); a token
+  (crates/squadron/src/csrf.rs, crates/squadron/src/web.rs:54-97, 371-433); a token
   leaked once stays valid indefinitely. Consider an expiry/rotation scheme and
   a test for token-reuse-after-consumption semantics
-  (crates/swarm/tests/, new file).
+  (crates/squadron/tests/, new file).
 
 - **B5 — 429-reject vs queue for the process-wide run cap.** F3 rejects with
   429 + Retry-After when `max_active_runs` is hit
-  (crates/swarm/src/api.rs:120-130, crates/swarm/src/web.rs:133, defaults in
-  crates/swarm/src/ratelimit.rs:32-34). The review noted queueing as the
+  (crates/squadron/src/api.rs:120-130, crates/squadron/src/web.rs:133, defaults in
+  crates/squadron/src/ratelimit.rs:32-34). The review noted queueing as the
   alternative: evaluate a bounded admission queue with queue-position feedback
   instead of a hard reject, and align the cap with the orchestrator's own
   slot limit (`max_running_slots`, crates/orchestrator/src/config.rs:32-47) so
@@ -81,7 +81,7 @@
   env-configurable limits (SWARM_MAX_CONCURRENT_RUNS_PER_IP,
   SWARM_RUNS_PER_HOUR_PER_IP, SWARM_MAX_ACTIVE_RUNS, SWARM_CHROMIUM_NO_SANDBOX)
   with sane defaults but no operator-facing documentation or validation
-  feedback (crates/swarm/src/ratelimit.rs:42-60,
+  feedback (crates/squadron/src/ratelimit.rs:42-60,
   crates/orchestrator/src/screenshot.rs:103-108,
   crates/orchestrator/src/config.rs). Add a config/README section and
   startup-log the effective limits so a misconfigured cap is visible.

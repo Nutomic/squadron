@@ -75,7 +75,7 @@ async fn judge_sends_screenshot_image_parts_when_available() {
         },
     );
     let png = std::fs::read(
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../swarm/static/logo.png"),
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../squadron/static/logo.png"),
     )
     .ok()
     .unwrap_or_else(|| vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
@@ -253,7 +253,7 @@ async fn judge_labels_each_image_with_its_lane_idx() {
         )
     };
     let png = std::fs::read(
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../swarm/static/logo.png"),
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../squadron/static/logo.png"),
     )
     .ok()
     .unwrap_or_else(|| vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);

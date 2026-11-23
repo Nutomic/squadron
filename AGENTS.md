@@ -4,7 +4,7 @@ Guidance for AI coding agents working in this repository. Read this before makin
 
 ## What this is
 
-Squadron: a Rust control plane that runs N parallel AI implementer/validator agent lanes on Fly.io Sprites, judges results, and serves a live gallery dashboard. Six-crate workspace: `swarm` (axum app + Askama/htmx/Svelte island), `orchestrator` (pipeline, state machine, screenshots, artifacts, harness), `prompts` (role prompts, schema gate, injection scan), `sprites_client` (typed `sprite` CLI wrapper + mocks), `llm_gateway` (machine-side LLM client), `store` (SQLx/SQLite).
+Squadron: a Rust control plane that runs N parallel AI implementer/validator agent lanes on Fly.io Sprites, judges results, and serves a live gallery dashboard. Six-crate workspace: `squadron` (axum app + Askama/htmx/Svelte island), `orchestrator` (pipeline, state machine, screenshots, artifacts, harness), `prompts` (role prompts, schema gate, injection scan), `sprites_client` (typed `sprite` CLI wrapper + mocks), `llm_gateway` (machine-side LLM client), `store` (SQLx/SQLite).
 
 ## Build & test (fast machine required)
 
@@ -13,8 +13,8 @@ All cargo commands need a real multi-core box — this repo's development happen
 - Format: `cargo fmt --all`
 - Check: `SQLX_OFFLINE=true cargo check --workspace --all-targets`
 - Tests: `SQLX_OFFLINE=true cargo test --workspace`
-- Release: `SQLX_OFFLINE=true cargo build --release -p swarm`
-- Island (Svelte/Vite): `cd crates/swarm/island && npm ci && npm run build` — commit the `dist` output.
+- Release: `SQLX_OFFLINE=true cargo build --release -p squadron`
+- Island (Svelte/Vite): `cd crates/squadron/island && npm ci && npm run build` — commit the `dist` output.
 - Strict clippy (CI enforces): no `unwrap`/`panic!`/`expect` in non-test code (`-D clippy::unwrap_used`, `-D clippy::panic`, etc.).
 
 `SQLX_OFFLINE=true` is required — queries are compile-time checked via the checked-in offline cache; never run against a live DB for compilation.

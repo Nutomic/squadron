@@ -16,7 +16,7 @@ Six-crate Cargo workspace plus the binary crate that ties it together:
 
 | Crate | Role |
 | --- | --- |
-| `swarm` | axum app: gallery dashboard (Askama templates, htmx, Svelte island), REST/SSE API, fixtures, wiring, entrypoint |
+| `squadron` | axum app: gallery dashboard (Askama templates, htmx, Svelte island), REST/SSE API, fixtures, wiring, entrypoint |
 | `orchestrator` | lane state machine, slot semaphore (max running lanes), pipeline (impl → validate → judge), screenshots, artifacts, harness, judge, SSE snapshots |
 | `prompts` | role prompts (implementer/validator/judge/variants), serde output types, JSON Schema documents, schema gate + injection scan |
 | `sprites-client` | typed wrapper over the `sprite` CLI (create/exec/info/config), mock CLI + fixtures for tests |
@@ -52,7 +52,7 @@ Environment variables:
 Build and run:
 
 ```sh
-SQLX_OFFLINE=true cargo build --release -p swarm
+SQLX_OFFLINE=true cargo build --release -p squadron
 DATABASE_URL=sqlite:$PWD/dev.db?mode=rwc DATA_DIR=$PWD/work OPENCODE_KEY=sk-... \
   ./target/release/swarm
 ```
@@ -71,7 +71,7 @@ cargo build -p sprites-client --bins
 SPRITE_CLI=$PWD/target/debug/mock-sprite-cli \
 SWARM_TEST_MODE=1 SWARM_FIXTURES=1 \
 DATABASE_URL=sqlite:$PWD/dev.db?mode=rwc DATA_DIR=$PWD/work \
-  cargo run -p swarm
+  cargo run -p squadron
 ```
 
 `SWARM_TEST_MODE=1` short-circuits the HTTP 200-checks and judge screenshot

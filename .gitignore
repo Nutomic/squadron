@@ -3,7 +3,7 @@
 /dev.db.*
 /.env
 *.log
-crates/swarm/island/node_modules/
+crates/squadron/island/node_modules/
 
 # R2-3#6: test artifact must not be tracked
 mock-sprites.json*

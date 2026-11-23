@@ -4,7 +4,7 @@ use std::sync::Arc;
 use orchestrator::PipelineConfig;
 use sprites_client::SpriteClient;
 use store::Store;
-use swarm::{router, static_dir, AppState};
+use squadron::{router, static_dir, AppState};
 
 #[tokio::main]
 async fn main() {
@@ -36,7 +36,7 @@ async fn main() {
     // R2 finding 1: the real machine judge when OPENCODE_KEY is set; otherwise
     // machine_llm_from_env logs a warning and the deterministic fallback (only
     // acceptable in dev/test) stays in place.
-    if let Some(llm) = swarm::AppState::machine_llm_from_env() {
+    if let Some(llm) = squadron::AppState::machine_llm_from_env() {
         state = state.with_machine_llm(llm);
     }
     let app = router(Arc::new(state));
