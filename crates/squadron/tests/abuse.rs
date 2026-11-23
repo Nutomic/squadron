@@ -43,7 +43,7 @@ async fn body_string(body: Body) -> String {
     String::from_utf8(body.collect().await.unwrap().to_bytes().to_vec()).unwrap()
 }
 
-/// GET / issues an unguessable double-submit token in the swarm_csrf cookie.
+/// GET / issues an unguessable double-submit token in the squadron_csrf cookie.
 #[tokio::test]
 async fn form_get_sets_unguessable_csrf_cookie() {
     let (app, _) = app().await;
@@ -58,12 +58,12 @@ async fn form_get_sets_unguessable_csrf_cookie() {
             .headers()
             .get(header::SET_COOKIE)
             .and_then(|v| v.to_str().ok())
-            .expect("GET / must set swarm_csrf")
+            .expect("GET / must set squadron_csrf")
             .to_owned();
-        assert!(cookie.starts_with("swarm_csrf="), "cookie: {cookie}");
+        assert!(cookie.starts_with("squadron_csrf="), "cookie: {cookie}");
         assert!(cookie.contains("SameSite=Lax") && cookie.contains("HttpOnly"));
         tokens.push(
-            cookie["swarm_csrf=".len()..]
+            cookie["squadron_csrf=".len()..]
                 .split(';')
                 .next()
                 .unwrap()
@@ -113,7 +113,7 @@ async fn confirm_requires_matching_csrf_token() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(
                     header::COOKIE,
-                    "swarm_csrf=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "squadron_csrf=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 )
                 .body(Body::from(
                     r#"{"brief":"x site","cases":[{"label":"a","impl_prompt":"p"}],"csrf_token":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#,
@@ -136,7 +136,7 @@ async fn confirm_requires_matching_csrf_token() {
             .get(header::SET_COOKIE)
             .and_then(|v| v.to_str().ok())
             .unwrap()
-            .strip_prefix("swarm_csrf=")
+            .strip_prefix("squadron_csrf=")
             .unwrap()
             .split(';')
             .next()
@@ -150,7 +150,7 @@ async fn confirm_requires_matching_csrf_token() {
                 .method("POST")
                 .uri("/runs")
                 .header(header::CONTENT_TYPE, "application/json")
-                .header(header::COOKIE, format!("swarm_csrf={token}"))
+                .header(header::COOKIE, format!("squadron_csrf={token}"))
                 .body(Body::from(format!(
                     r#"{{"brief":"csrf ok","cases":[{{"label":"a","impl_prompt":"p"}}],"csrf_token":"{token}"}}"#
                 )))
@@ -188,8 +188,8 @@ async fn promote_requires_token_but_json_api_is_unaffected() {
         res.headers()
             .get(header::SET_COOKIE)
             .and_then(|v| v.to_str().ok())
-            .expect("gallery GET must set swarm_csrf")
-            .strip_prefix("swarm_csrf=")
+            .expect("gallery GET must set squadron_csrf")
+            .strip_prefix("squadron_csrf=")
             .unwrap()
             .split(';')
             .next()
@@ -216,7 +216,7 @@ async fn promote_requires_token_but_json_api_is_unaffected() {
                 .method("POST")
                 .uri(format!("/{}/promote", run.id))
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("swarm_csrf={token}"))
+                .header(header::COOKIE, format!("squadron_csrf={token}"))
                 .body(Body::from(format!("csrf_token={token}")))
                 .unwrap(),
         )
@@ -305,7 +305,7 @@ async fn process_active_run_cap_returns_429_with_retry_after() {
             .get(header::SET_COOKIE)
             .and_then(|v| v.to_str().ok())
             .unwrap()
-            .strip_prefix("swarm_csrf=")
+            .strip_prefix("squadron_csrf=")
             .unwrap()
             .split(';')
             .next()
@@ -319,7 +319,7 @@ async fn process_active_run_cap_returns_429_with_retry_after() {
                 .method("POST")
                 .uri("/runs")
                 .header(header::CONTENT_TYPE, "application/json")
-                .header(header::COOKIE, format!("swarm_csrf={token}"))
+                .header(header::COOKIE, format!("squadron_csrf={token}"))
                 .body(Body::from(format!(
                     r#"{{"brief":"confirm cap","cases":[{{"label":"a","impl_prompt":"p"}}],"csrf_token":"{token}"}}"#
                 )))

@@ -3,7 +3,7 @@
 //! (no login), so a stateless double-submit cookie is the fit:
 //!
 //! - every GET that renders a form issues a fresh unguessable token and sets
-//!   it both in a cookie (`swarm_csrf`) and in the page (hidden input /
+//!   it both in a cookie (`squadron_csrf`) and in the page (hidden input /
 //!   `data-csrf-token` for the island's promote form);
 //! - the POST is accepted only when the cookie and the form token are both
 //!   present, non-empty and equal;
@@ -13,7 +13,7 @@ use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use uuid::Uuid;
 
-pub const CSRF_COOKIE: &str = "swarm_csrf";
+pub const CSRF_COOKIE: &str = "squadron_csrf";
 
 /// A fresh double-submit token: uuid v4 (122 random bits).
 pub fn new_token() -> String {

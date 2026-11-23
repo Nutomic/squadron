@@ -121,8 +121,8 @@ async fn csrf_token(app: &axum::Router) -> String {
     res.headers()
         .get(header::SET_COOKIE)
         .and_then(|v| v.to_str().ok())
-        .expect("GET / must set swarm_csrf")
-        .strip_prefix("swarm_csrf=")
+        .expect("GET / must set squadron_csrf")
+        .strip_prefix("squadron_csrf=")
         .unwrap()
         .split(';')
         .next()
@@ -141,7 +141,7 @@ async fn post_json(
         .uri(uri)
         .header(header::CONTENT_TYPE, "application/json");
     if let Some(token) = token {
-        req = req.header(header::COOKIE, format!("swarm_csrf={token}"));
+        req = req.header(header::COOKIE, format!("squadron_csrf={token}"));
     }
     let mut json = body;
     if let Some(token) = token {
@@ -247,7 +247,7 @@ async fn csrf_enforced_on_preview_and_confirm() {
                     .header(header::CONTENT_TYPE, "application/json")
                     .header(
                         header::COOKIE,
-                        "swarm_csrf=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "squadron_csrf=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     )
                     .body(Body::from(body.to_string()))
                     .unwrap(),

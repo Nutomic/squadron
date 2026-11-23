@@ -103,7 +103,7 @@ async fn index() -> Response {
 #[derive(Deserialize)]
 pub struct PreviewBody {
     pub brief: Option<String>,
-    /// Review F3 #3: double-submit token (must match the swarm_csrf cookie).
+    /// Review F3 #3: double-submit token (must match the squadron_csrf cookie).
     pub csrf_token: Option<String>,
 }
 
@@ -117,7 +117,7 @@ pub struct ConfirmBody {
     /// happens at confirm time.
     #[serde(default)]
     pub cases: Vec<CaseInput>,
-    /// Review F3 #3: double-submit token (must match the swarm_csrf cookie).
+    /// Review F3 #3: double-submit token (must match the squadron_csrf cookie).
     pub csrf_token: Option<String>,
 }
 

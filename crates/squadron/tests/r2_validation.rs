@@ -43,8 +43,8 @@ async fn csrf_token(app: &axum::Router) -> String {
     res.headers()
         .get(header::SET_COOKIE)
         .and_then(|v| v.to_str().ok())
-        .expect("GET / must set swarm_csrf")
-        .strip_prefix("swarm_csrf=")
+        .expect("GET / must set squadron_csrf")
+        .strip_prefix("squadron_csrf=")
         .unwrap()
         .split(';')
         .next()
@@ -123,7 +123,7 @@ async fn brief_over_cap_rejected_on_api_and_confirm() {
                 .method("POST")
                 .uri("/runs")
                 .header(header::CONTENT_TYPE, "application/json")
-                .header(header::COOKIE, format!("swarm_csrf={token}"))
+                .header(header::COOKIE, format!("squadron_csrf={token}"))
                 .body(Body::from(
                     serde_json::json!({"brief": "x".repeat(4001), "cases": cases, "csrf_token": token})
                         .to_string(),
@@ -258,7 +258,7 @@ async fn empty_brief_rejected_on_api_and_preview() {
                 .method("POST")
                 .uri("/api/preview")
                 .header(header::CONTENT_TYPE, "application/json")
-                .header(header::COOKIE, format!("swarm_csrf={token}"))
+                .header(header::COOKIE, format!("squadron_csrf={token}"))
                 .body(Body::from(
                     serde_json::json!({"brief": "   ", "csrf_token": token}).to_string(),
                 ))

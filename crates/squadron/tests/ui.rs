@@ -44,7 +44,7 @@ async fn body_string(body: Body) -> String {
 }
 
 /// Issue a GET that renders a form and return the double-submit CSRF token
-/// (from the swarm_csrf Set-Cookie header) — review F3 #3.
+/// (from the squadron_csrf Set-Cookie header) — review F3 #3.
 async fn csrf_token_for(app: &axum::Router, uri: &str) -> String {
     let res = app
         .clone()
@@ -55,13 +55,13 @@ async fn csrf_token_for(app: &axum::Router, uri: &str) -> String {
         .headers()
         .get(header::SET_COOKIE)
         .and_then(|v| v.to_str().ok())
-        .expect("form GET must set the swarm_csrf cookie")
+        .expect("form GET must set the squadron_csrf cookie")
         .to_owned();
     cookie
-        .strip_prefix("swarm_csrf=")
+        .strip_prefix("squadron_csrf=")
         .and_then(|rest| rest.split(';').next())
         .filter(|t| !t.is_empty())
-        .expect("swarm_csrf cookie must carry a token")
+        .expect("squadron_csrf cookie must carry a token")
         .to_owned()
 }
 
@@ -75,7 +75,7 @@ async fn post_run(app: &axum::Router, body: serde_json::Value) -> axum::http::Re
         .method("POST")
         .uri("/runs")
         .header(header::CONTENT_TYPE, "application/json")
-        .header(header::COOKIE, format!("swarm_csrf={token}"))
+        .header(header::COOKIE, format!("squadron_csrf={token}"))
         .body(Body::from(json.to_string()))
         .unwrap();
     app.clone().oneshot(req).await.unwrap()
@@ -539,7 +539,7 @@ async fn promote_requires_judged_status() {
                 .method("POST")
                 .uri(format!("/{}/promote", run.id))
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("swarm_csrf={token}"))
+                .header(header::COOKIE, format!("squadron_csrf={token}"))
                 .body(Body::from(format!("csrf_token={token}")))
                 .unwrap(),
         )
@@ -564,7 +564,7 @@ async fn promote_requires_judged_status() {
                 .method("POST")
                 .uri(format!("/{}/promote", run.id))
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("swarm_csrf={token}"))
+                .header(header::COOKIE, format!("squadron_csrf={token}"))
                 .body(Body::from(format!("csrf_token={token}")))
                 .unwrap(),
         )
@@ -963,7 +963,7 @@ async fn runs_page_empty_state_renders_outside_the_table() {
         let html = body_string(res.into_body()).await;
         assert!(html.contains("No runs yet"), "GET {uri}");
         assert!(html.contains("Launch one"), "GET {uri}");
-        assert!(html.contains("swarm.fly.dev/…"), "GET {uri}");
+        assert!(html.contains("squadron.fly.dev/…"), "GET {uri}");
         // No runs means no <table> at all: the empty state must not sit
         // inside the min-width table that clips it on small screens.
         assert!(!html.contains("<table"), "GET {uri}");
@@ -1077,7 +1077,7 @@ async fn hsts_and_secure_csrf_cookie_set() {
         .headers()
         .get(header::SET_COOKIE)
         .and_then(|v| v.to_str().ok())
-        .expect("form GET must set the swarm_csrf cookie")
+        .expect("form GET must set the squadron_csrf cookie")
         .to_owned();
     assert!(cookie.contains("Secure"), "cookie: {cookie}");
     assert!(cookie.contains("HttpOnly"), "cookie: {cookie}");
