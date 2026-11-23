@@ -122,16 +122,18 @@ pub fn validator_reports_from_lanes(lanes: &[store::Lane]) -> Vec<LaneJudgeRepor
         let summary = l.val_summary.clone().unwrap_or_default();
         let quality = l.val_quality.unwrap_or(0.0);
         // Hydrate the full report (features/bugs/security) from the persisted
-        // validator output when available; otherwise empty placeholders.
+        // validator output when available; otherwise empty placeholders. The
+        // reader tolerates legacy string-shaped reports and drops
+        // placeholder/empty entries (F18).
         let out = l
             .val_report_json
             .as_deref()
-            .and_then(|json| serde_json::from_str::<ValidatorOutput>(json).ok())
+            .and_then(prompts::parse_validator_report)
             .unwrap_or(ValidatorOutput {
                 verdict,
-                features: prompts::TextOrList::Text(String::new()),
-                bugs: prompts::TextOrList::Text(String::new()),
-                security: prompts::TextOrList::Text(String::new()),
+                features: Vec::new(),
+                bugs: Vec::new(),
+                security: Vec::new(),
                 quality_score: quality,
                 summary,
             });

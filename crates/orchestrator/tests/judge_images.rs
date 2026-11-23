@@ -68,9 +68,9 @@ async fn judge_sends_screenshot_image_parts_when_available() {
         prompts::ValidatorOutput {
             verdict: prompts::Verdict::Pass,
             summary: "ok".to_owned(),
-            features: prompts::TextOrList::Text("feature".to_owned()),
-            bugs: prompts::TextOrList::Text(String::new()),
-            security: prompts::TextOrList::Text(String::new()),
+            features: vec!["feature".to_owned()],
+            bugs: Vec::new(),
+            security: Vec::new(),
             quality_score: 8.0,
         },
     );
@@ -135,9 +135,9 @@ async fn judge_without_images_uses_text_only_request() {
         prompts::ValidatorOutput {
             verdict: prompts::Verdict::Pass,
             summary: "ok".to_owned(),
-            features: prompts::TextOrList::Text("feature".to_owned()),
-            bugs: prompts::TextOrList::Text(String::new()),
-            security: prompts::TextOrList::Text(String::new()),
+            features: vec!["feature".to_owned()],
+            bugs: Vec::new(),
+            security: Vec::new(),
             quality_score: 8.0,
         },
     );
@@ -194,9 +194,9 @@ async fn judge_winner_outside_validated_lanes_is_rejected() {
                 prompts::ValidatorOutput {
                     verdict: prompts::Verdict::Pass,
                     summary: "ok".to_owned(),
-                    features: prompts::TextOrList::Text("feature".to_owned()),
-                    bugs: prompts::TextOrList::Text(String::new()),
-                    security: prompts::TextOrList::Text(String::new()),
+                    features: vec!["feature".to_owned()],
+                    bugs: Vec::new(),
+                    security: Vec::new(),
                     quality_score: 8.0,
                 },
             )
@@ -245,9 +245,9 @@ async fn judge_labels_each_image_with_its_lane_idx() {
             prompts::ValidatorOutput {
                 verdict: prompts::Verdict::Pass,
                 summary: "ok".to_owned(),
-                features: prompts::TextOrList::Text("feature".to_owned()),
-                bugs: prompts::TextOrList::Text(String::new()),
-                security: prompts::TextOrList::Text(String::new()),
+                features: vec!["feature".to_owned()],
+                bugs: Vec::new(),
+                security: Vec::new(),
                 quality_score: 8.0,
             },
         )
