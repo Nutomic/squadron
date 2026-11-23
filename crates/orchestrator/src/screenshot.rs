@@ -112,7 +112,10 @@ impl RenderMode {
 /// Chromium with --no-sandbox from the start (environments where the
 /// sandboxed launch is known to fail, e.g. root without user namespaces).
 fn no_sandbox_env() -> bool {
-    std::env::var("SQUADRON_CHROMIUM_NO_SANDBOX").ok().as_deref() == Some("1")
+    std::env::var("SQUADRON_CHROMIUM_NO_SANDBOX")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 /// One Chromium launch + navigate + screenshot attempt with the given

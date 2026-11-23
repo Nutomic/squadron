@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use orchestrator::PipelineConfig;
 use sprites_client::SpriteClient;
-use store::Store;
 use squadron::{router, static_dir, AppState};
+use store::Store;
 
 #[tokio::main]
 async fn main() {
