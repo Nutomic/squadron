@@ -1165,6 +1165,7 @@ struct ValRunResult {
     cost_usd: Option<f64>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_implementer(
     ctx: &PipelineCtx,
     run_id: &str,

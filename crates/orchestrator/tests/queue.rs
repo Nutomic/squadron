@@ -16,8 +16,7 @@ use orchestrator::{
 use sprites_client::{SpriteClient, SpriteConfig};
 use store::Store;
 
-static ENV_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn canned_impl() -> String {
     serde_json::json!({
@@ -46,7 +45,7 @@ struct TestEnv {
     ctx: Arc<PipelineCtx>,
     store: Store,
     _tmp: tempfile::TempDir,
-    _guard: std::sync::MutexGuard<'static, ()>,
+    _guard: tokio::sync::MutexGuard<'static, ()>,
 }
 
 fn harness_for(impl_body: &str) -> HarnessMode {
@@ -65,7 +64,7 @@ fn harness_for(impl_body: &str) -> HarnessMode {
 }
 
 async fn setup(config: PipelineConfig) -> TestEnv {
-    let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let state_path = dir.path().join("mock-sprites.json");
     std::env::set_var("MOCK_SPRITE_STATE", &state_path);
@@ -109,7 +108,7 @@ async fn setup(config: PipelineConfig) -> TestEnv {
         ctx,
         store,
         _tmp: dir,
-        _guard: guard,
+        _guard: _env_guard,
     }
 }
 
