@@ -54,7 +54,7 @@ Build and run:
 ```sh
 SQLX_OFFLINE=true cargo build --release -p squadron
 DATABASE_URL=sqlite:$PWD/dev.db?mode=rwc DATA_DIR=$PWD/work OPENCODE_KEY=sk-... \
-  ./target/release/swarm
+  ./target/release/squadron
 ```
 
 Then open `http://localhost:3000` and submit a brief. Run status, lanes,
@@ -87,8 +87,8 @@ then ships a Debian runtime with Chromium + fonts (for lane screenshots), the
 persistent volume at `/data` for SQLite and artifacts (see `fly.toml`).
 
 ```sh
-fly launch        # or: fly apps create swarm
-fly volumes create swarm_data --size 10
+fly launch        # or: fly apps create squadron
+fly volumes create squadron_data --size 10
 fly secrets set OPENCODE_KEY=... SPRITE_TOKEN=...
 fly deploy
 ```

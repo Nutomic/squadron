@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 # #11: runtime image must be able to run the product end to end:
-# swarm binary, sprite CLI (drives lanes), tokei (artifact stats),
+# squadron binary, sprite CLI (drives lanes), tokei (artifact stats),
 # Chromium (screenshot queue) and the dashboard static assets.
 
 FROM rust:1.99 AS builder
 WORKDIR /app
 COPY . .
-RUN cargo build --release -p swarm
+RUN cargo build --release -p squadron
 # tokei is not packaged for debian; build it once in the rust image.
 RUN cargo install tokei --locked
 
@@ -25,20 +25,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://sprites.dev/install.sh | SPRITE_INSTALL_BIN_DIR=/usr/local/bin sh \
     && sprite -v
 
-COPY --from=builder /app/target/release/swarm /usr/local/bin/swarm
+COPY --from=builder /app/target/release/squadron /usr/local/bin/squadron
 COPY --from=builder /usr/local/cargo/bin/tokei /usr/local/bin/tokei
-COPY crates/swarm/static /app/static
+COPY crates/squadron/static /app/static
 
 ENV PORT=3000 \
-    DATABASE_URL=sqlite:/data/swarm.db?mode=rwc \
+    DATABASE_URL=sqlite:/data/squadron.db?mode=rwc \
     DATA_DIR=/data \
-    SWARM_STATIC_DIR=/app/static \
+    SQUADRON_STATIC_DIR=/app/static \
     CHROMIUM_BIN=/usr/bin/chromium \
     SPRITE_CLI=/usr/local/bin/sprite
 VOLUME /data
 EXPOSE 3000
 ENTRYPOINT ["/usr/bin/tini", "--"]
-# Boot step (audit #5): the swarm orchestrator shells out to `sprite`, so auth
+# Boot step (audit #5): the squadron orchestrator shells out to `sprite`, so auth
 # is provisioned at boot from the SPRITE_TOKEN Fly secret — never hardcoded
 # here. With the secret set, `sprite auth setup` + a real `sprite list` call
 # prove the token works before the orchestrator starts. Without the secret,
@@ -52,4 +52,4 @@ CMD ["/bin/sh", "-ec", "\
     sprite list >/dev/null || { echo 'FATAL: sprite list failed after auth setup — token may be invalid or org unreachable'; exit 1; }; \
     echo 'sprite auth OK'; \
   fi; \
-  exec /usr/local/bin/swarm"]
+  exec /usr/local/bin/squadron"]

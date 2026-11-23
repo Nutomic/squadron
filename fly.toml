@@ -1,6 +1,6 @@
 # #11: Fly deploy config — Machine sized for serial Chromium rendering,
 # 10GB /data volume, auto-stop off (long-running orchestrator).
-app = "swarm"
+app = "squadron"
 primary_region = "iad"
 
 [build]
@@ -34,7 +34,7 @@ primary_region = "iad"
     hard_limit = 250
 
 [[mounts]]
-  source = "swarm_data"
+  source = "squadron_data"
   destination = "/data"
 
 [[vm]]
