@@ -10,4 +10,4 @@ mock-sprites.json*
 
 # R3-B: harness/integration tests write lane workdirs through the mock sprite
 # CLI; those must live in a tempdir, never in the source tree
-crates/orchestrator/swarm-work/
+crates/orchestrator/squadron-work/

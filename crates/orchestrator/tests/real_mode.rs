@@ -76,7 +76,7 @@ async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
         .ok()
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
     // The mock CLI executes commands in this process' cwd; the sprite-side
-    // workdir (`swarm-work/...`) is relative, so run from a private cwd.
+    // workdir (`squadron-work/...`) is relative, so run from a private cwd.
     std::env::set_current_dir(project.path()).unwrap();
 
     // Fake `tokei` on PATH so the sprite-side tokei step of the artifact pull
@@ -214,7 +214,7 @@ async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
     for idx in 0..3i64 {
         let dir = project
             .path()
-            .join("swarm-work")
+            .join("squadron-work")
             .join(&short)
             .join(format!("lane-{idx}"));
         std::fs::create_dir_all(&dir).unwrap();
@@ -677,7 +677,7 @@ async fn failing_config_update_fails_the_lane_before_any_exec() {
         .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
         .collect();
     for idx in 0..2 {
-        let name = format!("swarm-{seg}-impl-{idx}");
+        let name = format!("squadron-{seg}-impl-{idx}");
         let config_calls = state
             .command_log
             .iter()

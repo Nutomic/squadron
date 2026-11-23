@@ -200,14 +200,14 @@ async fn sprite_recipe_uses_gateway_headers_without_auth() {
     assert_eq!(lane_model(0), "glm-5.3-flash");
     assert_eq!(lane_model(1), "glm-5.3-flash"); // pinned: no per-lane alternation
     let recipe = SpriteRecipe::for_model("lane-7", lane_model(0));
-    assert_eq!(recipe.session_id(), "swarm-lane-7");
+    assert_eq!(recipe.session_id(), "squadron-lane-7");
     let headers = recipe.headers();
     assert!(headers
         .iter()
         .any(|(k, v)| k == "user-agent" && v == USER_AGENT));
     assert!(headers
         .iter()
-        .any(|(k, v)| k == SESSION_HEADER && v == "swarm-lane-7"));
+        .any(|(k, v)| k == SESSION_HEADER && v == "squadron-lane-7"));
     assert!(!headers
         .iter()
         .any(|(k, _)| k.eq_ignore_ascii_case("authorization")));

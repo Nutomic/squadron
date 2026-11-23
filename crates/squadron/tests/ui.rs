@@ -243,8 +243,8 @@ async fn events_stream_full_state_snapshot() {
         .start_impl(
             &run.id,
             0,
-            "swarm-impl-0",
-            "https://swarm-impl-0.sprites.app",
+            "squadron-impl-0",
+            "https://squadron-impl-0.sprites.app",
             "glm-5.3-flash",
             1_732_020_000_000,
             1_732_056_000_000,
@@ -306,8 +306,8 @@ async fn lane_detail_renders_sandboxed_iframe_and_plain_text_validator() {
         .start_impl(
             &run.id,
             0,
-            "swarm-impl-0",
-            "https://swarm-impl-0.sprites.app",
+            "squadron-impl-0",
+            "https://squadron-impl-0.sprites.app",
             "glm-5.3-flash",
             1_732_020_000_000,
             1_732_056_000_000,
@@ -341,7 +341,7 @@ async fn lane_detail_renders_sandboxed_iframe_and_plain_text_validator() {
     assert!(!html.contains("allow-forms"));
     assert!(!html.contains("allow-top-navigation"));
     assert!(html.contains(r#"referrerpolicy="no-referrer""#));
-    assert!(html.contains(r#"src="https://swarm-impl-0.sprites.app""#));
+    assert!(html.contains(r#"src="https://squadron-impl-0.sprites.app""#));
     assert!(html.contains("&lt;script&gt;"));
     assert!(!html.contains("<script>alert"));
     assert!(html.contains("Features: nice page"));
@@ -362,8 +362,8 @@ async fn lane_detail_renders_report_arrays_and_plain_quality_number() {
         .start_impl(
             &run.id,
             0,
-            "swarm-impl-0",
-            "https://swarm-impl-0.sprites.app",
+            "squadron-impl-0",
+            "https://squadron-impl-0.sprites.app",
             "glm-5.3-flash",
             1_732_020_000_000,
             1_732_056_000_000,
@@ -454,7 +454,7 @@ async fn thumb_gated_on_done_state() {
         .await
         .unwrap();
     store.insert_lane(&run.id, 0, "{}").await.unwrap();
-    let png = std::env::temp_dir().join(format!("swarm-test-{}.png", std::process::id()));
+    let png = std::env::temp_dir().join(format!("squadron-test-{}.png", std::process::id()));
     std::fs::write(&png, b"\x89PNG fake bytes").unwrap();
     let res = app
         .clone()
@@ -497,7 +497,7 @@ async fn source_download_serves_tarball_attachment() {
         .await
         .unwrap();
     store.insert_lane(&run.id, 0, "{}").await.unwrap();
-    let tar = std::env::temp_dir().join(format!("swarm-test-{}.tar.gz", std::process::id()));
+    let tar = std::env::temp_dir().join(format!("squadron-test-{}.tar.gz", std::process::id()));
     std::fs::write(&tar, b"fake gzip bytes").unwrap();
     store
         .set_artifacts(&run.id, 0, tar.to_str().unwrap(), "{}", "log")

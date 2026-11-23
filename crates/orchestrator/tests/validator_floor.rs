@@ -110,7 +110,7 @@ async fn floor_validator_turn_carries_evidence_and_exact_keys_in_the_request_pay
     let prompt = prompts::validator_prompt(
         "implementer claims it built the site",
         "https://lane.example/",
-        "swarm-work/x/lane-0",
+        "squadron-work/x/lane-0",
         &evidence,
     );
 

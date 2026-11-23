@@ -49,7 +49,7 @@ async fn spawn_tunnel(hits: Arc<Mutex<u32>>) -> String {
 async fn gather_validator_evidence_embeds_files_and_http_probe() {
     let dir = tempfile::tempdir().unwrap();
     // Populate the lane workdir the way an implementer would.
-    let workdir = dir.path().join("swarm-work").join("lane-0");
+    let workdir = dir.path().join("squadron-work").join("lane-0");
     std::fs::create_dir_all(workdir.join("src")).unwrap();
     std::fs::create_dir_all(workdir.join("node_modules")).unwrap();
     std::fs::write(
@@ -130,7 +130,7 @@ async fn gather_validator_evidence_embeds_files_and_http_probe() {
 #[tokio::test(flavor = "multi_thread")]
 async fn gather_validator_evidence_embeds_the_core_src_source_files() {
     let dir = tempfile::tempdir().unwrap();
-    let workdir = dir.path().join("swarm-work").join("lane-2");
+    let workdir = dir.path().join("squadron-work").join("lane-2");
     std::fs::create_dir_all(workdir.join("src")).unwrap();
     std::fs::write(
         workdir.join("index.html"),
@@ -181,7 +181,7 @@ async fn gather_validator_evidence_embeds_the_core_src_source_files() {
 #[tokio::test(flavor = "multi_thread")]
 async fn gather_validator_evidence_truncates_large_sources_with_marker() {
     let dir = tempfile::tempdir().unwrap();
-    let workdir = dir.path().join("swarm-work").join("lane-3");
+    let workdir = dir.path().join("squadron-work").join("lane-3");
     std::fs::create_dir_all(workdir.join("src")).unwrap();
     std::fs::write(
         workdir.join("index.html"),
@@ -215,7 +215,7 @@ async fn gather_validator_evidence_truncates_large_sources_with_marker() {
 async fn gather_validator_evidence_reports_unreachable_probe_as_data() {
     let dir = tempfile::tempdir().unwrap();
     // Empty workdir: the tarball still carries the directory structure.
-    let workdir = dir.path().join("swarm-work").join("lane-1");
+    let workdir = dir.path().join("squadron-work").join("lane-1");
     std::fs::create_dir_all(&workdir).unwrap();
     let tarball = tarball_from_dir(&workdir);
 

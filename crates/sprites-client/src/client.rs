@@ -144,7 +144,7 @@ impl SpriteClient {
 
     /// R3-A #1: the real public URL is NOT `{scheme}://{name}.sprites.app` —
     /// sprite hosts carry an opaque suffix assigned by the platform (e.g.
-    /// `swarm-x` -> `swarm-x-b5t5x.sprites.app`). Parse the `URL:` line from
+    /// `squadron-x` -> `squadron-x-b5t5x.sprites.app`). Parse the `URL:` line from
     /// `sprite info <name>` instead of ever fabricating a host.
     pub async fn url(&self, name: &str) -> Result<String, SpriteError> {
         let args = vec!["info".into(), name.into()];

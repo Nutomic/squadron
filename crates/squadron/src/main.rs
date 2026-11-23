@@ -54,7 +54,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("failed to bind");
-    tracing::info!("swarm listening on {addr}");
+    tracing::info!("squadron listening on {addr}");
     // ConnectInfo is needed by the F3 per-IP run-creation rate limit.
     axum::serve(
         listener,

@@ -307,7 +307,7 @@ fn temp_extract_dir() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("swarm-tokei-{}-{}", std::process::id(), nanos))
+    std::env::temp_dir().join(format!("squadron-tokei-{}-{}", std::process::id(), nanos))
 }
 
 fn extract_tarball_gz(bytes: &[u8], dest: &Path) -> Result<(), String> {

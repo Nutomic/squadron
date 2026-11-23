@@ -117,5 +117,5 @@ fn session_id(lane_id: &str) -> String {
         })
         .take(64)
         .collect();
-    format!("swarm-{cleaned}")
+    format!("squadron-{cleaned}")
 }

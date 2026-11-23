@@ -118,7 +118,7 @@ fn lane_prefix(run_id: &str, n: usize) -> Vec<String> {
         .chars()
         .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
         .collect();
-    (0..n).map(|i| format!("swarm-{seg}-impl-{i}")).collect()
+    (0..n).map(|i| format!("squadron-{seg}-impl-{i}")).collect()
 }
 
 fn create_count(state: &MockState, name: &str) -> usize {

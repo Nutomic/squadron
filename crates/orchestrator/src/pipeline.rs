@@ -1768,7 +1768,7 @@ fn sprite_run_segment(run_id: &str) -> String {
 }
 
 fn lane_sprite_name(run_id: &str, idx: i64) -> String {
-    format!("swarm-{}-impl-{idx}", sprite_run_segment(run_id))
+    format!("squadron-{}-impl-{idx}", sprite_run_segment(run_id))
 }
 
 fn lane_workdir(ctx: &PipelineCtx, run_id: &str, idx: i64) -> PathBuf {
@@ -1782,7 +1782,7 @@ fn lane_workdir(ctx: &PipelineCtx, run_id: &str, idx: i64) -> PathBuf {
 /// Sprite-side (relative) workdir for real harness runs; the command cd's into
 /// it via the SQUADRON_WORKDIR env so mock and real execs share one convention.
 fn sprite_workdir(run_id: &str, idx: i64) -> String {
-    format!("swarm-work/{}/lane-{idx}", short_run_id(run_id))
+    format!("squadron-work/{}/lane-{idx}", short_run_id(run_id))
 }
 
 /// Tail of at most `max` chars, cut on a char boundary (untrusted output must
@@ -1956,9 +1956,9 @@ mod tests {
     /// name must also pass its check.
     #[test]
     fn lane_sprite_name_lowercases_the_run_id_segment() {
-        let run_id = "swarm-oHplwdUQ-AbCdEf01";
+        let run_id = "squadron-oHplwdUQ-AbCdEf01";
         let name = lane_sprite_name(run_id, 0);
-        assert_eq!(name, "swarm-swarmohp-impl-0", "name: {name}");
+        assert_eq!(name, "squadron-squadronohp-impl-0", "name: {name}");
         assert!(
             name.starts_with('s')
                 && name.ends_with('0')

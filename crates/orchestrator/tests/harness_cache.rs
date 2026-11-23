@@ -190,7 +190,7 @@ async fn run_prompt_runs_the_curl_floor_and_parses_cost() {
                 response_path.to_string_lossy().into_owned(),
             )),
             // R3-B: lane workdirs must live in the test tempdir, not in the
-            // source tree (leaked swarm-work/ artifacts).
+            // source tree (leaked squadron-work/ artifacts).
             workdir: Some(dir.path().join("lane-0").to_str().unwrap()),
             role: prompts::Role::Implementer,
             retry_backoff: Duration::ZERO,

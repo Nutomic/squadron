@@ -77,8 +77,8 @@ async fn lanes_store_all_pipeline_fields() {
         .start_impl(
             &run.id,
             0,
-            "swarm-abc-impl-0",
-            "https://swarm-abc-impl-0.sprites.app",
+            "squadron-abc-impl-0",
+            "https://squadron-abc-impl-0.sprites.app",
             "glm-5.3-flash",
             200,
             200 + 3_600_000,
@@ -116,7 +116,7 @@ async fn lanes_store_all_pipeline_fields() {
 
     let lane = store.get_lane(&run.id, 0).await.unwrap().unwrap();
     assert_eq!(lane.state, "running");
-    assert_eq!(lane.sprite_name.as_deref(), Some("swarm-abc-impl-0"));
+    assert_eq!(lane.sprite_name.as_deref(), Some("squadron-abc-impl-0"));
     assert_eq!(lane.impl_model.as_deref(), Some("glm-5.3-flash"));
     assert_eq!(lane.impl_files, Some(7));
     assert_eq!(lane.impl_deadline, Some(200 + 3_600_000));

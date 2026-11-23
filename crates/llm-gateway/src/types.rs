@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const USER_AGENT: &str = "sprite-swarm/0.1";
+pub const USER_AGENT: &str = "sprite-squadron/0.1";
 
 /// Default thinking effort for ALL outbound LLM calls (Felix finding: low
 /// thinking). Verified accepted by the gateway; suppresses reasoning_content.

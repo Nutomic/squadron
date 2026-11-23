@@ -24,7 +24,7 @@ Six-crate Cargo workspace plus the binary crate that ties it together:
 | `store` | SQLx/SQLite store: runs, lanes, lane events, costs, validator reports; offline prepared-query cache |
 
 Data flow per run: `POST /runs` (brief + N) → each lane gets a fresh Sprite
-(`swarm-<run>-impl-<i>`), the implementer agent builds and serves the site on
+(`squadron-<run>-impl-<i>`), the implementer agent builds and serves the site on
 its public `*.sprites.app` URL, a 200-check verifies it, two validators
 review and report, then the judge (real LLM with `OPENCODE_KEY`, or the
 deterministic fallback) renders the lanes and picks a winner. Every state
@@ -103,7 +103,7 @@ Honest list of the failure classes hit while building this, and the fixes:
 
 - Run IDs are case-sensitive capability tokens, but the sprite CLI only accepts
   `^[a-z0-9][a-z0-9-]*$` names — sprite names now lowercase/strip the run-ID
-  segment before building `swarm-<run>-impl-<i>`.
+  segment before building `squadron-<run>-impl-<i>`.
 - Sprite auto-sleep killed what looked like "detached" long-running sessions —
   a supervisor pattern (keep-alive pinned to the sprite for the duration of
   lane work) fixed it.
