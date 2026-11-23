@@ -65,37 +65,36 @@ async fn csrf_token_for(app: &axum::Router, uri: &str) -> String {
         .to_owned()
 }
 
-async fn post_run(app: &axum::Router, brief: &str, n: Option<&str>) -> axum::http::Response<Body> {
+/// Wave C: the confirm posts the edited cases as JSON (the dialog flow
+/// replaced the form submit); the CSRF token rides in body + cookie.
+async fn post_run(app: &axum::Router, body: serde_json::Value) -> axum::http::Response<Body> {
     let token = csrf_token_for(app, "/").await;
-    let mut form = format!("brief={}&csrf_token={}", urlencode(brief), token);
-    if let Some(n) = n {
-        form.push_str(&format!("&n={n}"));
-    }
+    let mut json = body;
+    json["csrf_token"] = serde_json::json!(token);
     let req = Request::builder()
         .method("POST")
         .uri("/runs")
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::CONTENT_TYPE, "application/json")
         .header(header::COOKIE, format!("swarm_csrf={token}"))
-        .body(Body::from(form))
+        .body(Body::from(json.to_string()))
         .unwrap();
     app.clone().oneshot(req).await.unwrap()
 }
 
-fn urlencode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
+fn cases_json(n: usize, brief: &str) -> serde_json::Value {
+    serde_json::json!({
+        "brief": brief,
+        "cases": (0..n)
+            .map(|i| serde_json::json!({"label": format!("w{i}"), "impl_prompt": format!("prompt {i}")}))
+            .collect::<Vec<_>>()
+    })
 }
 
+/// Wave C: the landing page carries the brief textarea, sample chips and the
+/// dialog island mount — the n_lanes selector is gone (the dialog owns the
+/// lane count).
 #[tokio::test]
-async fn index_renders_form_chips_and_n_selector() {
+async fn index_renders_form_chips_and_dialog_island() {
     let (app, _) = app().await;
     let res = app
         .clone()
@@ -105,58 +104,49 @@ async fn index_renders_form_chips_and_n_selector() {
     assert_eq!(res.status(), StatusCode::OK);
     let html = body_string(res.into_body()).await;
     assert!(html.contains(r#"name="brief""#));
-    assert!(html.contains(r#"name="n""#));
+    assert!(html.contains("launch-island"));
+    assert!(html.contains("data-csrf-token"));
+    assert!(!html.contains(r#"name="n""#), "n_lanes input removed");
     assert!(html.contains("Netscape-era"));
     assert!(html.contains("arcade"));
     assert!(html.contains("VM product"));
-    assert!(html.contains(r#"value="8" selected"#));
-    assert!(html.contains(r#"value="3""#));
-    assert!(html.contains(r#"value="10""#));
-    assert!(!html.contains(r#"value="11""#));
 }
 
 #[tokio::test]
-async fn submit_creates_run_redirects_and_creates_lanes() {
+async fn confirm_creates_run_and_lanes_from_cases() {
     let (app, store) = app().await;
-    let res = post_run(&app, "Build a retro terminal portfolio", Some("5")).await;
-    assert_eq!(res.status(), StatusCode::SEE_OTHER);
-    let location = res
-        .headers()
-        .get(header::LOCATION)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
-    assert!(location.len() > 10);
-    let run_id = location.trim_start_matches('/');
-    let run = store.get_run(run_id).await.unwrap().unwrap();
+    let res = post_run(&app, cases_json(5, "Build a retro terminal portfolio")).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let value: serde_json::Value =
+        serde_json::from_str(&body_string(res.into_body()).await).unwrap();
+    let run_id = value["run_id"].as_str().unwrap().to_owned();
+    assert_eq!(value["n_lanes"], serde_json::json!(5));
+    let run = store.get_run(&run_id).await.unwrap().unwrap();
     assert_eq!(run.status, "queued");
     assert_eq!(run.n_lanes, 5);
-    let lanes = store.list_lanes(run_id).await.unwrap();
+    let lanes = store.list_lanes(&run_id).await.unwrap();
     assert_eq!(lanes.len(), 5);
     assert!(lanes.iter().all(|l| l.state == "queued"));
 }
 
 #[tokio::test]
-async fn submit_rejects_empty_brief_and_clamps_n() {
+async fn confirm_requires_cases_and_owns_lane_count() {
     let (app, store) = app().await;
-    let res = post_run(&app, "   ", None).await;
+    // No cases at all: 400, nothing persisted.
+    let res = post_run(&app, serde_json::json!({"brief": "   ", "cases": []})).await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    let res = post_run(&app, "tiny site", Some("2")).await;
-    assert_eq!(res.status(), StatusCode::SEE_OTHER);
-    let location = res
-        .headers()
-        .get(header::LOCATION)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
+    assert!(store.list_runs().await.unwrap().is_empty());
+    // The dialog owns the lane count: 2 workers is valid (no clamping).
+    let res = post_run(&app, cases_json(2, "tiny site")).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let value: serde_json::Value =
+        serde_json::from_str(&body_string(res.into_body()).await).unwrap();
     let run = store
-        .get_run(location.trim_start_matches('/'))
+        .get_run(value["run_id"].as_str().unwrap())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(run.n_lanes, 3);
+    assert_eq!(run.n_lanes, 2);
 }
 
 #[tokio::test]
@@ -806,9 +796,9 @@ async fn api_post_run_rejects_bad_n_lanes_with_400_json() {
     assert_eq!(value.get("n_lanes").unwrap(), &2);
 }
 
-/// R2-3#5: briefs are capped at 4000 chars on both the API and the web form.
+/// R2-3#5: briefs are capped at 4000 chars on both the API and the confirm.
 #[tokio::test]
-async fn api_and_form_reject_overlong_brief() {
+async fn api_and_confirm_reject_overlong_brief() {
     let (app, store) = app().await;
     let long = "x".repeat(4001);
     let res = app
@@ -825,13 +815,13 @@ async fn api_and_form_reject_overlong_brief() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
-    let res = post_run(&app, &long, None).await;
+    let res = post_run(&app, cases_json(2, &long)).await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
     // Boundary: exactly 4000 chars is accepted.
     let ok = "x".repeat(4000);
-    let res = post_run(&app, &ok, Some("3")).await;
-    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let res = post_run(&app, cases_json(2, &ok)).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
     assert_eq!(store.list_runs().await.unwrap().len(), 1);
 }
 

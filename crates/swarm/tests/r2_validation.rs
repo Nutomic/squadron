@@ -83,10 +83,10 @@ async fn api_rejects_out_of_range_n_lanes_with_400() {
     assert_eq!(res.status(), StatusCode::CREATED);
 }
 
-/// R2-3#5: briefs are capped (4000 chars) on both POST /api/runs and the web
-/// form; briefs are DATA, the cap only bounds payload size.
+/// R2-3#5: briefs are capped (4000 chars) on both POST /api/runs and the
+/// dialog confirm; briefs are DATA, the cap only bounds payload size.
 #[tokio::test]
-async fn brief_over_cap_rejected_on_api_and_form() {
+async fn brief_over_cap_rejected_on_api_and_confirm() {
     let app = app().await;
     let long: String = "x".repeat(4001);
     let res = post_json(
@@ -108,19 +108,30 @@ async fn brief_over_cap_rejected_on_api_and_form() {
     .await;
     assert_eq!(res.status(), StatusCode::CREATED);
 
-    // web form rejects over-cap too (with a valid CSRF pair, review F3 #3)
+    // Confirm rejects an over-cap brief too (with a valid CSRF pair, review
+    // F3 #3 — the dialog's persistence point).
     let token = csrf_token(&app).await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/runs")
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .header(header::COOKIE, format!("swarm_csrf={token}"))
-        .body(Body::from(format!(
-            "brief={}&csrf_token={token}",
-            "x".repeat(4001)
-        )))
+    let cases: Vec<serde_json::Value> = (0..2)
+        .map(
+            |i| serde_json::json!({"label": format!("w{i}"), "impl_prompt": format!("prompt {i}")}),
+        )
+        .collect();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, format!("swarm_csrf={token}"))
+                .body(Body::from(
+                    serde_json::json!({"brief": "x".repeat(4001), "cases": cases, "csrf_token": token})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
         .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -214,9 +225,10 @@ async fn static_assets_keep_max_age_and_pages_stay_no_store() {
 }
 
 /// Audit R3 finding: an empty or whitespace-only brief is a 400 on both the
-/// JSON API and the web form (parity), and the API stores the trimmed brief.
+/// JSON API and the dialog's preview endpoint (parity), and the API stores
+/// the trimmed brief.
 #[tokio::test]
-async fn empty_brief_rejected_on_api_and_form() {
+async fn empty_brief_rejected_on_api_and_preview() {
     let app = app().await;
     for json in [
         r#"{"brief":"","n_lanes":4}"#,
@@ -235,15 +247,25 @@ async fn empty_brief_rejected_on_api_and_form() {
         );
     }
 
+    // The preview (dialog entry) rejects an empty brief too — the confirm
+    // falls back to the first case prompt, so the empty check lives at the
+    // brief entry point.
     let token = csrf_token(&app).await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/runs")
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .header(header::COOKIE, format!("swarm_csrf={token}"))
-        .body(Body::from(format!("brief=&csrf_token={token}")))
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/preview")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, format!("swarm_csrf={token}"))
+                .body(Body::from(
+                    serde_json::json!({"brief": "   ", "csrf_token": token}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
         .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
     // A padded-but-non-empty brief is accepted (and trimmed server-side).

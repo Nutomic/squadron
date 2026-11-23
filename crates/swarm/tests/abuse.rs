@@ -83,11 +83,12 @@ async fn form_get_sets_unguessable_csrf_cookie() {
     assert!(html.contains("csrf_token"), "hidden double-submit field");
 }
 
-/// POST /runs without (or with a mismatching) token is 403; a valid
-/// cookie+form pair creates the run.
+/// POST /runs (confirm) without (or with a mismatching) token is 403; a
+/// valid cookie+token pair creates the run from the submitted cases.
 #[tokio::test]
-async fn form_post_requires_matching_csrf_token() {
+async fn confirm_requires_matching_csrf_token() {
     let (app, store) = app().await;
+    let cases = r#"{"brief":"x site","cases":[{"label":"a","impl_prompt":"p"}]}"#;
     // no token at all
     let res = app
         .clone()
@@ -95,28 +96,28 @@ async fn form_post_requires_matching_csrf_token() {
             Request::builder()
                 .method("POST")
                 .uri("/runs")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from("brief=x"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(cases))
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
-    // mismatching cookie/form pair
+    // mismatching cookie/token pair
     let res = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/runs")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::CONTENT_TYPE, "application/json")
                 .header(
                     header::COOKIE,
                     "swarm_csrf=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 )
-                .body(Body::from(
-                    "brief=x&csrf_token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                ))
+                .body(Body::from(format!(
+                    r#"{{"brief":"x site","cases":[{{"label":"a","impl_prompt":"p"}}],"csrf_token":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}"#
+                )))
                 .unwrap(),
         )
         .await
@@ -124,37 +125,40 @@ async fn form_post_requires_matching_csrf_token() {
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
     assert!(store.list_runs().await.unwrap().is_empty());
 
-    // valid pair: token set on GET, echoed in the form, cookie sent back.
-    let res = app
-        .clone()
-        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    let token = res
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap()
-        .strip_prefix("swarm_csrf=")
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_owned();
+    // valid pair: token set on GET, echoed in the body, cookie sent back.
+    let token = {
+        let res = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        res.headers()
+            .get(header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap()
+            .strip_prefix("swarm_csrf=")
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned()
+    };
     let res = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/runs")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::CONTENT_TYPE, "application/json")
                 .header(header::COOKIE, format!("swarm_csrf={token}"))
-                .body(Body::from(format!("brief=csrf ok&n=3&csrf_token={token}")))
+                .body(Body::from(format!(
+                    r#"{{"brief":"csrf ok","cases":[{{"label":"a","impl_prompt":"p"}}],"csrf_token":"{token}"}}"#
+                )))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    assert_eq!(res.status(), StatusCode::CREATED);
     assert_eq!(store.list_runs().await.unwrap().len(), 1);
 }
 
@@ -241,7 +245,7 @@ async fn promote_requires_token_but_json_api_is_unaffected() {
 }
 
 /// F3 #2: at the process-wide active-run cap a new creation is rejected with
-/// 429 + Retry-After — the form path returns a graceful HTML page.
+/// 429 + Retry-After (JSON on both the API and the dialog confirm).
 #[tokio::test]
 async fn process_active_run_cap_returns_429_with_retry_after() {
     let (app, store) = app().await;
@@ -289,8 +293,8 @@ async fn process_active_run_cap_returns_429_with_retry_after() {
         serde_json::from_str(&body_string(res.into_body()).await).unwrap();
     assert!(value.get("error").is_some());
 
-    // The form path gets a graceful HTML message, not a JSON blob (a valid
-    // CSRF pair first: CSRF runs before the rate limit).
+    // The dialog confirm gets a JSON 429 too (a valid CSRF pair first:
+    // CSRF runs before the rate limit).
     let token = {
         let res = app
             .clone()
@@ -314,19 +318,25 @@ async fn process_active_run_cap_returns_429_with_retry_after() {
             Request::builder()
                 .method("POST")
                 .uri("/runs")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::CONTENT_TYPE, "application/json")
                 .header(header::COOKIE, format!("swarm_csrf={token}"))
-                .body(Body::from(format!("brief=form cap&csrf_token={token}")))
+                .body(Body::from(format!(
+                    r#"{{"brief":"confirm cap","cases":[{{"label":"a","impl_prompt":"p"}}],"csrf_token":"{token}"}}"#
+                )))
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
-    let html = body_string(res.into_body()).await;
-    assert!(
-        html.contains("429") && html.contains("<html"),
-        "html: {html}"
+    assert_eq!(
+        res.headers()
+            .get(header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok()),
+        Some("60")
     );
+    let value: serde_json::Value =
+        serde_json::from_str(&body_string(res.into_body()).await).unwrap();
+    assert!(value.get("error").is_some());
 }
 
 /// F3 #1: per-IP concurrency — at most 3 non-terminal runs per IP (default);
