@@ -2227,6 +2227,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "squadron"
+version = "0.1.0"
+dependencies = [
+ "askama",
+ "axum",
+ "chrono",
+ "futures",
+ "http-body-util",
+ "llm-gateway",
+ "orchestrator",
+ "prompts",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sprites-client",
+ "store",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2262,32 +2288,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "swarm"
-version = "0.1.0"
-dependencies = [
- "askama",
- "axum",
- "chrono",
- "futures",
- "http-body-util",
- "llm-gateway",
- "orchestrator",
- "prompts",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sprites-client",
- "store",
- "tempfile",
- "tokio",
- "tokio-stream",
- "tower",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
 
 [[package]]
 name = "syn"
