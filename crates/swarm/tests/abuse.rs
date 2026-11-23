@@ -115,9 +115,9 @@ async fn confirm_requires_matching_csrf_token() {
                     header::COOKIE,
                     "swarm_csrf=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 )
-                .body(Body::from(format!(
-                    r#"{{"brief":"x site","cases":[{{"label":"a","impl_prompt":"p"}}],"csrf_token":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}"#
-                )))
+                .body(Body::from(
+                    r#"{"brief":"x site","cases":[{"label":"a","impl_prompt":"p"}],"csrf_token":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#,
+                ))
                 .unwrap(),
         )
         .await
