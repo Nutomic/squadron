@@ -45,6 +45,8 @@ pub fn fixture_snapshot() -> Snapshot {
                 cost_series: Some(vec![0.12, 0.27, 0.42]),
                 thumbnail_data_url: None,
                 error: None,
+                progress_pct: None,
+                stage: None,
             },
             LaneSnapshot {
                 idx: 1,
@@ -64,6 +66,8 @@ pub fn fixture_snapshot() -> Snapshot {
                 cost_series: Some(vec![0.31, 0.55, 0.71, 0.87]),
                 thumbnail_data_url: Some(thumb),
                 error: None,
+                progress_pct: None,
+                stage: None,
             },
             LaneSnapshot {
                 idx: 2,
@@ -83,6 +87,8 @@ pub fn fixture_snapshot() -> Snapshot {
                 cost_series: Some(vec![0.09]),
                 thumbnail_data_url: None,
                 error: Some("harness install failed twice; lane hard-failed".to_owned()),
+                progress_pct: None,
+                stage: None,
             },
         ],
         ts: 1_732_020_000_000,

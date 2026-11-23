@@ -254,6 +254,84 @@ async fn slot_exhaustion_spawn_failure_requeues_lane_not_failed() {
     clear_env().await;
 }
 
+/// Wave D probes: a parseable probe reply is stored as a `progress` lane
+/// event and exposed on the lanes API JSON (progressPct + stage).
+#[tokio::test(flavor = "multi_thread")]
+async fn probe_happy_path_writes_event_and_api_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = base_config(dir.path());
+    config.probe_interval = Duration::from_millis(30);
+    config.probe_command =
+        Some("printf '%s' '{\"progress_pct\":37,\"stage\":\"building ui\"}'".to_owned());
+    let env = setup(config).await;
+
+    let req = RunRequest {
+        brief: "probe run".to_owned(),
+        n_lanes: 3,
+        harness: harness_for("sleep 0.4"),
+    };
+    let run = orchestrator::start_run(env.ctx.clone(), req).await.unwrap();
+    wait_run_status(&env.store, &run.id, &["judged", "failed"], 60).await;
+
+    let lanes = env.store.list_lanes(&run.id).await.unwrap();
+    for lane in &lanes {
+        let events = env.store.list_lane_events(&run.id, lane.idx).await.unwrap();
+        let progress: Vec<_> = events.iter().filter(|e| e.kind == "progress").collect();
+        assert!(
+            !progress.is_empty(),
+            "lane {} must record progress probes",
+            lane.idx
+        );
+        assert!(
+            progress[0].payload.contains("\"progress_pct\":37"),
+            "payload: {}",
+            progress[0].payload
+        );
+    }
+    // the lanes API JSON exposes the latest probe report
+    let snap = orchestrator::snapshot::build_snapshot(&env.store, &run.id)
+        .await
+        .unwrap();
+    let json = serde_json::to_string(&snap).unwrap();
+    assert!(json.contains("\"progressPct\":37"), "json: {json}");
+    assert!(json.contains("\"stage\":\"building ui\""), "json: {json}");
+    clear_env().await;
+}
+
+/// Wave D probes: an unparseable probe reply records nothing and the run
+/// still completes (probes are best-effort telemetry).
+#[tokio::test(flavor = "multi_thread")]
+async fn unparseable_probe_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = base_config(dir.path());
+    config.probe_interval = Duration::from_millis(30);
+    config.probe_command = Some("printf '%s' 'i am not json at all'".to_owned());
+    let env = setup(config).await;
+
+    let req = RunRequest {
+        brief: "garbage probe run".to_owned(),
+        n_lanes: 3,
+        harness: harness_for("sleep 0.4"),
+    };
+    let run = orchestrator::start_run(env.ctx.clone(), req).await.unwrap();
+    wait_run_status(&env.store, &run.id, &["judged", "failed"], 60).await;
+
+    let lanes = env.store.list_lanes(&run.id).await.unwrap();
+    for lane in &lanes {
+        let events = env.store.list_lane_events(&run.id, lane.idx).await.unwrap();
+        assert!(
+            events.iter().all(|e| e.kind != "progress"),
+            "unparseable probe output must be ignored (lane {})",
+            lane.idx
+        );
+    }
+    let snap = orchestrator::snapshot::build_snapshot(&env.store, &run.id)
+        .await
+        .unwrap();
+    assert!(snap.lanes.iter().all(|l| l.progress_pct.is_none()));
+    clear_env().await;
+}
+
 /// Wave D: the FIFO dispatcher must never skip a head that does not fit: a
 /// 9-lane run (larger than the 8-slot pool) queued behind a full pool stays
 /// queued until the pool is completely free.

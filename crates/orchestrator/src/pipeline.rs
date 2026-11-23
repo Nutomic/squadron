@@ -20,6 +20,7 @@ use crate::evidence;
 use crate::harness::{self, HarnessCache};
 use crate::judge;
 use crate::lane::LaneState;
+use crate::probe;
 use crate::queue;
 use crate::screenshot::ScreenshotQueue;
 use crate::slots::SlotSemaphore;
@@ -910,7 +911,28 @@ async fn run_implementer_phase(
     transition(&ctx, &run_id, idx, LaneState::Running).await?;
     publish(&ctx, &run_id).await;
 
+    // Wave D: worker progress probes — a separate short `sprite exec` every
+    // probe_interval (best-effort telemetry; never the lane's own
+    // harness/gateway session). Sleeps first, so the first probe lands after
+    // the sprite warmup. Test mode without a canned probe command skips the
+    // loop (it would otherwise point a live curl at the real gateway).
+    if !ctx.config.test_mode || ctx.config.probe_command.is_some() {
+        let probe_ctx = ctx.clone();
+        let probe_run = run_id.clone();
+        let probe_sprite = sprite_name.clone();
+        tokio::spawn(probe::probe_loop(
+            probe_ctx,
+            probe_run,
+            idx,
+            probe_sprite,
+            started,
+            deadline,
+        ));
+    }
+
     // run implementer harness (deadline enforced)
+    let plan_rule =
+        prompts::planning_first_rule(&queue::plan_until_label(started, ctx.config.impl_deadline));
     let impl_result = tokio::time::timeout(
         ctx.config.impl_deadline,
         run_implementer(
@@ -920,6 +942,7 @@ async fn run_implementer_phase(
             &sprite_name,
             &model,
             &variant_json,
+            &plan_rule,
             harness,
         ),
     )
@@ -1149,6 +1172,7 @@ async fn run_implementer(
     sprite_name: &str,
     model: &str,
     variant_json: &str,
+    plan_rule: &str,
     harness: &HarnessMode,
 ) -> Result<ImplRunResult, String> {
     let mut used_choice: Option<harness::HarnessChoice> = None;
@@ -1175,8 +1199,10 @@ async fn run_implementer(
             // `impl_prompt`; template-fallback lanes keep the classic variant
             // shape. Both paths get the standard site constraints.
             let prompt = match variant.get("impl_prompt").and_then(Value::as_str) {
-                Some(case_impl_prompt) => prompts::implementer_case_prompt(case_impl_prompt),
-                None => prompts::implementer_prompt(&variant),
+                Some(case_impl_prompt) => {
+                    prompts::implementer_case_prompt(case_impl_prompt, plan_rule)
+                }
+                None => prompts::implementer_prompt(&variant, plan_rule),
             };
             let recipe =
                 llm_gateway::SpriteRecipe::for_model(format!("{run_id}-{idx}"), model.to_owned());

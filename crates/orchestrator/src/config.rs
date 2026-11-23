@@ -16,6 +16,17 @@ pub struct PipelineConfig {
     /// them at loopback tunnel servers and flip this to true. Never set from
     /// untrusted input.
     pub probe_allow_loopback: bool,
+    /// Wave D: interval between worker progress probes on a running lane
+    /// sprite (~5 min in production; each probe is a SEPARATE short
+    /// `sprite exec`, never the lane's own harness/gateway session).
+    pub probe_interval: Duration,
+    /// Wave D: exec deadline for one progress probe.
+    pub probe_timeout: Duration,
+    /// Wave D: TEST-ONLY canned probe exec command (the mock sprite runs plain
+    /// `sh -c` commands, so a probe reply can be served deterministically).
+    /// Ignored unless `test_mode` is set; never constructed from untrusted
+    /// input.
+    pub probe_command: Option<String>,
     /// Wave D: base backoff between slot-exhaustion requeue attempts (grows
     /// geometrically, capped at 60s).
     pub slot_requeue_backoff: Duration,
@@ -70,6 +81,9 @@ impl Default for PipelineConfig {
             gateway_connector_id: DEFAULT_GATEWAY_CONNECTOR_ID.to_owned(),
             test_mode: false,
             probe_allow_loopback: false,
+            probe_interval: Duration::from_secs(5 * 60),
+            probe_timeout: Duration::from_secs(2 * 60),
+            probe_command: None,
             slot_requeue_backoff: Duration::from_secs(2),
         }
     }

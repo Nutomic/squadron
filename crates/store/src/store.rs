@@ -564,6 +564,33 @@ impl Store {
             })
             .collect())
     }
+
+    /// Wave D progress probes: the newest lane event of one kind (`progress`)
+    /// for a lane, if any. Runtime (macro-free) query on purpose (no
+    /// offline-cache entry needed; see `set_run_n_lanes`).
+    pub async fn latest_lane_event_of_kind(
+        &self,
+        run_id: &str,
+        lane_idx: i64,
+        kind: &str,
+    ) -> Result<Option<LaneEvent>, StoreError> {
+        use sqlx::Row;
+        let row = sqlx::query(
+            "SELECT run_id, lane_idx, ts, kind, payload FROM lane_events WHERE run_id = ? AND lane_idx = ? AND kind = ? ORDER BY ts DESC LIMIT 1",
+        )
+        .bind(run_id)
+        .bind(lane_idx)
+        .bind(kind)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| LaneEvent {
+            run_id: row.try_get("run_id").unwrap_or_default(),
+            lane_idx: row.try_get::<i64, _>("lane_idx").unwrap_or(0),
+            ts: row.try_get::<i64, _>("ts").unwrap_or(0),
+            kind: row.try_get("kind").unwrap_or_default(),
+            payload: row.try_get("payload").unwrap_or_default(),
+        }))
+    }
 }
 
 /// Insert a lane event inside an existing transaction, assigning the next

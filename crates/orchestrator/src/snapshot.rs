@@ -58,6 +58,12 @@ pub struct LaneSnapshot {
     pub thumbnail_data_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Wave D progress probes: the newest parsed probe report for the lane
+    /// (None until the first probe lands; probes are best-effort telemetry).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress_pct: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
 }
 
 pub fn run_snapshot(run: &Run) -> RunSnapshot {
@@ -101,7 +107,24 @@ pub fn lane_snapshot(run: &Run, lane: &Lane, cost_series: Option<Vec<f64>>) -> L
         cost_series,
         thumbnail_data_url: None,
         error: lane.error.clone(),
+        progress_pct: None,
+        stage: None,
     }
+}
+
+/// Wave D: parse one `progress` lane-event payload
+/// ({"progress_pct":<0-100>,"stage":"..."}). Malformed payloads are ignored.
+fn parse_progress_payload(payload: &str) -> Option<(u8, String)> {
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let pct = v.get("progress_pct")?.as_u64()?;
+    if pct > 100 {
+        return None;
+    }
+    let stage = v.get("stage")?.as_str()?.trim();
+    if stage.is_empty() {
+        return None;
+    }
+    Some((pct as u8, stage.to_owned()))
 }
 
 fn tokei_totals(json: Option<&str>) -> (Option<i64>, Option<i64>) {
@@ -127,7 +150,18 @@ pub async fn build_snapshot(store: &Store, run_id: &str) -> Option<Snapshot> {
     let mut lane_snaps = Vec::with_capacity(lanes.len());
     for lane in lanes {
         let series = cost_series(store, &run.id, lane.idx).await;
-        lane_snaps.push(lane_snapshot(&run, &lane, series));
+        let mut snap = lane_snapshot(&run, &lane, series);
+        // Wave D: hydrate the newest progress-probe report, if any.
+        if let Ok(Some(event)) = store
+            .latest_lane_event_of_kind(&run.id, lane.idx, "progress")
+            .await
+        {
+            if let Some((pct, stage)) = parse_progress_payload(&event.payload) {
+                snap.progress_pct = Some(pct);
+                snap.stage = Some(stage);
+            }
+        }
+        lane_snaps.push(snap);
     }
     Some(Snapshot {
         run: run_snap,
@@ -240,5 +274,24 @@ mod tests {
         l3.impl_started_at = Some(2_000);
         l3.val_started_at = Some(1_000);
         assert_eq!(lane_snapshot(&run(), &l3, None).build_ms, None);
+    }
+
+    /// Wave D: progress payloads parse strictly; garbage is ignored.
+    #[test]
+    fn parse_progress_payload_strict() {
+        assert_eq!(
+            parse_progress_payload(r#"{"progress_pct":42,"stage":"building ui"}"#),
+            Some((42, "building ui".to_owned()))
+        );
+        assert_eq!(parse_progress_payload("no json"), None);
+        assert_eq!(
+            parse_progress_payload(r#"{"progress_pct":101,"stage":"s"}"#),
+            None
+        );
+        assert_eq!(parse_progress_payload(r#"{"stage":"s"}"#), None);
+        assert_eq!(
+            parse_progress_payload(r#"{"progress_pct":42,"stage":""}"#),
+            None
+        );
     }
 }
