@@ -23,6 +23,11 @@ pub struct MockState {
     /// issued right after create, before the implementer session).
     #[serde(default)]
     pub command_log: Vec<String>,
+    /// Wave D: org-limit (slot-exhaustion) create failures already emitted.
+    /// `MOCK_ORG_LIMIT_FAILS` caps how many are produced per state file, so
+    /// queue/requeue paths can be exercised end to end.
+    #[serde(default)]
+    pub org_limit_failures: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -274,6 +279,30 @@ fn create(args: &[String]) -> Result<String, (i32, String)> {
         return Err((2, "create: --skip-console required".to_owned()));
     }
     delay_ms("MOCK_CREATE_MS", 0);
+    // Wave D: emulate the platform's org-concurrency-limit create failure
+    // ("org-limit" error shape). The counter is persisted manually because
+    // `with_state` only writes state when the closure returns Ok.
+    let org_limit = std::env::var("MOCK_ORG_LIMIT_FAILS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0);
+    if org_limit > 0 {
+        let failed = with_state(|state| {
+            if state.org_limit_failures >= org_limit {
+                return Ok(false);
+            }
+            state.org_limit_failures += 1;
+            write_state(state)?;
+            Ok(true)
+        })
+        .map_err(|e| (3, e))?;
+        if failed {
+            return Err((
+                3,
+                "create: org sprite limit of 8 reached (org-limit)".to_owned(),
+            ));
+        }
+    }
     with_state(|state| {
         // Model the real CLI: creating an existing sprite fails until it is
         // destroyed (pipeline retry must destroy --force before recreating).

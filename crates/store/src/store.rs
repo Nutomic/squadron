@@ -148,6 +148,32 @@ impl Store {
         Ok(n)
     }
 
+    /// Wave D queue query: the FIFO promotion order — every run still waiting
+    /// in `queued` status, oldest first. Runtime (macro-free) query on
+    /// purpose: new queries without an offline-cache entry follow the
+    /// `set_run_n_lanes` precedent.
+    pub async fn list_queued_runs(&self) -> Result<Vec<Run>, StoreError> {
+        use sqlx::Row;
+        let rows =
+            sqlx::query("SELECT id, brief, status, n_lanes, created_at, judge_verdict, winner_lane, total_cost_usd, finished_at FROM runs WHERE status = 'queued' ORDER BY created_at ASC, id ASC")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| Run {
+                id: row.try_get("id").unwrap_or_default(),
+                brief: row.try_get("brief").unwrap_or_default(),
+                status: row.try_get("status").unwrap_or_default(),
+                n_lanes: row.try_get::<i64, _>("n_lanes").unwrap_or(0),
+                created_at: row.try_get::<i64, _>("created_at").unwrap_or(0),
+                judge_verdict: row.try_get("judge_verdict").ok(),
+                winner_lane: row.try_get("winner_lane").ok(),
+                total_cost_usd: row.try_get("total_cost_usd").ok(),
+                finished_at: row.try_get("finished_at").ok(),
+            })
+            .collect())
+    }
+
     pub async fn update_run_status(&self, id: &str, status: &str) -> Result<(), StoreError> {
         let result = sqlx::query!("UPDATE runs SET status = ? WHERE id = ?", status, id)
             .execute(&self.pool)
@@ -537,6 +563,33 @@ impl Store {
                 payload: row.payload,
             })
             .collect())
+    }
+
+    /// Wave D progress probes: the newest lane event of one kind (`progress`)
+    /// for a lane, if any. Runtime (macro-free) query on purpose (no
+    /// offline-cache entry needed; see `set_run_n_lanes`).
+    pub async fn latest_lane_event_of_kind(
+        &self,
+        run_id: &str,
+        lane_idx: i64,
+        kind: &str,
+    ) -> Result<Option<LaneEvent>, StoreError> {
+        use sqlx::Row;
+        let row = sqlx::query(
+            "SELECT run_id, lane_idx, ts, kind, payload FROM lane_events WHERE run_id = ? AND lane_idx = ? AND kind = ? ORDER BY ts DESC LIMIT 1",
+        )
+        .bind(run_id)
+        .bind(lane_idx)
+        .bind(kind)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| LaneEvent {
+            run_id: row.try_get("run_id").unwrap_or_default(),
+            lane_idx: row.try_get::<i64, _>("lane_idx").unwrap_or(0),
+            ts: row.try_get::<i64, _>("ts").unwrap_or(0),
+            kind: row.try_get("kind").unwrap_or_default(),
+            payload: row.try_get("payload").unwrap_or_default(),
+        }))
     }
 }
 

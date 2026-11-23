@@ -1,0 +1,232 @@
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use crate::pipeline::{publish, HarnessMode, PipelineCtx};
+
+/// Global lane-slot queue (Wave D): runs whose lanes do not all fit into the
+/// free lane-slot pool at creation time wait in `queued` status and are
+/// promoted strictly FIFO as slots free (a slot frees when a lane's implementer
+/// or validator session ends — the permit drop sites notify the dispatcher).
+///
+/// The pool itself stays the existing process-wide `SlotSemaphore`; the
+/// dispatcher only decides WHEN a queued run may proceed. Promotion
+/// pre-reserves the run's lane permits (`try_reserve_n`) so a promoted run can
+/// never be overtaken by later acquirers.
+#[derive(Debug, Default)]
+pub struct LaneQueue {
+    inner: Mutex<VecDeque<QueuedRun>>,
+    notify: tokio::sync::Notify,
+}
+
+/// One waiting run. The run's own `PipelineCtx` travels with it so promotion
+/// reuses that run's SSE hub and harness cache (both are per-run).
+#[derive(Debug, Clone)]
+pub struct QueuedRun {
+    pub ctx: Arc<PipelineCtx>,
+    pub run_id: String,
+    pub lanes: usize,
+    pub harness: HarnessMode,
+    pub decompose_cost: Option<f64>,
+}
+
+impl LaneQueue {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a queued run and wake the dispatcher. Registration alone never
+    /// promotes: the dispatcher only proceeds when the head run's lanes fit.
+    pub fn enqueue(&self, run: QueuedRun) {
+        self.locked().push_back(run);
+        self.notify.notify_one();
+    }
+
+    /// Wake the dispatcher (called from the slot-free sites in the pipeline).
+    pub fn notify_slots_free(&self) {
+        self.notify.notify_one();
+    }
+
+    pub fn len(&self) -> usize {
+        self.locked().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.locked().is_empty()
+    }
+
+    fn locked(&self) -> std::sync::MutexGuard<'_, VecDeque<QueuedRun>> {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn pop(&self) -> Option<QueuedRun> {
+        self.locked().pop_front()
+    }
+}
+
+/// Spawn the FIFO dispatcher task for the process lifetime.
+pub fn spawn_dispatcher(queue: Arc<LaneQueue>) {
+    tokio::spawn(async move {
+        loop {
+            queue.notify.notified().await;
+            promote_while_head_fits(&queue).await;
+        }
+    });
+}
+
+/// Promote queued runs strictly FIFO while the head run's lanes fit into the
+/// free slot pool. A head that does not fit blocks the whole queue (no
+/// skip-ahead) — that is what makes promotion FIFO.
+async fn promote_while_head_fits(queue: &LaneQueue) {
+    loop {
+        let Some(head) = queue.locked().front().map(|r| {
+            (
+                r.ctx.clone(),
+                r.run_id.clone(),
+                r.lanes,
+                r.harness.clone(),
+                r.decompose_cost,
+            )
+        }) else {
+            return;
+        };
+        let (ctx, run_id, lanes, harness, decompose_cost) = head;
+        let capacity = ctx.slots.capacity();
+        let available = ctx.slots.available();
+        // A run that fits the pool reserves its lane permits up front so the
+        // dispatcher can account exactly; an oversized run (more lanes than
+        // the pool holds) may only start when the pool is completely free and
+        // its lanes then acquire one at a time, exactly like pre-queue runs.
+        let reservation = if lanes <= capacity {
+            match ctx.slots.try_reserve_n(lanes) {
+                Some(reserve) => Some(reserve),
+                None => return,
+            }
+        } else if available != capacity {
+            return;
+        } else {
+            None
+        };
+        // The head fit: take it out of the queue and run it.
+        let _ = queue.pop();
+        promote_run(ctx, run_id, lanes, harness, decompose_cost, reservation).await;
+    }
+}
+
+/// Flip one queued run to `running` and start its pipeline task.
+async fn promote_run(
+    ctx: Arc<PipelineCtx>,
+    run_id: String,
+    lanes: usize,
+    harness: HarnessMode,
+    decompose_cost: Option<f64>,
+    reservation: Option<Vec<tokio::sync::OwnedSemaphorePermit>>,
+) {
+    let _ = ctx.store.update_run_status(&run_id, "running").await;
+    let _ = ctx
+        .store
+        .append_lane_event(
+            &run_id,
+            0,
+            store::now_ms(),
+            "log",
+            &format!("run promoted from queue: {lanes} lane slots reserved"),
+        )
+        .await;
+    publish(&ctx, &run_id).await;
+    crate::pipeline::spawn_execute_run(ctx, run_id, lanes, harness, decompose_cost, reservation);
+}
+
+/// Wave D: spawn-failure classification for slot exhaustion. The platform
+/// refuses sprite creation with an org-concurrency-limit error shape; such a
+/// failure requeues the lane with backoff instead of failing it.
+pub fn is_slot_exhaustion_error(e: &str) -> bool {
+    let l = e.to_lowercase();
+    let org = l.contains("org") || l.contains("organization") || l.contains("fleet");
+    let limit = l.contains("limit") || l.contains("exceed") || l.contains("quota");
+    org && limit
+}
+
+/// Bounded requeue budget for slot-exhaustion spawn failures: the lane waits
+/// out a growing backoff and retries; it only degrades to the ordinary
+/// failure path after this many consecutive requeues.
+pub const SLOT_REQUEUE_MAX_ATTEMPTS: usize = 50;
+
+/// Backoff before requeue attempt `attempt` (1-based): base * 2^(n-1), capped.
+pub fn slot_requeue_delay(attempt: usize, base: Duration) -> Duration {
+    let exp = attempt.saturating_sub(1).min(6) as u32;
+    (base.saturating_mul(1u32 << exp)).min(Duration::from_secs(60))
+}
+
+/// The planning-first cutoff: ~10% of the implementer deadline after run
+/// start, never less than 3 minutes. The implementer must have written
+/// `plan.md` before any server code and may keep planning until then.
+pub fn plan_until_ms(started_ms: i64, deadline: Duration) -> i64 {
+    let min = 3 * 60 * 1000;
+    let ten_pct = deadline.as_millis() as i64 / 10;
+    started_ms + ten_pct.max(min)
+}
+
+/// Human-readable form of the planning cutoff for the implementer prompt.
+pub fn plan_until_label(started_ms: i64, deadline: Duration) -> String {
+    let minutes = ((plan_until_ms(started_ms, deadline) - started_ms) / 60_000).max(1);
+    format!("session minute {minutes} (~{minutes} minutes in)")
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
+
+    use super::*;
+
+    #[test]
+    fn slot_exhaustion_classifier_matches_org_limit_shapes_only() {
+        assert!(is_slot_exhaustion_error(
+            "create: org sprite limit of 8 reached (org-limit)"
+        ));
+        assert!(is_slot_exhaustion_error(
+            "create: organization quota exceeded"
+        ));
+        assert!(is_slot_exhaustion_error(
+            "create: fleet limit reached for team"
+        ));
+        assert!(!is_slot_exhaustion_error(
+            "create: sprite name already exists"
+        ));
+        assert!(!is_slot_exhaustion_error("create: connection refused"));
+        assert!(!is_slot_exhaustion_error("exec: temporary mock failure"));
+        assert!(!is_slot_exhaustion_error("implementer: deadline exceeded"));
+    }
+
+    #[test]
+    fn requeue_backoff_grows_and_caps() {
+        let base = Duration::from_secs(2);
+        assert_eq!(slot_requeue_delay(1, base), Duration::from_secs(2));
+        assert_eq!(slot_requeue_delay(2, base), Duration::from_secs(4));
+        assert_eq!(slot_requeue_delay(3, base), Duration::from_secs(8));
+        assert_eq!(slot_requeue_delay(7, base), Duration::from_secs(60));
+        assert_eq!(slot_requeue_delay(50, base), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn plan_until_is_ten_percent_of_deadline_min_three_minutes() {
+        // 60min deadline -> 10% = 6min
+        assert_eq!(plan_until_ms(0, Duration::from_secs(3600)), 6 * 60 * 1000);
+        // 20min deadline -> 2min < 3min floor -> 3min
+        assert_eq!(plan_until_ms(0, Duration::from_secs(1200)), 3 * 60 * 1000);
+        // 10min deadline -> 1min -> floored to 3min
+        assert_eq!(
+            plan_until_ms(1_000, Duration::from_secs(600)),
+            1_000 + 3 * 60 * 1000
+        );
+        // the label is session-relative minutes
+        assert_eq!(
+            plan_until_label(0, Duration::from_secs(3600)),
+            "session minute 6 (~6 minutes in)"
+        );
+        assert_eq!(
+            plan_until_label(0, Duration::from_secs(600)),
+            "session minute 3 (~3 minutes in)"
+        );
+    }
+}

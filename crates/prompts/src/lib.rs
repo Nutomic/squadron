@@ -10,7 +10,7 @@ pub use preamble::{
 };
 pub use roles::{
     decompose_prompt, diversity_prompt, implementer_case_prompt, implementer_prompt, judge_prompt,
-    validator_prompt, Prompt, IMPLEMENTER_SITE_CONSTRAINTS,
+    planning_first_rule, validator_prompt, Prompt, IMPLEMENTER_SITE_CONSTRAINTS,
 };
 pub use schema::{
     gate, gate_and_scan_injections, gate_with_options, injection_markers, parse,

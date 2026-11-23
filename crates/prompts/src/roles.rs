@@ -36,11 +36,24 @@ pub fn diversity_prompt(brief: &str, n: usize) -> Prompt {
 /// verification, no external services, detached server).
 pub const IMPLEMENTER_SITE_CONSTRAINTS: &str = "BIND REQUIREMENT: the server MUST listen on ALL interfaces — pass `--host 0.0.0.0` (or the stack's equivalent: `HOST=0.0.0.0`, `-o 0.0.0.0`, `server.host = '0.0.0.0'`). NEVER bind to 127.0.0.1/localhost: the sprite's public HTTPS URL routes port 8080 from outside, and a loopback bind is unreachable there. Your own verification may still curl 127.0.0.1:8080. HARD REQUIREMENT: start the site DETACHED so it survives your session end, e.g. `nohup <run_command> --host 0.0.0.0 > server.log 2>&1 &` — a server you only run in the foreground dies when the session ends. Verify YOURSELF that `curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8080` returns 200, and only then declare done:true. PUBLIC-URL CHECK: a local 200 is not enough. Your sprite name is in your environment/task; its public URL follows the pattern `https://<sprite-name>-b5t5x.sprites.app/` (the suffix is platform-assigned — check your sprite info if unsure). You MUST also curl that public URL and require HTTP 200 there. If the public URL 403s while 127.0.0.1:8080 works, your dev server is blocking non-local Host headers (vite and similar dev servers answer \"Blocked request. This host is not allowed\" regardless of bind address) — fix by serving the built output statically (`python3 -m http.server 8080` from the build dir) or allowing all hosts (`vite preview --allowedHosts true` / `allowedHosts: true` in the vite config, or your server's equivalent). done:true only when the PUBLIC URL answers 200. The detached server must still be serving after your session ends.";
 
-pub fn implementer_prompt(variant: &Value) -> Prompt {
+/// Wave D planning-first rule (no hardcoded planning duration: the
+/// orchestrator computes `plan_until` from the deadline). The rule text is
+/// appended to every implementer prompt so decomposition case lanes follow it
+/// too. `plan_until` is orchestrator-computed (10% of the deadline from run
+/// start, minimum 3 minutes).
+pub fn planning_first_rule(plan_until: &str) -> String {
+    format!(
+        "PLANNING FIRST: write plan.md before any server code; plan until {plan_until}. \
+         The plan is a working document: keep it brief and concrete, then start \
+         implementing. Never spend the whole session planning."
+    )
+}
+
+pub fn implementer_prompt(variant: &Value, plan_rule: &str) -> Prompt {
     build(
         Role::Implementer,
         &format!(
-            "Build the web project described by the variant. Work in the sprite workdir, serve on port 8080, use no external services and no secrets. {IMPLEMENTER_SITE_CONSTRAINTS}"
+            "Build the web project described by the variant. Work in the sprite workdir, serve on port 8080, use no external services and no secrets. {IMPLEMENTER_SITE_CONSTRAINTS}\n\n{plan_rule}"
         ),
         data_block("variant", &serde_json::to_string_pretty(variant).unwrap_or_default()),
     )
@@ -49,14 +62,16 @@ pub fn implementer_prompt(variant: &Value) -> Prompt {
 /// Wave B: decomposition lanes carry a full self-contained case prompt (the
 /// brief + the case's distinct angle). The system prompt still carries the
 /// standard site constraints and the report-schema requirement so even a thin
-/// case prompt (or the raw-brief fallback lane) cannot drop them.
-pub fn implementer_case_prompt(case_impl_prompt: &str) -> Prompt {
+/// case prompt (or the raw-brief fallback lane) cannot drop them. Wave D: the
+/// planning-first rule is appended to the system prompt as well.
+pub fn implementer_case_prompt(case_impl_prompt: &str, plan_rule: &str) -> Prompt {
     let schema = serde_json::to_string_pretty(&Role::Implementer.schema()).unwrap_or_default();
     Prompt {
         system: format!(
-            "{}\n{}\nOutput JSON matching this schema exactly, with no other text:\n{schema}\n",
+            "{}\n{}\n{}\nOutput JSON matching this schema exactly, with no other text:\n{schema}\n",
             preamble(Role::Implementer.as_str()),
-            IMPLEMENTER_SITE_CONSTRAINTS
+            IMPLEMENTER_SITE_CONSTRAINTS,
+            plan_rule
         ),
         user: case_impl_prompt.to_owned(),
     }

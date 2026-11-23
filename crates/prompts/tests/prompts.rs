@@ -110,7 +110,10 @@ fn validator_and_judge_prompts_forbid_the_marker_token() {
 /// consumes; the data rule still teaches it.
 #[test]
 fn implementer_prompt_keeps_the_marker_report_rule() {
-    let implementer = implementer_prompt(&variant(0));
+    let implementer = implementer_prompt(
+        &variant(0),
+        &prompts::planning_first_rule("session minute 6"),
+    );
     assert!(
         implementer
             .system
@@ -150,7 +153,10 @@ fn role_prompts_include_schema_and_untrusted_data_rule() {
     assert!(diversity.user.contains("build a game"));
     assert!(diversity.user.contains("exactly 3"));
 
-    let implementer = implementer_prompt(&variant(0));
+    let implementer = implementer_prompt(
+        &variant(0),
+        &prompts::planning_first_rule("session minute 6"),
+    );
     assert!(implementer.system.contains("\"run_command\""));
     assert!(implementer.user.contains("port 8080"));
     assert!(implementer.user.contains("angle-0"));
@@ -799,6 +805,46 @@ fn decompose_prompt_encodes_the_lane_count_rules() {
     );
 }
 
+/// Wave D: both implementer prompt paths (variant and decomposition case)
+/// carry the planning-first rule with the orchestrator-computed plan_until
+/// label (no hardcoded planning duration in the prompt text itself).
+#[test]
+fn implementer_prompts_carry_the_planning_first_rule() {
+    let rule = prompts::planning_first_rule("session minute 6 (~6 minutes in)");
+    assert!(
+        rule.contains("write plan.md before any server code"),
+        "rule: {rule}"
+    );
+    assert!(rule.contains("plan until session minute 6"), "rule: {rule}");
+    // no hardcoded minute count in the builder itself: the label is embedded
+    let variant_prompt = implementer_prompt(&variant(0), &rule);
+    assert!(
+        variant_prompt
+            .user
+            .contains("write plan.md before any server code"),
+        "variant prompt user: {}",
+        variant_prompt.user
+    );
+    assert!(
+        variant_prompt.user.contains("plan until session minute 6"),
+        "variant prompt user: {}",
+        variant_prompt.user
+    );
+    let case_prompt = prompts::implementer_case_prompt("thin case brief", &rule);
+    assert!(
+        case_prompt
+            .system
+            .contains("write plan.md before any server code"),
+        "case prompt system: {}",
+        case_prompt.system
+    );
+    // a different label lands verbatim (proves it is caller-computed)
+    let rule3 = prompts::planning_first_rule("session minute 3 (~3 minutes in)");
+    let p3 = implementer_prompt(&variant(0), &rule3);
+    assert!(p3.user.contains("plan until session minute 3"));
+    assert!(!p3.user.contains("plan until session minute 6"));
+}
+
 /// Wave B: the decomposition case prompt reuses the shared implementer
 /// constraints and schema so even a thin case prompt (or the raw-brief
 /// fallback lane) cannot drop the port 8080 / public-URL requirements.
@@ -806,6 +852,7 @@ fn decompose_prompt_encodes_the_lane_count_rules() {
 fn implementer_case_prompt_carries_the_standard_constraints() {
     let prompt = prompts::implementer_case_prompt(
         "Build a green arcade landing page. Serve on port 8080. Deadline: 1 hour.",
+        &prompts::planning_first_rule("session minute 6"),
     );
     assert!(prompt.user.contains("green arcade landing page"));
     for needle in ["0.0.0.0", "port 8080", "PUBLIC URL", "\"run_command\""] {

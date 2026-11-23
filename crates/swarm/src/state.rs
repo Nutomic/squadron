@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use orchestrator::{
-    HarnessMode, PipelineConfig, PipelineCtx, RunRequest, ScreenshotQueue, SlotSemaphore, SseHub,
+    HarnessMode, LaneQueue, PipelineConfig, PipelineCtx, RunRequest, ScreenshotQueue,
+    SlotSemaphore, SseHub,
 };
 use sprites_client::SpriteClient;
 use store::{Run, Store};
@@ -19,6 +20,9 @@ pub struct AppState {
     pub screenshots: ScreenshotQueue,
     pub config: PipelineConfig,
     pub slots: SlotSemaphore,
+    /// Wave D: the process-wide FIFO lane-slot queue; queued runs are
+    /// promoted as global lane slots free.
+    pub lane_queue: Arc<LaneQueue>,
     pub hubs: Arc<RwLock<HashMap<String, SseHub>>>,
     pub fixtures: bool,
     pub static_dir: PathBuf,
@@ -39,6 +43,8 @@ impl AppState {
             Some(hubs.clone()),
         );
         let slots = SlotSemaphore::new(config.max_running_slots);
+        let lane_queue = Arc::new(LaneQueue::new());
+        orchestrator::queue::spawn_dispatcher(lane_queue.clone());
         Self {
             store,
             sprite,
@@ -46,6 +52,7 @@ impl AppState {
             screenshots,
             config,
             slots,
+            lane_queue,
             hubs,
             fixtures: false,
             static_dir: crate::static_dir(),
@@ -122,6 +129,7 @@ impl AppState {
             slots: self.slots.clone(),
             harness_cache: std::sync::Arc::new(orchestrator::harness::HarnessCache::new()),
             hub_registry: Some(self.hubs.clone()),
+            lane_queue: Some(self.lane_queue.clone()),
         });
         orchestrator::start_run(
             ctx,
