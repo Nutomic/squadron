@@ -1956,9 +1956,9 @@ mod tests {
     /// name must also pass its check.
     #[test]
     fn lane_sprite_name_lowercases_the_run_id_segment() {
-        let run_id = "squadron-oHplwdUQ-AbCdEf01";
+        let run_id = "sq-oHplwdUQ-AbCdEf01";
         let name = lane_sprite_name(run_id, 0);
-        assert_eq!(name, "squadron-squadronohp-impl-0", "name: {name}");
+        assert_eq!(name, "squadron-sqohplwd-impl-0", "name: {name}");
         assert!(
             name.starts_with('s')
                 && name.ends_with('0')
