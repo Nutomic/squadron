@@ -108,11 +108,11 @@ impl RenderMode {
     }
 }
 
-/// Review F4 escape hatch: SWARM_CHROMIUM_NO_SANDBOX=1 opts into running
+/// Review F4 escape hatch: SQUADRON_CHROMIUM_NO_SANDBOX=1 opts into running
 /// Chromium with --no-sandbox from the start (environments where the
 /// sandboxed launch is known to fail, e.g. root without user namespaces).
 fn no_sandbox_env() -> bool {
-    std::env::var("SWARM_CHROMIUM_NO_SANDBOX").ok().as_deref() == Some("1")
+    std::env::var("SQUADRON_CHROMIUM_NO_SANDBOX").ok().as_deref() == Some("1")
 }
 
 /// One Chromium launch + navigate + screenshot attempt with the given
@@ -168,7 +168,7 @@ async fn render_chromium_once(
 
 /// Review F4: the browser renders untrusted lane content, so the Chromium
 /// sandbox defaults to ON (the Fly runtime image runs non-root). The
-/// SWARM_CHROMIUM_NO_SANDBOX=1 env var is a loud escape hatch for hosts
+/// SQUADRON_CHROMIUM_NO_SANDBOX=1 env var is a loud escape hatch for hosts
 /// where the sandboxed launch cannot work; and if the sandboxed launch
 /// fails at runtime (launch error only — navigation/render failures are not
 /// retried), the render retries exactly once with the escape hatch. The
@@ -179,7 +179,7 @@ async fn render_chromium(url: &str, dest: &std::path::Path) -> Result<RenderMode
         .ok_or_else(|| "CHROMIUM_BIN not set; no chromium available".to_owned())?;
     if no_sandbox_env() {
         tracing::warn!(
-            "SWARM_CHROMIUM_NO_SANDBOX=1: launching headless Chromium WITHOUT its sandbox \
+            "SQUADRON_CHROMIUM_NO_SANDBOX=1: launching headless Chromium WITHOUT its sandbox \
              (--no-sandbox) — this weakens isolation for untrusted content and is an \
              escape hatch, not a supported configuration"
         );
@@ -191,7 +191,7 @@ async fn render_chromium(url: &str, dest: &std::path::Path) -> Result<RenderMode
         Err(e) if e.starts_with("chromium launch:") => {
             tracing::warn!(
                 "sandboxed Chromium launch failed ({e}); retrying once with the \
-                 SWARM_CHROMIUM_NO_SANDBOX escape hatch (--no-sandbox) — untrusted-content \
+                 SQUADRON_CHROMIUM_NO_SANDBOX escape hatch (--no-sandbox) — untrusted-content \
                  isolation is reduced for this render"
             );
             render_chromium_once(&bin, true, url, dest)
@@ -498,7 +498,7 @@ mod tests {
     /// retry only on a sandboxed launch failure (default).
     #[test]
     fn no_sandbox_escape_hatch_env() {
-        let key = "SWARM_CHROMIUM_NO_SANDBOX";
+        let key = "SQUADRON_CHROMIUM_NO_SANDBOX";
         // Default: sandbox on, escape hatch unused.
         std::env::remove_var(key);
         assert!(!no_sandbox_env());

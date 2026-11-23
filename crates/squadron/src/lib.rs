@@ -36,7 +36,7 @@ async fn not_found() -> Response {
 }
 
 pub fn static_dir() -> PathBuf {
-    std::env::var("SWARM_STATIC_DIR")
+    std::env::var("SQUADRON_STATIC_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/static")))
 }

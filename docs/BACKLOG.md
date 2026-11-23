@@ -63,7 +63,7 @@
   (crates/orchestrator/src/screenshot.rs:85-140). Follow-ups: emit a
   structured warning/metric whenever the no-sandbox fallback serves a render
   (it means untrusted lane content runs unsandboxed), and track a removal plan
-  for `SWARM_CHROMIUM_NO_SANDBOX=1` once the Fly image is verified to launch
+  for `SQUADRON_CHROMIUM_NO_SANDBOX=1` once the Fly image is verified to launch
   sandboxed in production.
 
 - **B7 — the 0.0.0.0 bind rule is prompt-only; enforcement is post-hoc.** F5
@@ -78,8 +78,8 @@
   the lane at first turn when the detached server is detected loopback-bound.
 
 - **B8 — document and validate the new env knobs.** The review added several
-  env-configurable limits (SWARM_MAX_CONCURRENT_RUNS_PER_IP,
-  SWARM_RUNS_PER_HOUR_PER_IP, SWARM_MAX_ACTIVE_RUNS, SWARM_CHROMIUM_NO_SANDBOX)
+  env-configurable limits (SQUADRON_MAX_CONCURRENT_RUNS_PER_IP,
+  SQUADRON_RUNS_PER_HOUR_PER_IP, SQUADRON_MAX_ACTIVE_RUNS, SQUADRON_CHROMIUM_NO_SANDBOX)
   with sane defaults but no operator-facing documentation or validation
   feedback (crates/squadron/src/ratelimit.rs:42-60,
   crates/orchestrator/src/screenshot.rs:103-108,

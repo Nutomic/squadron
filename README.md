@@ -40,14 +40,14 @@ Environment variables:
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `OPENCODE_KEY` | API key for the machine judge/variants client. Without it the judge falls back to a deterministic stub (dev/test only). | unset |
-| `DATABASE_URL` | SQLite URL (also accepts `SWARM_DB_URL`). | `sqlite:/data/swarm.db?mode=rwc` |
+| `DATABASE_URL` | SQLite URL (also accepts `SQUADRON_DB_URL`). | `sqlite:/data/squadron.db?mode=rwc` |
 | `DATA_DIR` | Work dir for per-lane artifacts, screenshots, tarballs. | `/data` |
 | `BIND` | Listen address (`host:port`). `PORT` is used instead when `BIND` is unset. | `0.0.0.0:3000` |
-| `SWARM_STATIC_DIR` | Directory with compiled static assets (JS/CSS). | embedded `static/` |
+| `SQUADRON_STATIC_DIR` | Directory with compiled static assets (JS/CSS). | embedded `static/` |
 | `SPRITE_CLI` | Path to the `sprite` CLI binary. | `sprite` on `PATH` |
 | `SPRITE_TOKEN` | Sprite org token (secret — set via `fly secrets`, never in files). | unset |
-| `SWARM_TEST_MODE` | `1` = skip real network checks/probes (offline smoke mode). | unset |
-| `SWARM_FIXTURES` | `1` = serve canned fixture runs under `/__fixtures/*` for UI dev. | unset |
+| `SQUADRON_TEST_MODE` | `1` = skip real network checks/probes (offline smoke mode). | unset |
+| `SQUADRON_FIXTURES` | `1` = serve canned fixture runs under `/__fixtures/*` for UI dev. | unset |
 
 Build and run:
 
@@ -69,14 +69,14 @@ network, no Fly account, and no Chromium:
 ```sh
 cargo build -p sprites-client --bins
 SPRITE_CLI=$PWD/target/debug/mock-sprite-cli \
-SWARM_TEST_MODE=1 SWARM_FIXTURES=1 \
+SQUADRON_TEST_MODE=1 SQUADRON_FIXTURES=1 \
 DATABASE_URL=sqlite:$PWD/dev.db?mode=rwc DATA_DIR=$PWD/work \
   cargo run -p squadron
 ```
 
-`SWARM_TEST_MODE=1` short-circuits the HTTP 200-checks and judge screenshot
+`SQUADRON_TEST_MODE=1` short-circuits the HTTP 200-checks and judge screenshot
 extraction; canned implementer/validator JSON passes the schema gate, and the
-judge uses its schema-valid fallback verdict. `SWARM_FIXTURES=1` additionally
+judge uses its schema-valid fallback verdict. `SQUADRON_FIXTURES=1` additionally
 exposes pre-rendered example runs for dashboard styling.
 
 ## Deploy

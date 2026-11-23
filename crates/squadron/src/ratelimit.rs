@@ -41,13 +41,13 @@ impl RunLimits {
     /// fall back to the defaults so a typo cannot disable a limit entirely.
     pub fn from_env() -> Self {
         let mut limits = Self::default();
-        if let Some(n) = env_usize("SWARM_MAX_CONCURRENT_RUNS_PER_IP") {
+        if let Some(n) = env_usize("SQUADRON_MAX_CONCURRENT_RUNS_PER_IP") {
             limits.max_concurrent_per_ip = n;
         }
-        if let Some(n) = env_usize("SWARM_RUNS_PER_HOUR_PER_IP") {
+        if let Some(n) = env_usize("SQUADRON_RUNS_PER_HOUR_PER_IP") {
             limits.max_creates_per_hour_per_ip = n;
         }
-        if let Some(n) = env_usize("SWARM_MAX_ACTIVE_RUNS") {
+        if let Some(n) = env_usize("SQUADRON_MAX_ACTIVE_RUNS") {
             limits.max_active_runs = n;
         }
         limits

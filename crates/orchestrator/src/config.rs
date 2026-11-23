@@ -37,7 +37,7 @@ pub struct PipelineConfig {
 pub const DEFAULT_MAX_CONCURRENT_LANES: usize = 8;
 
 pub fn max_concurrent_lanes_from_env() -> usize {
-    match std::env::var("SWARM_MAX_CONCURRENT_LANES") {
+    match std::env::var("SQUADRON_MAX_CONCURRENT_LANES") {
         Ok(v) => match v.trim().parse::<usize>() {
             Ok(n) if (1..=10).contains(&n) => n,
             _ => DEFAULT_MAX_CONCURRENT_LANES,

@@ -750,11 +750,11 @@ pub async fn run_prompt(
         None => opts,
     };
     let opts = match workdir {
-        Some(dir) => opts.with_env("SWARM_WORKDIR", dir),
+        Some(dir) => opts.with_env("SQUADRON_WORKDIR", dir),
         None => opts,
     };
     let cd_prefix = |cmd: &str| match workdir {
-        Some(_) => format!("mkdir -p \"$SWARM_WORKDIR\" && cd \"$SWARM_WORKDIR\" && {cmd}"),
+        Some(_) => format!("mkdir -p \"$SQUADRON_WORKDIR\" && cd \"$SQUADRON_WORKDIR\" && {cmd}"),
         None => cmd.to_owned(),
     };
     let mut escalations = 0usize;

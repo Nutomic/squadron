@@ -198,8 +198,8 @@ pub async fn collect_artifacts_from_sprite(
         .map_err(|e| format!("artifacts dir: {e}"))?;
     let tarball_path = dest_dir.join("source.tar.gz");
 
-    let cd = |cmd: &str| format!("mkdir -p \"$SWARM_WORKDIR\" && cd \"$SWARM_WORKDIR\" && {cmd}");
-    let opts = sprites_client::ExecOptions::default().with_env("SWARM_WORKDIR", workdir);
+    let cd = |cmd: &str| format!("mkdir -p \"$SQUADRON_WORKDIR\" && cd \"$SQUADRON_WORKDIR\" && {cmd}");
+    let opts = sprites_client::ExecOptions::default().with_env("SQUADRON_WORKDIR", workdir);
 
     // Stream the lane workdir back as base64 (binary-safe over the CLI).
     let tar_out = sprite

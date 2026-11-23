@@ -1780,7 +1780,7 @@ fn lane_workdir(ctx: &PipelineCtx, run_id: &str, idx: i64) -> PathBuf {
 }
 
 /// Sprite-side (relative) workdir for real harness runs; the command cd's into
-/// it via the SWARM_WORKDIR env so mock and real execs share one convention.
+/// it via the SQUADRON_WORKDIR env so mock and real execs share one convention.
 fn sprite_workdir(run_id: &str, idx: i64) -> String {
     format!("swarm-work/{}/lane-{idx}", short_run_id(run_id))
 }
