@@ -51,7 +51,7 @@
         </div>
         {% if let Some(v) = val_verdict %}
         {% if let Some(q) = val_quality %}
-        <p class="mono-num text-base-content/70">quality {{ q }} / 10</p>
+        <p class="mono-num text-base-content/70">quality {{ q }}</p>
         {% endif %}
         {% else %}
         <p class="text-sm text-base-content/45">Validation has not run yet.</p>
@@ -64,12 +64,12 @@
         {% endif %}
         {% if val_features.len() > 0 %}
         <div class="grid gap-2 text-[13px] leading-relaxed">
-          <div class="flex gap-2"><span class="label-meta w-16 flex-none pt-0.5">Features</span><span class="text-base-content/75">{{ val_features }}</span></div>
+          <div class="flex gap-2"><span class="label-meta w-16 flex-none pt-0.5">Features</span><ul class="list-disc pl-4 text-base-content/75">{% for feature in val_features %}<li>{{ feature }}</li>{% endfor %}</ul></div>
           {% if val_bugs.len() > 0 %}
-          <div class="flex gap-2"><span class="label-meta w-16 flex-none pt-0.5">Bugs</span><span class="text-base-content/75">{{ val_bugs }}</span></div>
+          <div class="flex gap-2"><span class="label-meta w-16 flex-none pt-0.5">Bugs</span><ul class="list-disc pl-4 text-base-content/75">{% for bug in val_bugs %}<li>{{ bug }}</li>{% endfor %}</ul></div>
           {% endif %}
           {% if val_security.len() > 0 %}
-          <div class="flex gap-2"><span class="label-meta w-16 flex-none pt-0.5">Security</span><span class="text-base-content/75">{{ val_security }}</span></div>
+          <div class="flex gap-2"><span class="label-meta w-16 flex-none pt-0.5">Security</span><ul class="list-disc pl-4 text-base-content/75">{% for issue in val_security %}<li>{{ issue }}</li>{% endfor %}</ul></div>
           {% endif %}
         </div>
         {% endif %}

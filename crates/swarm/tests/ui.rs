@@ -357,6 +357,76 @@ async fn lane_detail_renders_sandboxed_iframe_and_plain_text_validator() {
     assert!(html.contains("Features: nice page"));
 }
 
+/// F18: the lane page renders the report arrays as lists (not raw
+/// "see array" strings) and the quality score as a plain number without the
+/// broken "/10" denominator.
+#[tokio::test]
+async fn lane_detail_renders_report_arrays_and_plain_quality_number() {
+    let (app, store) = app().await;
+    let run = store
+        .create_run("report arrays test", 2, 1_732_020_000_000)
+        .await
+        .unwrap();
+    store.insert_lane(&run.id, 0, "{}").await.unwrap();
+    store
+        .start_impl(
+            &run.id,
+            0,
+            "swarm-impl-0",
+            "https://swarm-impl-0.sprites.app",
+            "glm-5.3-flash",
+            1_732_020_000_000,
+            1_732_056_000_000,
+        )
+        .await
+        .unwrap();
+    store
+        .finish_validation(&run.id, 0, "pass", "detailed report", 71.5)
+        .await
+        .unwrap();
+    let report = serde_json::json!({
+        "verdict": "pass",
+        "features": ["paddle controls", "score table"],
+        "bugs": ["ball clips through wall", "see array"],
+        "security": [],
+        "quality_score": 71.5,
+        "summary": "detailed report"
+    })
+    .to_string();
+    store
+        .set_validator_report(&run.id, 0, &report)
+        .await
+        .unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/{}/lane/0", run.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("quality 71.50"), "html: {html}");
+    assert!(!html.contains("/ 10"), "html: {html}");
+    assert!(html.contains("<li>paddle controls</li>"), "html: {html}");
+    assert!(html.contains("<li>score table</li>"), "html: {html}");
+    assert!(
+        html.contains("<li>ball clips through wall</li>"),
+        "html: {html}"
+    );
+    assert!(
+        !html.contains("see array"),
+        "placeholder text must not render: {html}"
+    );
+    assert!(
+        !html.contains("Security"),
+        "empty security list renders no section: {html}"
+    );
+}
+
 #[tokio::test]
 async fn tokei_fragment_renders_plain_text() {
     let (app, store) = app().await;

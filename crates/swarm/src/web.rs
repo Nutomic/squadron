@@ -245,9 +245,9 @@ pub struct LaneTemplate {
     pub val_verdict: Option<String>,
     pub val_quality: Option<String>,
     pub val_summary: String,
-    pub val_features: String,
-    pub val_bugs: String,
-    pub val_security: String,
+    pub val_features: Vec<String>,
+    pub val_bugs: Vec<String>,
+    pub val_security: Vec<String>,
     pub tokei_json: String,
     pub console_tail: String,
     pub error: Option<String>,
@@ -321,9 +321,9 @@ impl LaneTemplate {
             val_verdict: c.val_verdict.clone(),
             val_quality: None,
             val_summary: String::new(),
-            val_features: String::new(),
-            val_bugs: String::new(),
-            val_security: String::new(),
+            val_features: Vec::new(),
+            val_bugs: Vec::new(),
+            val_security: Vec::new(),
             tokei_json: c.tokei_json.clone(),
             console_tail: c.console_tail.clone(),
             error: c.error.clone(),
@@ -341,26 +341,15 @@ fn fmt_build_ms(ms: i64) -> String {
     }
 }
 
-fn text_or_list_to_string(v: &prompts::TextOrList) -> String {
-    match v {
-        prompts::TextOrList::Text(s) => s.clone(),
-        prompts::TextOrList::List(items) => items.join("; "),
-    }
-}
-
 /// Hydrate the persisted validator report (features/bugs/security) for the
-/// lane detail view; falls back to empty strings when absent.
-fn validator_report_view(lane: &store::Lane) -> (String, String, String) {
+/// lane detail view; falls back to empty lists when absent. Legacy
+/// string-shaped entries are repaired; placeholder text ("see array") is
+/// dropped (F18).
+fn validator_report_view(lane: &store::Lane) -> (Vec<String>, Vec<String>, Vec<String>) {
     lane.val_report_json
         .as_deref()
-        .and_then(|json| serde_json::from_str::<prompts::ValidatorOutput>(json).ok())
-        .map(|out| {
-            (
-                text_or_list_to_string(&out.features),
-                text_or_list_to_string(&out.bugs),
-                text_or_list_to_string(&out.security),
-            )
-        })
+        .and_then(prompts::parse_validator_report)
+        .map(|out| (out.features, out.bugs, out.security))
         .unwrap_or_default()
 }
 

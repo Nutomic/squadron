@@ -117,10 +117,18 @@ async fn fixture_lane(Path(idx): Path<i64>) -> Response {
         "PASS - verified against code and live site.\n\nFeatures: full arcade loop (paddle, ball, bricks, score, hiscore), CRT scanline overlay, keyboard + touch controls, pause/resume.\n\nBugs: none observed in 30 rounds of play.\n\nSecurity: no external calls, no eval, no inline event handlers; all assets local.\n\nQuality: 8.5/10 - clean game loop at fixed timestep, readable state machine, no build tooling needed."
             .to_owned()
     }).unwrap_or_default();
-    tpl.val_features = "full arcade loop (paddle, ball, bricks, score, hiscore), CRT scanline overlay, keyboard + touch controls, pause/resume".to_owned();
-    tpl.val_bugs = "none observed in 30 rounds of play".to_owned();
-    tpl.val_security =
-        "no external calls, no eval, no inline event handlers; all assets local".to_owned();
+    tpl.val_features = vec![
+        "full arcade loop (paddle, ball, bricks, score, hiscore)".to_owned(),
+        "CRT scanline overlay".to_owned(),
+        "keyboard + touch controls".to_owned(),
+        "pause/resume".to_owned(),
+    ];
+    tpl.val_bugs = vec!["none observed in 30 rounds of play".to_owned()];
+    tpl.val_security = vec![
+        "no external calls".to_owned(),
+        "no eval".to_owned(),
+        "no inline event handlers; all assets local".to_owned(),
+    ];
     tpl.tokei_json = r#"{"Total":{"bytes":44_320,"files":14,"code":1_832}}"#.to_owned();
     Html(tpl.render().unwrap_or_default()).into_response()
 }
