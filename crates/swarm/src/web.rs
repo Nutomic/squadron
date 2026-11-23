@@ -1,12 +1,13 @@
 use askama::Template;
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Form, Path, State};
+use axum::extract::{ConnectInfo, Form, Json, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html as HtmlResponse, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::{TimeZone, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use store::{Lane, Run, Store};
@@ -15,6 +16,15 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::csrf;
 use crate::ratelimit::Rejection;
 use crate::state::AppState;
+
+/// Wave C: the dialog owns the lane count — one worker per parallel agent,
+/// hard cap shared with the decomposition phase (MAX_DECOMPOSE_CASES = 8).
+pub const MAX_WORKERS: usize = orchestrator::MAX_DECOMPOSE_CASES;
+/// Case prompts are DATA: a decomposed impl_prompt is the brief plus the
+/// case's angle and the standard constraints, so a multiple of the brief cap
+/// bounds the payload without rejecting realistic decompositions.
+pub const MAX_CASE_PROMPT_CHARS: usize = crate::api::MAX_BRIEF_CHARS * 4;
+const MAX_LABEL_CHARS: usize = 200;
 
 pub type SharedState = Arc<AppState>;
 
@@ -42,7 +52,10 @@ pub fn router(state: SharedState) -> Router {
         .route("/", get(index))
         .route("/runs", get(runs_page))
         .route("/runs/table", get(runs_table))
-        .route("/runs", post(submit))
+        // Wave C: the dialog flow replaces the direct form submit —
+        // preview is stateless, /runs (confirm) is the only persistence.
+        .route("/api/preview", post(preview))
+        .route("/runs", post(confirm))
         .route("/{run_id}", get(gallery))
         .route("/{run_id}/events", get(events))
         .route("/{run_id}/lane/{idx}", get(lane_detail))
@@ -88,31 +101,53 @@ async fn index() -> Response {
 }
 
 #[derive(Deserialize)]
-pub struct SubmitForm {
+pub struct PreviewBody {
     pub brief: Option<String>,
-    pub n: Option<i64>,
     /// Review F3 #3: double-submit token (must match the swarm_csrf cookie).
     pub csrf_token: Option<String>,
 }
 
-async fn submit(
+#[derive(Deserialize, Clone)]
+pub struct ConfirmBody {
+    /// Display brief for the runs table; when absent the first case prompt
+    /// stands in (the dialog usually sends the typed brief).
+    pub brief: Option<String>,
+    /// The edited cases from the prompt-editing dialog — one worker per
+    /// parallel agent. This is the ONLY persistence input: no decomposition
+    /// happens at confirm time.
+    #[serde(default)]
+    pub cases: Vec<CaseInput>,
+    /// Review F3 #3: double-submit token (must match the swarm_csrf cookie).
+    pub csrf_token: Option<String>,
+}
+
+#[derive(Deserialize, Clone, Serialize)]
+pub struct CaseInput {
+    pub label: Option<String>,
+    pub impl_prompt: String,
+}
+
+/// Wave C #1: stateless preview. Runs the SAME decomposition call the
+/// pipeline uses (`orchestrator::decompose_brief`: same retry-on-empty and
+/// guaranteed single-raw-brief fallback), gated + injection-scanned like all
+/// agent output. Nothing is persisted — no run row, no lanes; the cases go
+/// back to the browser for editing in the dialog.
+async fn preview(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    ConnectInfo(info): ConnectInfo<SocketAddr>,
-    Form(form): Form<SubmitForm>,
+    Json(body): Json<PreviewBody>,
 ) -> Response {
-    // Review F3 #3: CSRF first (fail closed), then the rate limits.
-    if !csrf::check(&headers, form.csrf_token.as_deref()) {
+    // CSRF first (fail closed) — the dialog fetch echoes the page token.
+    if !csrf::check(&headers, body.csrf_token.as_deref()) {
         return (StatusCode::FORBIDDEN, "invalid or missing CSRF token").into_response();
     }
-    let Some(brief) = form
+    let Some(brief) = body
         .brief
         .map(|b| b.trim().to_owned())
         .filter(|b| !b.is_empty())
     else {
         return (StatusCode::BAD_REQUEST, "brief must not be empty").into_response();
     };
-    // R2-3#5: the form brief is capped like the API (brief is DATA).
     if !valid_brief_len(&brief) {
         return (
             StatusCode::BAD_REQUEST,
@@ -123,42 +158,191 @@ async fn submit(
         )
             .into_response();
     }
-    let n = form.n.unwrap_or(state.config.n_lanes as i64).clamp(3, 10) as usize;
-    // Review F3 #1/#2: per-IP and process-wide run-creation limits; the form
-    // gets a graceful (HTML) retry message instead of a JSON error.
+    // The session id only feeds the gateway's x-opencode-session header
+    // (F12): a fresh id per preview keeps user sessions from bleeding into
+    // each other; nothing with this id is persisted.
+    let preview_id = format!("preview-{}", uuid::Uuid::new_v4().simple());
+    let cases = match &state.machine_llm {
+        Some(llm) => {
+            orchestrator::decompose_brief(llm, &preview_id, &brief)
+                .await
+                .cases
+        }
+        None => template_cases(&brief, state.config.n_lanes),
+    };
+    Json(json!({ "cases": cases })).into_response()
+}
+
+/// No machine LLM (dev/test): mirror the pipeline's deterministic fallback —
+/// template variants of the default lane count, reshaped into the dialog's
+/// {label, impl_prompt} cases.
+fn template_cases(brief: &str, n: usize) -> Vec<Value> {
+    prompts::template_variants(n)
+        .into_iter()
+        .map(|v| {
+            json!({
+                "label": v.angle,
+                "impl_prompt": format!(
+                    "{brief}\n\nDistinct angle: {angle}. Stack: {stack}. Tone: {tone}.\nConstraints: {constraints}",
+                    angle = v.angle,
+                    stack = v.stack,
+                    tone = v.tone,
+                    constraints = v.constraints.join("; ")
+                )
+            })
+        })
+        .collect()
+}
+
+/// Wave C #3: the confirm button. The ONLY persistence point of the dialog
+/// flow: the run row and its lanes are created from the SUBMITTED (edited)
+/// cases — the lane count comes from `cases.len()`, never from a decomposition
+/// at confirm time. Execution pickup is the pipeline's job (queued lanes carry
+/// the case JSON); this handler persists and returns.
+async fn confirm(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    ConnectInfo(info): ConnectInfo<SocketAddr>,
+    Json(body): Json<ConfirmBody>,
+) -> Response {
+    // Review F3 #3: CSRF first (fail closed), then validation, then limits.
+    if !csrf::check(&headers, body.csrf_token.as_deref()) {
+        return (StatusCode::FORBIDDEN, "invalid or missing CSRF token").into_response();
+    }
+    if body.cases.is_empty() {
+        return (StatusCode::BAD_REQUEST, "at least one worker is required").into_response();
+    }
+    if body.cases.len() > MAX_WORKERS {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("at most {MAX_WORKERS} workers per run"),
+        )
+            .into_response();
+    }
+    let mut cases: Vec<Value> = Vec::with_capacity(body.cases.len());
+    for (i, case) in body.cases.iter().enumerate() {
+        let prompt = case.impl_prompt.trim();
+        if prompt.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("worker {} prompt must not be empty", i + 1),
+            )
+                .into_response();
+        }
+        if prompt.chars().count() > MAX_CASE_PROMPT_CHARS {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "worker {} prompt must be at most {} characters",
+                    i + 1,
+                    MAX_CASE_PROMPT_CHARS
+                ),
+            )
+                .into_response();
+        }
+        let label = case
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .unwrap_or("worker")
+            .to_owned();
+        if label.chars().count() > MAX_LABEL_CHARS {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("worker {} label is too long", i + 1),
+            )
+                .into_response();
+        }
+        cases.push(json!({"label": label, "impl_prompt": prompt}));
+    }
+    // Escaping/injection scan on each submitted case: the dialog text is
+    // untrusted DATA exactly like every agent output.
+    let markers = prompts::injection_markers(&json!({ "cases": cases }));
+    if !markers.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("injection markers detected at {}", markers.join(",")),
+        )
+            .into_response();
+    }
+    let brief = body
+        .brief
+        .map(|b| b.trim().to_owned())
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| {
+            cases[0]
+                .get("impl_prompt")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        });
+    if !valid_brief_len(&brief) {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "brief must be at most {} characters",
+                crate::api::MAX_BRIEF_CHARS
+            ),
+        )
+            .into_response();
+    }
+    // Review F3 #1/#2: per-IP and process-wide run-creation limits apply to
+    // the confirm just like they did to the old form submit.
     let ip = client_ip(&headers, ConnectInfo(info));
     if let Err(rejection) = state.limiter.check(&ip, &state.store).await {
-        return too_many_requests_html(&rejection);
+        return too_many_requests_json(&rejection);
     }
-    match state.start_pipeline(brief, n, state.real_harness()).await {
+    match persist_run_from_cases(&state, &brief, &cases).await {
         Ok(run) => {
             state.limiter.record(&ip, &run.id);
-            Redirect::to(&format!("/{}", run.id)).into_response()
+            (
+                StatusCode::CREATED,
+                Json(json!({
+                    "run_id": run.id,
+                    "n_lanes": run.n_lanes,
+                })),
+            )
+                .into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
-/// Review F3 #2: 429 + Retry-After with a human-facing HTML page for the form
-/// path (the JSON API wraps the same reason in a JSON error).
-fn too_many_requests_html(rejection: &Rejection) -> Response {
+/// Create the run row + one queued lane per submitted case; the lane's
+/// variant_json carries {"label","impl_prompt"} so the pipeline treats it as
+/// a case-driven lane (same shape the decomposition phase persists).
+async fn persist_run_from_cases(
+    state: &AppState,
+    brief: &str,
+    cases: &[Value],
+) -> Result<Run, String> {
+    let now = store::now_ms();
+    let run = state
+        .store
+        .create_run(brief, cases.len() as i64, now)
+        .await
+        .map_err(|e| e.to_string())?;
+    for (idx, case) in cases.iter().enumerate() {
+        let vjson = serde_json::to_string(case).unwrap_or_else(|_| "{}".to_owned());
+        state
+            .store
+            .insert_lane(&run.id, idx as i64, &vjson)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(run)
+}
+
+/// Review F3 #2: 429 + Retry-After as JSON (the dialog fetch reads the error
+/// field and shows it in the dialog).
+fn too_many_requests_json(rejection: &Rejection) -> Response {
     (
         StatusCode::TOO_MANY_REQUESTS,
         [(header::RETRY_AFTER, "60")],
-        HtmlResponse(format!(
-            "<!DOCTYPE html><html><body><h1>429 — too many runs right now</h1>\
-             <p>{}.</p><p><a href=\"/\">Back to the form</a></p></body></html>",
-            html_escape(&rejection.message())
-        )),
+        Json(json!({ "error": rejection.message() })),
     )
         .into_response()
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 /// Review F3 #1: best-effort client IP for the per-IP run-creation limit.
