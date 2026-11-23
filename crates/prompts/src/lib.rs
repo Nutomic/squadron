@@ -13,8 +13,8 @@ pub use roles::{
     validator_prompt, Prompt, IMPLEMENTER_SITE_CONSTRAINTS,
 };
 pub use schema::{
-    gate, gate_and_scan_injections, gate_with_options, injection_markers, parse, sentence_count,
-    BriefFulfillment, BriefFulfillmentState, DecomposeCase, DecomposeOutput, DiversityOutput,
-    GateOptions, ImplementerOutput, JudgeOutput, LaneJudgeReport, Role, SchemaError, TextOrList,
-    ValidatorOutput, Variant, Verdict,
+    gate, gate_and_scan_injections, gate_with_options, injection_markers, parse,
+    parse_validator_report, sentence_count, BriefFulfillment, BriefFulfillmentState, DecomposeCase,
+    DecomposeOutput, DiversityOutput, GateOptions, ImplementerOutput, JudgeOutput, LaneJudgeReport,
+    Role, SchemaError, TextOrList, ValidatorOutput, Variant, Verdict,
 };

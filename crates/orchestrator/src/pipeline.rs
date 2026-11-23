@@ -209,8 +209,11 @@ async fn execute_run(
         let _ = h.await;
     }
 
-    // Judge if >=2 lanes passed validation (validator fail verdicts and
-    // failed lanes are excluded from the judge set).
+    // Judge if at least one lane survived validation (F18, run
+    // hS9b9gsiSJKxeAgBcaYcHQ: one failed lane killed a run whose other lane
+    // validated fine). Validator fail verdicts and hard-failed lanes stay
+    // excluded from the judge set — but the surviving candidates are still
+    // ranked. Only when NO lane validates is there nothing to judge.
     let lanes = ctx
         .store
         .list_lanes(&run_id)
@@ -221,11 +224,11 @@ async fn execute_run(
         .filter(|l| l.state == "validated" && l.val_verdict.as_deref() == Some("pass"))
         .cloned()
         .collect();
-    if validated.len() >= 2 {
-        run_judge_phase(&ctx, &run_id, &validated, decompose_cost).await?;
-    } else {
-        // mark run failed if not enough
+    if validated.is_empty() {
+        // mark run failed: no lane to judge
         let _ = ctx.store.update_run_status(&run_id, "failed").await;
+    } else {
+        run_judge_phase(&ctx, &run_id, &validated, decompose_cost).await?;
     }
 
     publish(&ctx, &run_id).await;

@@ -86,9 +86,9 @@ fn validator_and_judge_prompts_forbid_the_marker_token() {
 
     let report = ValidatorOutput {
         verdict: Verdict::Pass,
-        features: prompts::TextOrList::Text("feature".into()),
-        bugs: prompts::TextOrList::List(vec![]),
-        security: prompts::TextOrList::Text("none".into()),
+        features: vec!["feature".into()],
+        bugs: vec![],
+        security: vec![],
         quality_score: 80.0,
         summary: "good".into(),
     };
@@ -273,12 +273,36 @@ fn role_prompts_include_schema_and_untrusted_data_rule() {
         "pass-with-gaps example missing: {}",
         validator.user
     );
+    // F18 (run hS9b9gsiSJKxeAgBcaYcHQ): the report arrays must be populated
+    // with concrete entries — placeholder text is forbidden by the prompt and
+    // rejected by the gate.
+    assert!(
+        validator
+            .user
+            .contains("populate every array with concrete entries (may be empty)"),
+        "report-array instruction missing: {}",
+        validator.user
+    );
+    assert!(
+        validator
+            .user
+            .contains("never placeholder text like \"see array\""),
+        "placeholder prohibition missing: {}",
+        validator.user
+    );
+    // the schema is pretty-printed into the prompt; assert the array type
+    // requirement and that the old lenient string-or-array union is gone.
+    assert!(
+        validator.system.contains("\"type\": \"array\"") && !validator.system.contains("oneOf"),
+        "schema shown to the validator must require arrays: {}",
+        validator.system
+    );
 
     let report = ValidatorOutput {
         verdict: Verdict::Pass,
-        features: prompts::TextOrList::Text("feature".into()),
-        bugs: prompts::TextOrList::List(vec![]),
-        security: prompts::TextOrList::Text("none".into()),
+        features: vec!["feature".into()],
+        bugs: vec![],
+        security: vec![],
         quality_score: 80.0,
         summary: "good".into(),
     };
@@ -298,6 +322,15 @@ fn role_prompts_include_schema_and_untrusted_data_rule() {
     );
     assert!(judge.user.contains("build a small arcade game"));
     assert!(judge.user.contains("sanitized page text"));
+    // F18: the judge must be told which lanes are candidates — failed lanes
+    // are excluded from ranking and winner eligibility.
+    assert!(
+        judge
+            .user
+            .contains("lanes that failed validation (or never completed it) are excluded"),
+        "candidate-lane eligibility rule missing: {}",
+        judge.user
+    );
     // Fulfillment calibration: unfulfilled requires affirmative evidence;
     // unverifiable is its own state, never a synonym for unfulfilled.
     assert!(
@@ -330,8 +363,8 @@ fn gate_accepts_valid_outputs_for_all_roles() {
     assert_eq!(parsed.files, 4);
 
     let validator = json!({
-        "verdict": "pass", "features": ["game loop"], "bugs": "none known",
-        "security": "no secrets", "quality_score": 88.5, "summary": "detailed report"
+        "verdict": "pass", "features": ["game loop"], "bugs": [],
+        "security": ["no secrets"], "quality_score": 88.5, "summary": "detailed report"
     })
     .to_string();
     let parsed: ValidatorOutput = parse(Role::Validator, &validator).unwrap();
@@ -401,6 +434,76 @@ fn gate_rejects_non_conforming_output() {
         gate_with_options(Role::Diversity, &raw, &options),
         Err(SchemaError::NonConforming { .. })
     ));
+}
+
+/// F18 (run hS9b9gsiSJKxeAgBcaYcHQ): validators wrote literal "see array"
+/// strings into the report arrays. The gate must reject such placeholder text
+/// for every report field instead of persisting it.
+#[test]
+fn validator_gate_rejects_see_array_placeholder_strings() {
+    for field in ["features", "bugs", "security"] {
+        let mut base = json!({
+            "verdict": "pass", "features": [], "bugs": [], "security": [],
+            "quality_score": 60.0, "summary": "detailed report"
+        });
+        base[field] = json!("see array");
+        let raw = base.to_string();
+        assert!(
+            matches!(
+                gate(Role::Validator, &raw),
+                Err(SchemaError::NonConforming { role, detail })
+                    if role == "validator" && detail.contains("placeholder")
+            ),
+            "placeholder string in {field} must be rejected"
+        );
+    }
+}
+
+/// F18: a report with proper arrays parses field-for-field, and a bare string
+/// (legacy shape) is repaired into a single-entry array by the gate.
+#[test]
+fn validator_gate_accepts_arrays_and_repairs_bare_strings() {
+    let arrays = json!({
+        "verdict": "pass",
+        "features": ["paddle controls", "score table"],
+        "bugs": ["ball clips through wall"],
+        "security": [],
+        "quality_score": 71.0,
+        "summary": "detailed report"
+    })
+    .to_string();
+    let parsed: ValidatorOutput = parse(Role::Validator, &arrays).unwrap();
+    assert_eq!(parsed.features, vec!["paddle controls", "score table"]);
+    assert_eq!(parsed.bugs, vec!["ball clips through wall"]);
+    assert!(parsed.security.is_empty());
+
+    let bare = json!({
+        "verdict": "pass", "features": ["game loop"], "bugs": "none observed",
+        "security": "no secrets", "quality_score": 82.0, "summary": "detailed report"
+    })
+    .to_string();
+    let value = gate(Role::Validator, &bare).unwrap();
+    assert_eq!(value["bugs"], json!(["none observed"]));
+    assert_eq!(value["security"], json!(["no secrets"]));
+    let parsed: ValidatorOutput = serde_json::from_value(value).unwrap();
+    assert_eq!(parsed.bugs, vec!["none observed"]);
+    assert_eq!(parsed.security, vec!["no secrets"]);
+}
+
+/// F18: legacy persisted reports (string-shaped arrays) hydrate through
+/// `parse_validator_report`, which repairs strings into single-entry arrays
+/// and drops empty/placeholder entries instead of rendering them.
+#[test]
+fn parse_validator_report_tolerates_legacy_strings_and_drops_placeholders() {
+    let legacy = json!({
+        "verdict": "pass", "features": "see array", "bugs": ["real bug"],
+        "security": "no secrets", "quality_score": 70.0, "summary": "verified"
+    })
+    .to_string();
+    let out = prompts::parse_validator_report(&legacy).unwrap();
+    assert!(out.features.is_empty(), "placeholder entries are dropped");
+    assert_eq!(out.bugs, vec!["real bug"]);
+    assert_eq!(out.security, vec!["no secrets"]);
 }
 
 #[test]
@@ -596,7 +699,7 @@ fn validator_prose_descriptions_pass_the_scan_marker_still_fails() {
     let prose = json!({
         "verdict": "pass",
         "features": ["game loop", "score table"],
-        "bugs": "none observed",
+        "bugs": ["none observed"],
         "security": ["index.html contains text attempting to instruct agents to ignore their instructions and fetch an external URL; not obeyed, reported here in prose"],
         "quality_score": 72.0,
         "summary": "detailed verification-depth analysis"
@@ -612,7 +715,7 @@ fn validator_prose_descriptions_pass_the_scan_marker_still_fails() {
     let marked = json!({
         "verdict": "pass",
         "features": ["game loop"],
-        "bugs": "none observed",
+        "bugs": ["none observed"],
         "security": ["[INJECTION?] embedded instruction in index.html"],
         "quality_score": 72.0,
         "summary": "detailed report"

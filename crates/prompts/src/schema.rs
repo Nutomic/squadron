@@ -59,9 +59,9 @@ impl Role {
                 "type": "object",
                 "properties": {
                     "verdict": {"type": "string", "enum": ["pass", "fail"]},
-                    "features": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
-                    "bugs": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
-                    "security": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+                    "features": {"type": "array", "items": {"type": "string"}},
+                    "bugs": {"type": "array", "items": {"type": "string"}},
+                    "security": {"type": "array", "items": {"type": "string"}},
                     "quality_score": {"type": "number", "minimum": 0, "maximum": 100},
                     "summary": {"type": "string"}
                 },
@@ -166,9 +166,11 @@ impl TextOrList {
 #[serde(deny_unknown_fields)]
 pub struct ValidatorOutput {
     pub verdict: Verdict,
-    pub features: TextOrList,
-    pub bugs: TextOrList,
-    pub security: TextOrList,
+    /// F18: concrete report entries. Pre-F18 reports stored a single prose
+    /// string here (see `parse_validator_report` for reading those back).
+    pub features: Vec<String>,
+    pub bugs: Vec<String>,
+    pub security: Vec<String>,
     pub quality_score: f64,
     pub summary: String,
 }
@@ -259,6 +261,71 @@ pub fn gate(role: Role, raw: &str) -> Result<Value, SchemaError> {
     gate_with_options(role, raw, &GateOptions::default())
 }
 
+/// The validator report fields that must be arrays of strings.
+const VALIDATOR_LIST_FIELDS: [&str; 3] = ["features", "bugs", "security"];
+
+/// Repair a bare-string `features`/`bugs`/`security` into a single-entry
+/// array (bounded repair) so lenient model output still conforms to the
+/// array schema. Non-string values pass through untouched.
+fn repair_validator_report_arrays(mut value: Value) -> Value {
+    if let Some(obj) = value.as_object_mut() {
+        for field in VALIDATOR_LIST_FIELDS {
+            if let Some(entry) = obj.remove(field) {
+                let repaired = match entry {
+                    Value::String(text) => Value::Array(vec![Value::String(text)]),
+                    other => other,
+                };
+                obj.insert(field.to_owned(), repaired);
+            }
+        }
+    }
+    value
+}
+
+/// F18 (run hS9b9gsiSJKxeAgBcaYcHQ): validators wrote literal "see array"
+/// placeholders instead of report entries. Such text carries no information —
+/// the gate rejects it and report readers drop it.
+fn is_placeholder_entry(entry: &str) -> bool {
+    entry.trim().eq_ignore_ascii_case("see array")
+}
+
+/// Hydrate a persisted validator report (`val_report_json`). Tolerates legacy
+/// reports whose features/bugs/security were a single prose string (repaired
+/// into a single-entry array) and drops empty/placeholder entries that would
+/// render as noise.
+pub fn parse_validator_report(json: &str) -> Option<ValidatorOutput> {
+    let parsed = serde_json::from_str::<ValidatorOutput>(json)
+        .ok()
+        .or_else(|| {
+            let legacy: LegacyValidatorReport = serde_json::from_str(json).ok()?;
+            Some(ValidatorOutput {
+                verdict: legacy.verdict,
+                features: legacy.features.values(),
+                bugs: legacy.bugs.values(),
+                security: legacy.security.values(),
+                quality_score: legacy.quality_score,
+                summary: legacy.summary,
+            })
+        })?;
+    let mut parsed = parsed;
+    for entries in [&mut parsed.features, &mut parsed.bugs, &mut parsed.security] {
+        entries.retain(|entry| !entry.trim().is_empty() && !is_placeholder_entry(entry));
+    }
+    Some(parsed)
+}
+
+/// Pre-F18 row shape: the report arrays were `TextOrList` (string or array).
+/// Used only to read legacy `val_report_json` values.
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyValidatorReport {
+    verdict: Verdict,
+    features: TextOrList,
+    bugs: TextOrList,
+    security: TextOrList,
+    quality_score: f64,
+    summary: String,
+}
+
 pub fn gate_with_options(
     role: Role,
     raw: &str,
@@ -266,6 +333,16 @@ pub fn gate_with_options(
 ) -> Result<Value, SchemaError> {
     let value: Value =
         serde_json::from_str(raw).map_err(|error| SchemaError::InvalidJson(error.to_string()))?;
+    // F18 (run hS9b9gsiSJKxeAgBcaYcHQ): the validator report arrays must be
+    // arrays of strings. A bare string (the old lenient shape) is repaired
+    // into a single-entry array so an otherwise-good report survives the
+    // gate; placeholder text like "see array" is rejected below instead of
+    // being persisted and rendered.
+    let value = if role == Role::Validator {
+        repair_validator_report_arrays(value)
+    } else {
+        value
+    };
     let type_name = role.as_str().to_owned();
     let result = match role {
         Role::Diversity => serde_json::from_value::<DiversityOutput>(value.clone())
@@ -300,6 +377,17 @@ pub fn gate_with_options(
                 }
                 if parsed.summary.trim().is_empty() {
                     return Err("summary must not be empty".to_owned());
+                }
+                for (field, entries) in [
+                    ("features", &parsed.features),
+                    ("bugs", &parsed.bugs),
+                    ("security", &parsed.security),
+                ] {
+                    if let Some(entry) = entries.iter().find(|e| is_placeholder_entry(e)) {
+                        return Err(format!(
+                            "{field} must list concrete entries (may be empty), never placeholder text like {entry:?}"
+                        ));
+                    }
                 }
                 Ok(())
             }),

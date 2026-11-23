@@ -457,9 +457,10 @@ async fn four_empty_outputs_fall_back_to_single_raw_brief_lane() {
     let brief = "a tidy landing page for a bakery";
     let run = start(ctx, brief).await;
     let final_run = wait_run(&store, &run.id, 60).await;
-    // A single lane can never reach the judge (needs >= 2 validated), so the
-    // run fails — but the lane itself must exist and be driven by the brief.
-    assert_eq!(final_run.status, "failed");
+    // F18: a single validated lane is enough to reach the judge (a run only
+    // fails when NO lane validates), so the fallback run is judged — the lane
+    // itself must exist and be driven by the brief.
+    assert_eq!(final_run.status, "judged");
 
     assert_eq!(
         stub.decompose_calls.load(Ordering::SeqCst),

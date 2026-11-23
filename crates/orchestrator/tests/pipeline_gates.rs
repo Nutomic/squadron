@@ -303,9 +303,10 @@ async fn harness_budget_is_independent_of_lane_retries() {
     }
 }
 
-/// #24: fewer than two validated lanes ends the run as failed, never judged.
+/// F18: with zero validated lanes there is no judge set at all — the run
+/// fails and the judge is never invoked (no run_judged lane events).
 #[tokio::test(flavor = "multi_thread")]
-async fn run_fails_when_fewer_than_two_lanes_validate() {
+async fn run_fails_without_judging_when_every_lane_fails() {
     let _env = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_var("MOCK_SPRITE_STATE", dir.path().join("mock-state.json"));
@@ -346,6 +347,12 @@ async fn run_fails_when_fewer_than_two_lanes_validate() {
     assert_eq!(final_run.winner_lane, None);
     for lane in store.list_lanes(&run.id).await.unwrap() {
         assert_eq!(lane.state, "failed", "lane {:?}", lane.idx);
+        let events = store.list_lane_events(&run.id, lane.idx).await.unwrap();
+        assert!(
+            !events.iter().any(|e| e.payload == "run_judged"),
+            "lane {} must not see a judge invocation when nothing validates",
+            lane.idx
+        );
     }
 }
 
@@ -478,11 +485,13 @@ async fn validator_fail_verdict_demotes_lane_out_of_judge_set() {
     }
 }
 
-/// #24 (round 2, adapted to R2 finding 5 demotion): with fewer than two
-/// passing verdicts there is no judge set, so the run fails even though every
-/// lane reached validation; the fail-verdict lanes are demoted with report.
+/// F18 (production run hS9b9gsiSJKxeAgBcaYcHQ): lanes 1 and 2 fail validation
+/// while lane 0 survives — the run is still JUDGED over the surviving
+/// candidates instead of being killed by the failed lanes. The judge set
+/// carries only validated lanes, so the winner must be lane 0; the fail-verdict
+/// lanes stay demoted with their reports retained.
 #[tokio::test(flavor = "multi_thread")]
-async fn single_pass_verdict_fails_run_without_judging() {
+async fn single_surviving_lane_is_judged_with_winner() {
     let _env = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_var("MOCK_SPRITE_STATE", dir.path().join("mock-state.json"));
@@ -510,10 +519,10 @@ async fn single_pass_verdict_fails_run_without_judging() {
 
     let final_run = wait_run(&store, &run.id, 60).await;
     assert_eq!(
-        final_run.status, "failed",
-        "only one passing lane: no judge"
+        final_run.status, "judged",
+        "one surviving validated lane is enough to judge the run"
     );
-    assert_eq!(final_run.winner_lane, None);
+    assert_eq!(final_run.winner_lane, Some(0));
     for lane in store.list_lanes(&run.id).await.unwrap() {
         assert!(lane.val_verdict.is_some(), "verdict recorded");
         if lane.idx == 0 {
@@ -522,5 +531,11 @@ async fn single_pass_verdict_fails_run_without_judging() {
             assert_eq!(lane.state, "failed", "lane {:?} demoted", lane.idx);
             assert!(lane.val_report_json.is_some(), "report retained");
         }
+        let events = store.list_lane_events(&run.id, lane.idx).await.unwrap();
+        assert!(
+            events.iter().any(|e| e.payload == "run_judged"),
+            "lane {} was part of the judged run",
+            lane.idx
+        );
     }
 }
