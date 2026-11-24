@@ -47,6 +47,9 @@ pub fn fixture_snapshot() -> Snapshot {
                 error: None,
                 progress_pct: None,
                 stage: None,
+                impl_prompt: Some(
+                    "retro arcade landing page for the fixture brief".to_owned(),
+                ),
             },
             LaneSnapshot {
                 idx: 1,
@@ -68,6 +71,9 @@ pub fn fixture_snapshot() -> Snapshot {
                 error: None,
                 progress_pct: None,
                 stage: None,
+                impl_prompt: Some(
+                    "retro arcade landing page for the fixture brief".to_owned(),
+                ),
             },
             LaneSnapshot {
                 idx: 2,
@@ -89,6 +95,9 @@ pub fn fixture_snapshot() -> Snapshot {
                 error: Some("harness install failed twice; lane hard-failed".to_owned()),
                 progress_pct: None,
                 stage: None,
+                impl_prompt: Some(
+                    "retro arcade landing page for the fixture brief".to_owned(),
+                ),
             },
         ],
         ts: 1_732_020_000_000,
@@ -188,6 +197,7 @@ async fn fixture_events() -> Response {
 async fn fixture_gallery() -> Response {
     let tpl = GalleryTemplate {
         run_id: "__fixtures".to_owned(),
+        brief: "A retro arcade site for the fixture run — one brief, three lanes.".to_owned(),
         events_url: "/__fixtures/events".to_owned(),
         status: "judged".to_owned(),
         csrf_token: String::new(),

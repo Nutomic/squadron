@@ -381,6 +381,8 @@ pub struct RunRow {
     pub id: String,
     pub brief: String,
     pub status: String,
+    /// F25: lane count column (run.n_lanes).
+    pub n_lanes: i64,
     pub created: String,
     /// Full-precision timestamp kept for the hover title only.
     pub created_full: String,
@@ -407,8 +409,11 @@ async fn load_rows(store: &Store) -> Vec<RunRow> {
             runs.into_iter()
                 .map(|r| RunRow {
                     id: r.id,
-                    brief: truncate(&r.brief, 120),
+                    // F25: the id column is gone; the brief column got the
+                    // freed space and clamps to two lines in the template.
+                    brief: r.brief,
                     status: r.status,
+                    n_lanes: r.n_lanes,
                     created: fmt_relative(r.created_at, now_ms),
                     created_full: fmt_utc(r.created_at),
                 })
@@ -550,6 +555,8 @@ pub struct TokeiTemplate {
 #[template(path = "gallery.html")]
 pub struct GalleryTemplate {
     pub run_id: String,
+    /// F25: the FULL user prompt, shown prominently at the top of the page.
+    pub brief: String,
     pub events_url: String,
     pub status: String,
     /// Review F3 #3: CSRF token for the island's promote form (also set as a
@@ -626,6 +633,7 @@ async fn gallery(State(state): State<SharedState>, Path(run_id): Path<String>) -
     let token = csrf::new_token();
     let tpl = GalleryTemplate {
         run_id: run.id.clone(),
+        brief: run.brief.clone(),
         events_url: format!("/{}/events", run.id),
         status: run.status.clone(),
         csrf_token: token.clone(),
@@ -915,21 +923,6 @@ pub(crate) fn valid_id(id: &str) -> bool {
 /// R2-3#5: shared brief cap for the web form and the JSON API.
 pub(crate) fn valid_brief_len(brief: &str) -> bool {
     brief.chars().count() <= crate::api::MAX_BRIEF_CHARS
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_owned();
-    }
-    let cut: String = s.chars().take(max).collect();
-    // Prefer a word boundary so sample chips and briefs never cut mid-word.
-    if let Some(space) = cut.rfind(char::is_whitespace) {
-        if space >= max / 2 {
-            let trimmed: String = cut.chars().take(space).collect();
-            return format!("{trimmed}...");
-        }
-    }
-    format!("{cut}...")
 }
 
 /// Relative age for the runs table ("2h ago"); falls back to a short date

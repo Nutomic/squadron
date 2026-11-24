@@ -17,18 +17,19 @@
   <table class="runs-table w-full min-w-[720px]">
     <thead>
       <tr>
-        <th>Run</th>
+        <th>Brief</th>
         <th>Status</th>
+        <th>Lanes</th>
         <th class="!text-right">Started</th>
-        <th class="w-10"></th>
       </tr>
     </thead>
     <tbody>
       {% for row in rows %}
-      <tr>
+      <!-- F25: the whole row is clickable (app.js follows data-run-link);
+           the run id column is hidden — the brief column got the space. -->
+      <tr data-run-link="/{{ row.id }}" tabindex="0" aria-label="Open run {{ row.id }}">
         <td>
-          <a href="/{{ row.id }}" class="font-mono text-[13px] font-medium text-base-content hover:text-primary">{{ row.id }}</a>
-          <span class="block text-[13px] text-base-content/65 truncate max-w-md mt-0.5">{{ row.brief }}</span>
+          <span class="block text-[13px] leading-relaxed text-base-content line-clamp-2 max-w-2xl">{{ row.brief }}</span>
         </td>
         <td>
           {% if row.status == "judged" %}<span class="chip chip-success">judged</span>
@@ -37,16 +38,11 @@
           {% else if row.status == "failed" %}<span class="chip chip-error">failed</span>
           {% else %}<span class="chip chip-neutral">{{ row.status }}</span>{% endif %}
         </td>
+        <td class="mono-num text-base-content/70">{{ row.n_lanes }}</td>
         <td class="!text-right mono-num text-base-content/60 whitespace-nowrap" title="{{ row.created_full }}">{{ row.created }}</td>
-        <td class="!text-right">
-          <a href="/{{ row.id }}" class="text-base-content/35 hover:text-primary text-lg leading-none px-2" aria-label="Open run {{ row.id }}">&rarr;</a>
-        </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
 {% endif %}
-    </tbody>
-  </table>
-</div>

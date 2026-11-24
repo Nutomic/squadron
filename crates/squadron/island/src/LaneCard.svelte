@@ -79,6 +79,15 @@
 
     <div class="mono-num text-base-content/60 truncate">{lane.model ?? 'agent not started'}</div>
 
+    {#if lane.implPrompt}
+      <!-- F25: the lane's case prompt (brief + distinct angle, no boilerplate
+           constraints) is visible by default and collapsible. -->
+      <details open class="text-[12px]">
+        <summary class="cursor-pointer text-base-content/55 hover:text-base-content select-none">Case prompt</summary>
+        <p class="whitespace-pre-wrap mt-1.5 leading-relaxed text-base-content/75">{lane.implPrompt}</p>
+      </details>
+    {/if}
+
     {#if lane.verdictCard}
       <p class="lane-edge text-[12px] leading-relaxed text-base-content/70 pl-2.5">{lane.verdictCard}</p>
     {/if}

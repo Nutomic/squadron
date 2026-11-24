@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use store::{now_ms, Lane, Run, Store};
 
 /// Canonical run snapshot serialized through the SSE hub. The hub payload is
@@ -64,6 +65,12 @@ pub struct LaneSnapshot {
     pub progress_pct: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
+    /// F25: the case's user-visible impl_prompt (brief + distinct angle, no
+    /// boilerplate constraints — those are appended at execution time), parsed
+    /// from the persisted variant_json. None for template-fallback lanes
+    /// (classic variant shape) or unparsable legacy JSON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub impl_prompt: Option<String>,
 }
 
 pub fn run_snapshot(run: &Run) -> RunSnapshot {
@@ -87,6 +94,13 @@ pub fn lane_snapshot(run: &Run, lane: &Lane, cost_series: Option<Vec<f64>>) -> L
         (Some(w), Some(v)) if w == lane.idx => Some(v.to_owned()),
         _ => None,
     };
+    let impl_prompt = serde_json::from_str::<Value>(&lane.variant_json)
+        .ok()
+        .and_then(|v| {
+            v.get("impl_prompt")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
     LaneSnapshot {
         idx: lane.idx,
         state: lane.state.clone(),
@@ -109,6 +123,7 @@ pub fn lane_snapshot(run: &Run, lane: &Lane, cost_series: Option<Vec<f64>>) -> L
         error: lane.error.clone(),
         progress_pct: None,
         stage: None,
+        impl_prompt,
     }
 }
 
@@ -274,6 +289,29 @@ mod tests {
         l3.impl_started_at = Some(2_000);
         l3.val_started_at = Some(1_000);
         assert_eq!(lane_snapshot(&run(), &l3, None).build_ms, None);
+    }
+
+    /// F25: the lane card prompt is parsed out of the persisted variant_json;
+    /// template-fallback lanes (classic variant shape) carry no impl_prompt.
+    #[test]
+    fn lane_snapshot_carries_the_case_impl_prompt() {
+        let mut l = lane();
+        l.variant_json =
+            r#"{"label":"green","impl_prompt":"green arcade landing page for the brief"}"#
+                .to_owned();
+        let snap = lane_snapshot(&run(), &l, None);
+        assert_eq!(
+            snap.impl_prompt.as_deref(),
+            Some("green arcade landing page for the brief")
+        );
+        // Classic variant shape: no impl_prompt key.
+        let mut v = lane();
+        v.variant_json = r#"{"angle":"a","stack":"s","tone":"t"}"#.to_owned();
+        assert_eq!(lane_snapshot(&run(), &v, None).impl_prompt, None);
+        // Unparsable JSON is tolerated (None, never a panic).
+        let mut u = lane();
+        u.variant_json = "not json".to_owned();
+        assert_eq!(lane_snapshot(&run(), &u, None).impl_prompt, None);
     }
 
     /// Wave D: progress payloads parse strictly; garbage is ignored.

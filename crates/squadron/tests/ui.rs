@@ -179,6 +179,67 @@ async fn runs_page_and_fragment_list_runs() {
     }
 }
 
+/// F25: the whole runs-table row links to the run page, the run id column is
+/// hidden (the brief column got the space), and a lanes column shows n_lanes.
+#[tokio::test]
+async fn runs_table_rows_are_clickable_without_id_column_and_show_lanes() {
+    let (app, store) = app().await;
+    let run = store
+        .create_run("a site about sleeping VMs", 4, 1_732_020_000_000)
+        .await
+        .unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/runs/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+    // Row click affordance: the row carries the target href as data.
+    assert!(
+        html.contains(&format!(r#"data-run-link="/{}""#, run.id)),
+        "row must be clickable: {html}"
+    );
+    // Lanes column present with the run's lane count.
+    assert!(html.contains("<th>Lanes</th>"), "lanes column: {html}");
+    assert!(html.contains(">4</td>"), "lane count rendered: {html}");
+    // Brief column has the freed space: the full brief, no truncation.
+    assert!(html.contains("a site about sleeping VMs"));
+    // Id column hidden: no mono id link, no "Run" column header.
+    assert!(
+        !html.contains("<th>Run</th>"),
+        "run id column header must be gone: {html}"
+    );
+    assert!(
+        !html.contains("font-mono text-[13px] font-medium text-base-content hover:text-primary"),
+        "the mono id link must be gone: {html}"
+    );
+}
+
+/// The empty state is unchanged (no lanes column in the empty fragment).
+#[tokio::test]
+async fn runs_table_empty_state_unchanged() {
+    let (app, _) = app().await;
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/runs/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let empty_html = body_string(res.into_body()).await;
+    assert!(empty_html.contains("No runs yet"));
+    assert!(!empty_html.contains("<th>Lanes</th>"));
+    assert!(!empty_html.contains("data-run-link"));
+}
+
 #[tokio::test]
 async fn gallery_renders_island_with_csp() {
     let (app, store) = app().await;
@@ -212,6 +273,32 @@ async fn gallery_renders_island_with_csp() {
     assert!(csp.contains("frame-src 'self' https://*.sprites.app"));
     assert!(csp.contains("default-src 'self'"));
     assert_eq!(referrer, "no-referrer");
+}
+
+/// F25: the run page shows the FULL user prompt (brief) prominently at the
+/// top, outside the SSE island (server-rendered, no JS required).
+#[tokio::test]
+async fn run_page_shows_the_full_brief() {
+    let (app, store) = app().await;
+    let brief = "a nine-arcade-machine museum for sleepy VMs — the FULL prompt stays visible";
+    let run = store.create_run(brief, 3, 1_732_020_000_000).await.unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/{}", run.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+    assert!(
+        html.contains(brief),
+        "run page must show the full brief: {html}"
+    );
+    assert!(html.contains("Brief"), "brief card label: {html}");
 }
 
 #[tokio::test]
@@ -292,6 +379,59 @@ async fn events_stream_full_state_snapshot() {
     ] {
         assert!(frame.contains(key), "missing {key} in {frame}");
     }
+}
+
+/// F25: the SSE snapshot carries each lane's user-visible case prompt
+/// (implPrompt) so the run page lane cards can show it.
+#[tokio::test]
+async fn events_snapshot_carries_lane_impl_prompt() {
+    let (app, store) = app().await;
+    let run = store
+        .create_run("lane prompt test", 2, 1_732_020_000_000)
+        .await
+        .unwrap();
+    store
+        .insert_lane(
+            &run.id,
+            0,
+            r#"{"label":"green","impl_prompt":"green arcade landing page for the brief"}"#,
+        )
+        .await
+        .unwrap();
+    store
+        .insert_lane(&run.id, 1, r#"{"angle":"a","stack":"s","tone":"t"}"#)
+        .await
+        .unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/{}/events", run.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = res.into_body();
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut stream = body.into_data_stream();
+        stream.next().await.unwrap().unwrap()
+    })
+    .await
+    .expect("SSE first frame timed out");
+    let frame = String::from_utf8(first.to_vec()).unwrap();
+    assert!(
+        frame.contains(r#""implPrompt":"green arcade landing page for the brief""#),
+        "case-driven lane must carry implPrompt: {frame}"
+    );
+    // Template-fallback lane (classic variant shape): exactly one implPrompt
+    // on the page (the case-driven lane's), none invented for variant lanes.
+    assert_eq!(
+        frame.matches("implPrompt").count(),
+        1,
+        "only the case-driven lane carries implPrompt: {frame}"
+    );
 }
 
 #[tokio::test]
