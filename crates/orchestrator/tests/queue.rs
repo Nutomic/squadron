@@ -147,6 +147,7 @@ async fn clear_env() {
     std::env::remove_var("MOCK_CREATE_MS");
     std::env::remove_var("MOCK_EXEC_MS");
     std::env::remove_var("MOCK_ORG_LIMIT_FAILS");
+    std::env::remove_var("MOCK_RATE_LIMIT_FAILS");
 }
 
 /// Wave D: two runs totalling more than 8 lanes — the second run enters
@@ -250,6 +251,101 @@ async fn slot_exhaustion_spawn_failure_requeues_lane_not_failed() {
         }
     }
     assert!(saw_requeue, "a lane must have been requeued with backoff");
+    clear_env().await;
+}
+
+/// F26: a sprite-create rate-limit failure (the exact production error
+/// shape) requeues the lane with backoff — the lane retries after the
+/// backoff and completes instead of failing permanently.
+#[tokio::test(flavor = "multi_thread")]
+async fn rate_limit_spawn_failure_requeues_lane_then_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = base_config(dir.path());
+    config.rate_limit_requeue_backoff = Duration::from_millis(50);
+    let env = setup(config).await;
+    std::env::set_var("MOCK_RATE_LIMIT_FAILS", "2");
+
+    let req = RunRequest {
+        brief: "rate-limit run".to_owned(),
+        n_lanes: 3,
+        harness: harness_for(""),
+    };
+    let run = orchestrator::start_run(env.ctx.clone(), req).await.unwrap();
+    let status = wait_run_status(&env.store, &run.id, &["judged", "failed"], 60).await;
+    assert_eq!(
+        status, "judged",
+        "a one-shot rate limit must not fail the run"
+    );
+
+    let lanes = env.store.list_lanes(&run.id).await.unwrap();
+    for lane in &lanes {
+        assert_eq!(lane.state, "validated", "lane {} must validate", lane.idx);
+        assert!(lane.error.is_none(), "lane error: {:?}", lane.error);
+    }
+    let mut saw_requeue = false;
+    for lane in &lanes {
+        let events = env.store.list_lane_events(&run.id, lane.idx).await.unwrap();
+        if events.iter().any(|e| {
+            e.payload
+                .contains("sprite-create rate limit on spawn; requeueing")
+        }) {
+            saw_requeue = true;
+        }
+    }
+    assert!(saw_requeue, "a lane must have been requeued with backoff");
+    clear_env().await;
+}
+
+/// F26: a persistent rate limit must still fail the lane — after the capped
+/// requeue budget (3 attempts) the lane fails with a clear rate-limit error,
+/// not an opaque one.
+#[tokio::test(flavor = "multi_thread")]
+async fn persistent_rate_limit_fails_lane_after_capped_retries() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = base_config(dir.path());
+    config.rate_limit_requeue_backoff = Duration::from_millis(10);
+    let env = setup(config).await;
+    std::env::set_var("MOCK_RATE_LIMIT_FAILS", "999999");
+
+    let req = RunRequest {
+        brief: "persistent rate-limit run".to_owned(),
+        n_lanes: 2,
+        harness: harness_for(""),
+    };
+    let run = orchestrator::start_run(env.ctx.clone(), req).await.unwrap();
+    let status = wait_run_status(&env.store, &run.id, &["judged", "failed"], 60).await;
+    assert_eq!(
+        status, "failed",
+        "a persistent rate limit must fail the run after the cap"
+    );
+
+    let lanes = env.store.list_lanes(&run.id).await.unwrap();
+    assert_eq!(lanes.len(), 2);
+    for lane in &lanes {
+        assert_eq!(lane.state, "failed", "lane {} must fail", lane.idx);
+        let err = lane
+            .error
+            .as_deref()
+            .expect("failed lane must carry a clear error");
+        assert!(
+            err.contains("rate limit exceeded"),
+            "error must name the rate limit: {err}"
+        );
+        // the capped requeue budget was spent before giving up
+        let events = env.store.list_lane_events(&run.id, lane.idx).await.unwrap();
+        let requeues = events
+            .iter()
+            .filter(|e| {
+                e.payload
+                    .contains("sprite-create rate limit on spawn; requeueing")
+            })
+            .count();
+        assert_eq!(
+            requeues, 3,
+            "lane {} must requeue exactly the capped number of times",
+            lane.idx
+        );
+    }
     clear_env().await;
 }
 

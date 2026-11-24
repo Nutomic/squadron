@@ -28,6 +28,10 @@ pub struct MockState {
     /// queue/requeue paths can be exercised end to end.
     #[serde(default)]
     pub org_limit_failures: u32,
+    /// F26: sprite-create rate-limit failures already emitted.
+    /// `MOCK_RATE_LIMIT_FAILS` caps how many are produced per state file.
+    #[serde(default)]
+    pub rate_limit_failures: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -300,6 +304,30 @@ fn create(args: &[String]) -> Result<String, (i32, String)> {
             return Err((
                 3,
                 "create: org sprite limit of 8 reached (org-limit)".to_owned(),
+            ));
+        }
+    }
+    // F26: emulate the platform's sprite-create rate limit (exact production
+    // error shape), capped by `MOCK_RATE_LIMIT_FAILS` per state file.
+    let rate_limit = std::env::var("MOCK_RATE_LIMIT_FAILS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0);
+    if rate_limit > 0 {
+        let failed = with_state(|state| {
+            if state.rate_limit_failures >= rate_limit {
+                return Ok(false);
+            }
+            state.rate_limit_failures += 1;
+            write_state(state)?;
+            Ok(true)
+        })
+        .map_err(|e| (3, e))?;
+        if failed {
+            return Err((
+                3,
+                "create: Sprite creation rate limit exceeded. You can create 10 sprites per minute."
+                    .to_owned(),
             ));
         }
     }

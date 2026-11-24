@@ -30,6 +30,10 @@ pub struct PipelineConfig {
     /// Wave D: base backoff between slot-exhaustion requeue attempts (grows
     /// geometrically, capped at 60s).
     pub slot_requeue_backoff: Duration,
+    /// F26: base backoff between sprite-create rate-limit requeue attempts
+    /// (the platform window is one minute; each attempt waits out a full
+    /// window).
+    pub rate_limit_requeue_backoff: Duration,
 }
 
 /// Wave D: global default for concurrent lane sprites (org limit is 10
@@ -85,6 +89,7 @@ impl Default for PipelineConfig {
             probe_timeout: Duration::from_secs(2 * 60),
             probe_command: None,
             slot_requeue_backoff: Duration::from_secs(2),
+            rate_limit_requeue_backoff: Duration::from_secs(60),
         }
     }
 }

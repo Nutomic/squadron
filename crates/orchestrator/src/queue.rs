@@ -147,6 +147,27 @@ pub fn is_slot_exhaustion_error(e: &str) -> bool {
     org && limit
 }
 
+/// F26: sprite-create rate-limit classifier. The platform refuses a create
+/// burst with "Sprite creation rate limit exceeded. You can create 10 sprites
+/// per minute." — a transient condition that must requeue the lane instead of
+/// failing it (same retry-not-fail semantics as slot exhaustion).
+pub fn is_sprite_rate_limit_error(e: &str) -> bool {
+    let l = e.to_lowercase();
+    l.contains("rate limit exceeded") || l.contains("sprites per minute")
+}
+
+/// Bounded requeue budget for sprite-create rate-limit failures: the limit is
+/// a rolling per-minute window, so a handful of patient retries is enough; a
+/// persistent limit still fails the lane with the clear classifier error.
+pub const RATE_LIMIT_REQUEUE_MAX_ATTEMPTS: usize = 3;
+
+/// Backoff before rate-limit requeue attempt `attempt` (1-based): at least one
+/// full rate-limit window (>= 60s), growing linearly so attempt 3 is well
+/// clear of the window.
+pub fn rate_limit_requeue_delay(attempt: usize, base: Duration) -> Duration {
+    base.saturating_mul(attempt as u32)
+}
+
 /// Bounded requeue budget for slot-exhaustion spawn failures: the lane waits
 /// out a growing backoff and retries; it only degrades to the ordinary
 /// failure path after this many consecutive requeues.
@@ -196,6 +217,31 @@ mod tests {
         assert!(!is_slot_exhaustion_error("create: connection refused"));
         assert!(!is_slot_exhaustion_error("exec: temporary mock failure"));
         assert!(!is_slot_exhaustion_error("implementer: deadline exceeded"));
+    }
+
+    #[test]
+    fn rate_limit_classifier_matches_the_platform_error_shape_only() {
+        assert!(is_sprite_rate_limit_error(
+            "sprite CLI `create foo --skip-console`: Error: Sprite creation rate limit exceeded. You can create 10 sprites per minute."
+        ));
+        assert!(is_sprite_rate_limit_error(
+            "create: sprites per minute quota hit"
+        ));
+        assert!(!is_sprite_rate_limit_error(
+            "create: org sprite limit of 8 reached (org-limit)"
+        ));
+        assert!(!is_sprite_rate_limit_error(
+            "create: sprite name already exists"
+        ));
+        assert!(!is_sprite_rate_limit_error("create: connection refused"));
+    }
+
+    #[test]
+    fn rate_limit_requeue_backoff_is_at_least_one_window() {
+        let base = Duration::from_secs(60);
+        assert_eq!(rate_limit_requeue_delay(1, base), Duration::from_secs(60));
+        assert_eq!(rate_limit_requeue_delay(2, base), Duration::from_secs(120));
+        assert_eq!(rate_limit_requeue_delay(3, base), Duration::from_secs(180));
     }
 
     #[test]

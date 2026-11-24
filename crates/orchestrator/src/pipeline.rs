@@ -449,8 +449,11 @@ async fn run_lane(
     let mut harness_retries = 0;
     // Wave D: slot-exhaustion spawn failures (org-limit error shape) requeue
     // the lane with backoff instead of failing it — the platform limit frees
-    // when other lanes finish.
+    // when other lanes finish. F26: sprite-create rate-limit failures (10
+    // sprites per minute) requeue too, with a full-window backoff and a
+    // tighter retry cap.
     let mut slot_requeues = 0;
+    let mut rate_limit_requeues = 0;
 
     // --- Implementer phase (F9): sprite creation + implementer session +
     // 200 gate + artifacts. ONLY implementer-phase failures destroy the
@@ -463,6 +466,35 @@ async fn run_lane(
         match res {
             Ok(p) => break p,
             Err(e) => {
+                // F26: a sprite-create rate-limit failure requeues the lane
+                // with a full-window (>= 60s) backoff, capped — a persistent
+                // limit falls through to the failure path with a clear error.
+                if queue::is_sprite_rate_limit_error(&e)
+                    && rate_limit_requeues < queue::RATE_LIMIT_REQUEUE_MAX_ATTEMPTS
+                {
+                    rate_limit_requeues += 1;
+                    let delay = queue::rate_limit_requeue_delay(
+                        rate_limit_requeues,
+                        ctx.config.rate_limit_requeue_backoff,
+                    );
+                    let _ = ctx
+                        .store
+                        .append_lane_event(
+                            &run_id,
+                            idx,
+                            now_ms(),
+                            "log",
+                            &format!(
+                                "sprite-create rate limit on spawn; requeueing lane with backoff (attempt {rate_limit_requeues}/{}, retry in {}ms): {e}",
+                                queue::RATE_LIMIT_REQUEUE_MAX_ATTEMPTS,
+                                delay.as_millis()
+                            ),
+                        )
+                        .await;
+                    ctx.notify_slots_free();
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
                 // Wave D: a slot-exhaustion spawn failure requeues the lane
                 // with a growing backoff and never counts against the retry
                 // budgets (nor fails the run) until the requeue budget runs
@@ -895,9 +927,26 @@ async fn run_implementer_phase(
     // create sprite; if a stale sprite still holds the deterministic name,
     // destroy --force it once and retry the create. Wave D: an org-limit
     // (slot-exhaustion) spawn failure is NOT a stale-name problem — it
-    // requeues the lane with backoff (run_lane) instead of retrying or failing.
+    // requeues the lane with backoff (run_lane) instead of retrying or
+    // failing. F26: the rate-limit shape requeues the same way, with a
+    // full-window backoff and a tighter cap.
     if let Err(e) = ctx.sprite.create(&sprite_name).await {
         let e = e.to_string();
+        if queue::is_sprite_rate_limit_error(&e) {
+            let _ = ctx
+                .store
+                .append_lane_event(
+                    &run_id,
+                    idx,
+                    now_ms(),
+                    "log",
+                    &format!("create refused by rate limit; requeueing lane: {e}"),
+                )
+                .await;
+            // the permit drops with the return: the slot goes back to the
+            // pool while the lane waits out its requeue backoff
+            return Err(format!("sprite rate limit: {e}"));
+        }
         if queue::is_slot_exhaustion_error(&e) {
             let _ = ctx
                 .store

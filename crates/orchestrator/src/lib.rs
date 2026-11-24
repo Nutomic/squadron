@@ -18,7 +18,7 @@ pub use config::PipelineConfig;
 pub use decompose::{decompose_brief, DecomposeOutcome, MAX_DECOMPOSE_CASES};
 pub use pipeline::{start_run, start_run_cases, HarnessMode, PipelineCtx, RunRequest};
 pub use probe::{parse_probe_reply, probe_prompt, ProbeReport};
-pub use queue::{is_slot_exhaustion_error, LaneQueue};
+pub use queue::{is_slot_exhaustion_error, is_sprite_rate_limit_error, LaneQueue};
 pub use screenshot::{render_dest, HubRegistry, ScreenshotQueue};
 pub use slots::SlotSemaphore;
 pub use sse::SseHub;
