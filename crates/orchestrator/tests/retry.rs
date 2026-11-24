@@ -114,7 +114,7 @@ async fn lane_retry_destroys_sprite_and_recovers() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs());
     loop {
         let r = store.get_run(&run.id).await.unwrap().unwrap();
-        if r.status == "judged" || r.status == "failed" {
+        if r.status == "judged" || r.status == "partial" || r.status == "failed" {
             break;
         }
         if tokio::time::Instant::now() > deadline {

@@ -33,6 +33,7 @@
         </td>
         <td>
           {% if row.status == "judged" %}<span class="chip chip-success">judged</span>
+          {% else if row.status == "partial" %}<span class="chip chip-warning">partial</span>
           {% else if row.status == "promoted" %}<span class="chip chip-winner">promoted</span>
           {% else if row.status == "running" %}<span class="chip chip-info chip-pulse">running</span>
           {% else if row.status == "failed" %}<span class="chip chip-error">failed</span>

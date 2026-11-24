@@ -30,9 +30,17 @@ const MAX_LABEL_CHARS: usize = 200;
 pub type SharedState = Arc<AppState>;
 
 /// R2 finding 6: a run cannot change once it reaches one of these statuses, so
-/// SSE streams stop there instead of polling the database forever.
+/// SSE streams stop there instead of polling the database forever. `partial`
+/// (F27: some lanes validated, some failed) is terminal too — the winner among
+/// the surviving lanes is already chosen.
 fn is_terminal_status(status: &str) -> bool {
-    matches!(status, "judged" | "failed" | "promoted")
+    matches!(status, "judged" | "partial" | "failed" | "promoted")
+}
+
+/// F27: partial runs have a winner among the validated survivors, so they are
+/// promotable exactly like `judged` runs.
+fn is_promotable_status(status: &str) -> bool {
+    matches!(status, "judged" | "partial")
 }
 
 const SAMPLE_BRIEFS: [&str; 3] = [
@@ -882,7 +890,7 @@ async fn promote(
         return (StatusCode::FORBIDDEN, "invalid or missing CSRF token").into_response();
     }
     match get_run(&state, &run_id).await {
-        Some(run) if run.status == "judged" => {
+        Some(run) if is_promotable_status(&run.status) => {
             let _ = state.store.update_run_status(&run_id, "promoted").await;
             Redirect::to(&format!("/{run_id}")).into_response()
         }

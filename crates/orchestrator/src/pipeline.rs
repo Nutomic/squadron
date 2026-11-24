@@ -397,6 +397,10 @@ async fn execute_run(
     // validated fine). Validator fail verdicts and hard-failed lanes stay
     // excluded from the judge set — but the surviving candidates are still
     // ranked. Only when NO lane validates is there nothing to judge.
+    //
+    // F27: the terminal status is a three-way outcome. Every lane validated →
+    // `judged`; a mix of validated and failed lanes → `partial` (still judged,
+    // winner among the survivors); every lane failed → `failed`.
     let lanes = ctx
         .store
         .list_lanes(&run_id)
@@ -411,14 +415,19 @@ async fn execute_run(
         // mark run failed: no lane to judge
         let _ = ctx.store.update_run_status(&run_id, "failed").await;
     } else {
-        run_judge_phase(&ctx, &run_id, &validated, decompose_cost).await?;
+        let final_status = if validated.len() == lanes.len() {
+            "judged"
+        } else {
+            "partial"
+        };
+        run_judge_phase(&ctx, &run_id, &validated, decompose_cost, final_status).await?;
     }
 
     publish(&ctx, &run_id).await;
-    // The run is terminal (judged or failed): drop its hub from the registry
-    // so the per-run broadcast channel is not leaked (audit R3 finding 5).
-    // Subscribers already holding a receiver still drain the final snapshot
-    // before the channel closes.
+    // The run is terminal (judged/partial/failed): drop its hub from the
+    // registry so the per-run broadcast channel is not leaked (audit R3
+    // finding 5). Subscribers already holding a receiver still drain the
+    // final snapshot before the channel closes.
     drop_hub(&ctx, &run_id).await;
     Ok(())
 }
@@ -1715,6 +1724,9 @@ async fn run_judge_phase(
     run_id: &str,
     validated: &[store::Lane],
     decompose_cost: Option<f64>,
+    // F27: the run's terminal status — `judged` (all lanes validated) or
+    // `partial` (some lanes validated, some failed); both carry a winner.
+    final_status: &str,
 ) -> Result<(), String> {
     ensure_judge_renders(ctx, run_id, validated).await;
     // Wave A: the judge sees the user's ORIGINAL brief (from the run row) so
@@ -1793,7 +1805,7 @@ async fn run_judge_phase(
     ctx.store
         .finish_run(
             run_id,
-            "judged",
+            final_status,
             &verdict.verdict_card,
             verdict.winner as i64,
             total_cost,

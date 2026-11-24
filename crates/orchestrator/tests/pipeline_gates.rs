@@ -90,7 +90,7 @@ async fn wait_run(store: &Store, run_id: &str, secs: u64) -> store::Run {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
     loop {
         let r = store.get_run(run_id).await.unwrap().unwrap();
-        if r.status == "judged" || r.status == "failed" {
+        if r.status == "judged" || r.status == "partial" || r.status == "failed" {
             return r;
         }
         if tokio::time::Instant::now() > deadline {
@@ -432,9 +432,10 @@ fn canned_fail() -> String {
     .to_string()
 }
 
-/// Per-lane validator output: the listed lanes report fail, the rest pass. The
-/// mock exec runs the command with the lane workdir as cwd, so $PWD selects it.
-fn per_lane_val_command(fail_lanes: &[i64], fail_json: &str, pass_json: &str) -> String {
+/// Per-lane agent output: the listed lanes report `fail_json`, the rest
+/// `pass_json`. The mock exec runs the command with the lane workdir as cwd,
+/// so $PWD selects it — works for implementer and validator phases alike.
+fn per_lane_command(fail_lanes: &[i64], fail_json: &str, pass_json: &str) -> String {
     let fail = fail_json.replace('\'', "'\\''");
     let pass = pass_json.replace('\'', "'\\''");
     let patterns = fail_lanes
@@ -463,7 +464,7 @@ async fn validator_fail_verdict_demotes_lane_out_of_judge_set() {
     // exec runs in the per-lane workdir, so $(pwd) discriminates the lanes.
     let harness = HarnessMode::Command {
         impl_command: format!("echo '{}'", canned_impl().replace('\'', "'\\''")),
-        val_command: per_lane_val_command(&[0], &canned_fail(), &canned_val()),
+        val_command: per_lane_command(&[0], &canned_fail(), &canned_val()),
     };
     let run = orchestrator::start_run(
         ctx.clone(),
@@ -477,7 +478,9 @@ async fn validator_fail_verdict_demotes_lane_out_of_judge_set() {
     .unwrap();
 
     let final_run = wait_run(&store, &run.id, wait_secs()).await;
-    assert_eq!(final_run.status, "judged");
+    // F27: a mix of validated and failed lanes is a PARTIAL run — still
+    // judged, winner among the survivors only.
+    assert_eq!(final_run.status, "partial");
     let winner = final_run.winner_lane.expect("winner selected");
     assert_ne!(winner, 0, "a fail-verdict lane can never win");
 
@@ -514,7 +517,7 @@ async fn single_surviving_lane_is_judged_with_winner() {
     // Lanes 1 and 2 fail; lane 0 passes: only one judge candidate remains.
     let harness = HarnessMode::Command {
         impl_command: format!("echo '{}'", canned_impl().replace('\'', "'\\''")),
-        val_command: per_lane_val_command(&[1, 2], &canned_fail(), &canned_val()),
+        val_command: per_lane_command(&[1, 2], &canned_fail(), &canned_val()),
     };
     let run = orchestrator::start_run(
         ctx.clone(),
@@ -528,10 +531,9 @@ async fn single_surviving_lane_is_judged_with_winner() {
     .unwrap();
 
     let final_run = wait_run(&store, &run.id, wait_secs()).await;
-    assert_eq!(
-        final_run.status, "judged",
-        "one surviving validated lane is enough to judge the run"
-    );
+    // F27: one surviving validated lane + failed lanes = PARTIAL, still
+    // judged over the survivors.
+    assert_eq!(final_run.status, "partial");
     assert_eq!(final_run.winner_lane, Some(0));
     for lane in store.list_lanes(&run.id).await.unwrap() {
         assert!(lane.val_verdict.is_some(), "verdict recorded");
@@ -547,5 +549,103 @@ async fn single_surviving_lane_is_judged_with_winner() {
             "lane {} was part of the judged run",
             lane.idx
         );
+    }
+}
+
+/// F27 (production run z86JxYu_RTWsqgD-vXly1g): one lane fully validated while
+/// the other lanes failed (sprite-create rate limit) — the run is PARTIAL, not
+/// failed. It is still judged with a winner among the survivors, and the
+/// failed lane stays failed with its error recorded.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_validated_one_failed_lane_yields_partial_status() {
+    let _env = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("MOCK_SPRITE_STATE", dir.path().join("mock-state.json"));
+    std::env::set_var("MOCK_COLD_START_MS", "0");
+    std::env::set_var("MOCK_CREATE_MS", "0");
+    std::env::set_var("MOCK_EXEC_MS", "0");
+
+    let (ctx, store) = test_ctx(dir.path(), 10, Duration::from_secs(30)).await;
+
+    // Lane 1's implementer claims not done (hard, non-retryable lane failure
+    // per #13); lane 0 implements and validates cleanly.
+    let blocked_impl = serde_json::json!({
+        "summary": "Blocked",
+        "files": 0,
+        "done": false,
+        "blockers": ["rate limited on spawn"]
+    })
+    .to_string();
+    let harness = HarnessMode::Command {
+        impl_command: per_lane_command(&[1], &blocked_impl, &canned_impl()),
+        val_command: format!("echo '{}'", canned_val().replace('\'', "'\\''")),
+    };
+    let run = orchestrator::start_run(
+        ctx.clone(),
+        RunRequest {
+            brief: "Build a 90s arcade game".to_owned(),
+            n_lanes: 2,
+            harness,
+        },
+    )
+    .await
+    .unwrap();
+
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
+    assert_eq!(
+        final_run.status, "partial",
+        "a validated lane + a failed lane is partial, not failed"
+    );
+    assert_eq!(final_run.winner_lane, Some(0), "winner among the survivors");
+    assert!(final_run.judge_verdict.is_some(), "verdict card persisted");
+
+    let lanes = store.list_lanes(&run.id).await.unwrap();
+    let ok = lanes.iter().find(|l| l.idx == 0).unwrap();
+    assert_eq!(ok.state, "validated");
+    let bad = lanes.iter().find(|l| l.idx == 1).unwrap();
+    assert_eq!(bad.state, "failed");
+    assert!(bad.error.is_some(), "failed lane keeps its error");
+    for lane in &lanes {
+        let events = store.list_lane_events(&run.id, lane.idx).await.unwrap();
+        assert!(
+            events.iter().any(|e| e.payload == "run_judged"),
+            "lane {} was part of the judged (partial) run",
+            lane.idx
+        );
+    }
+}
+
+/// F27: when every lane validates the run stays `judged` (unchanged path).
+#[tokio::test(flavor = "multi_thread")]
+async fn all_lanes_validated_yields_judged_status() {
+    let _env = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("MOCK_SPRITE_STATE", dir.path().join("mock-state.json"));
+    std::env::set_var("MOCK_COLD_START_MS", "0");
+    std::env::set_var("MOCK_CREATE_MS", "0");
+    std::env::set_var("MOCK_EXEC_MS", "0");
+
+    let (ctx, store) = test_ctx(dir.path(), 10, Duration::from_secs(30)).await;
+
+    let harness = HarnessMode::Command {
+        impl_command: format!("echo '{}'", canned_impl().replace('\'', "'\\''")),
+        val_command: format!("echo '{}'", canned_val().replace('\'', "'\\''")),
+    };
+    let run = orchestrator::start_run(
+        ctx.clone(),
+        RunRequest {
+            brief: "Build a 90s arcade game".to_owned(),
+            n_lanes: 2,
+            harness,
+        },
+    )
+    .await
+    .unwrap();
+
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
+    assert_eq!(final_run.status, "judged");
+    assert!(final_run.winner_lane.is_some());
+    for lane in store.list_lanes(&run.id).await.unwrap() {
+        assert_eq!(lane.state, "validated", "lane {:?}", lane.idx);
     }
 }

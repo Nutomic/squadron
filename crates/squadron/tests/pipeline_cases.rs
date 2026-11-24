@@ -203,7 +203,7 @@ async fn confirm_submitted_cases_execute_to_judged() {
     assert_eq!(run.n_lanes, 3);
     assert_eq!(run.status, "running", "lanes that fit must start");
 
-    let status = wait_run_status(&env.store, &run.id, &["judged", "failed"], 60).await;
+    let status = wait_run_status(&env.store, &run.id, &["judged", "partial", "failed"], 60).await;
     assert_eq!(status, "judged", "submitted cases must run to the judge");
     let final_run = env.store.get_run(&run.id).await.unwrap().unwrap();
     assert!(final_run.judge_verdict.is_some(), "a judge verdict exists");
@@ -348,7 +348,13 @@ async fn queued_run_is_picked_up_and_promoted_after_restart() {
     assert_eq!(picked, 1, "exactly the stranded run is re-enqueued");
 
     // The pickup promotes and executes: judged, with the promotion audit trail.
-    let status = wait_run_status(&env.store, &subject.id, &["judged", "failed"], 60).await;
+    let status = wait_run_status(
+        &env.store,
+        &subject.id,
+        &["judged", "partial", "failed"],
+        60,
+    )
+    .await;
     assert_eq!(
         status,
         "judged",

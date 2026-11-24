@@ -198,8 +198,8 @@ async fn two_runs_over_pool_second_queued_then_promoted() {
     assert!(queued.iter().any(|r| r.id == run_b.id));
 
     // A's lanes finish (and later B is promoted); both runs must be judged.
-    wait_run_status(&env.store, &run_a.id, &["judged", "failed"], 60).await;
-    wait_run_status(&env.store, &run_b.id, &["judged", "failed"], 60).await;
+    wait_run_status(&env.store, &run_a.id, &["judged", "partial", "failed"], 60).await;
+    wait_run_status(&env.store, &run_b.id, &["judged", "partial", "failed"], 60).await;
     let final_b = env.store.get_run(&run_b.id).await.unwrap().unwrap();
     assert_eq!(
         final_b.status, "judged",
@@ -233,7 +233,7 @@ async fn slot_exhaustion_spawn_failure_requeues_lane_not_failed() {
         harness: harness_for(""),
     };
     let run = orchestrator::start_run(env.ctx.clone(), req).await.unwrap();
-    let status = wait_run_status(&env.store, &run.id, &["judged", "failed"], 60).await;
+    let status = wait_run_status(&env.store, &run.id, &["judged", "partial", "failed"], 60).await;
     assert_eq!(status, "judged", "slot exhaustion must not fail the run");
 
     let lanes = env.store.list_lanes(&run.id).await.unwrap();
@@ -367,7 +367,7 @@ async fn probe_happy_path_writes_event_and_api_field() {
         harness: harness_for("sleep 0.4"),
     };
     let run = orchestrator::start_run(env.ctx.clone(), req).await.unwrap();
-    wait_run_status(&env.store, &run.id, &["judged", "failed"], 60).await;
+    wait_run_status(&env.store, &run.id, &["judged", "partial", "failed"], 60).await;
 
     let lanes = env.store.list_lanes(&run.id).await.unwrap();
     for lane in &lanes {
@@ -410,7 +410,7 @@ async fn unparseable_probe_ignored() {
         harness: harness_for("sleep 0.4"),
     };
     let run = orchestrator::start_run(env.ctx.clone(), req).await.unwrap();
-    wait_run_status(&env.store, &run.id, &["judged", "failed"], 60).await;
+    wait_run_status(&env.store, &run.id, &["judged", "partial", "failed"], 60).await;
 
     let lanes = env.store.list_lanes(&run.id).await.unwrap();
     for lane in &lanes {
@@ -465,8 +465,8 @@ async fn oversized_run_waits_for_fully_free_pool() {
         "oversized run queues unless the pool is fully free"
     );
 
-    wait_run_status(&env.store, &run_a.id, &["judged", "failed"], 60).await;
-    wait_run_status(&env.store, &run_b.id, &["judged", "failed"], 60).await;
+    wait_run_status(&env.store, &run_a.id, &["judged", "partial", "failed"], 60).await;
+    wait_run_status(&env.store, &run_b.id, &["judged", "partial", "failed"], 60).await;
     let final_b = env.store.get_run(&run_b.id).await.unwrap().unwrap();
     assert_eq!(final_b.status, "judged");
     clear_env().await;

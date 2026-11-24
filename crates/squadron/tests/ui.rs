@@ -715,6 +715,45 @@ async fn promote_requires_judged_status() {
     assert_eq!(run.status, "promoted");
 }
 
+/// F27: a partial run (some lanes validated, some failed) still has a winner
+/// among the survivors — it is promotable exactly like a judged run.
+#[tokio::test]
+async fn promote_accepts_partial_status() {
+    let (app, store) = app().await;
+    let run = store
+        .create_run("partial promote test", 2, 1_732_020_000_000)
+        .await
+        .unwrap();
+    store
+        .finish_run(
+            &run.id,
+            "partial",
+            "winner among survivors",
+            1,
+            Some(1.0),
+            1_732_020_999_000,
+        )
+        .await
+        .unwrap();
+    let token = csrf_token_for(&app, &format!("/{run_id}", run_id = run.id)).await;
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/{}/promote", run.id))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("squadron_csrf={token}"))
+                .body(Body::from(format!("csrf_token={token}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let run = store.get_run(&run.id).await.unwrap().unwrap();
+    assert_eq!(run.status, "promoted");
+}
+
 #[tokio::test]
 async fn fixture_snapshot_matches_contract() {
     let (app, _) = app().await;
@@ -1126,6 +1165,88 @@ async fn runs_page_with_rows_renders_the_table() {
     let html = body_string(res.into_body()).await;
     assert!(html.contains("<table"));
     assert!(!html.contains("No runs yet"));
+}
+
+/// F27: the three terminal outcomes render as distinct badges — judged
+/// (green), partial (amber/warning: some lanes validated, some failed), failed
+/// (red) — in both the runs table and the run page header.
+#[tokio::test]
+async fn status_badges_render_judged_partial_and_failed() {
+    let (app, store) = app().await;
+    let judged = store
+        .create_run("judged run", 2, 1_732_020_000_000)
+        .await
+        .unwrap();
+    let partial = store
+        .create_run("partial run", 2, 1_732_020_000_001)
+        .await
+        .unwrap();
+    let failed = store
+        .create_run("failed run", 2, 1_732_020_000_002)
+        .await
+        .unwrap();
+    store
+        .finish_run(
+            &judged.id,
+            "judged",
+            "winner card",
+            0,
+            None,
+            1_732_020_999_000,
+        )
+        .await
+        .unwrap();
+    store
+        .finish_run(
+            &partial.id,
+            "partial",
+            "winner among survivors",
+            0,
+            None,
+            1_732_020_999_000,
+        )
+        .await
+        .unwrap();
+    store.update_run_status(&failed.id, "failed").await.unwrap();
+
+    let chip = |cls: &str, label: &str| format!(r#"<span class="chip {cls}">{label}</span>"#);
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/runs/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+    assert!(
+        html.contains(&chip("chip-warning", "partial")),
+        "partial badge (amber) must render in the runs table: {html}"
+    );
+    assert!(html.contains(&chip("chip-success", "judged")));
+    assert!(html.contains(&chip("chip-error", "failed")));
+
+    // Run page header shows the partial badge too, and the verdict card data
+    // (the judge DID run — there is a winner among the survivors).
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/{}", partial.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+    assert!(
+        html.contains(&chip("chip-warning", "partial")),
+        "partial badge (amber) must render on the run page: {html}"
+    );
 }
 
 #[tokio::test]

@@ -229,7 +229,7 @@ async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs());
     loop {
         let r = store.get_run(&run.id).await.unwrap().unwrap();
-        if r.status == "judged" || r.status == "failed" {
+        if r.status == "judged" || r.status == "partial" || r.status == "failed" {
             if r.status != "judged" {
                 let lanes = store.list_lanes(&run.id).await.unwrap();
                 panic!(
@@ -498,7 +498,7 @@ async fn persistent_auth_wall_fails_the_lane_after_one_retry() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs());
     loop {
         let r = store.get_run(&run.id).await.unwrap().unwrap();
-        if r.status == "judged" || r.status == "failed" {
+        if r.status == "judged" || r.status == "partial" || r.status == "failed" {
             break;
         }
         if tokio::time::Instant::now() > deadline {
@@ -634,7 +634,7 @@ async fn failing_config_update_fails_the_lane_before_any_exec() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs());
     loop {
         let r = store.get_run(&run.id).await.unwrap().unwrap();
-        if r.status == "judged" || r.status == "failed" {
+        if r.status == "judged" || r.status == "partial" || r.status == "failed" {
             break;
         }
         if tokio::time::Instant::now() > deadline {
@@ -815,7 +815,7 @@ async fn auth_wall_retry_verifies_public_before_reprobe() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs());
     loop {
         let r = store.get_run(&run.id).await.unwrap().unwrap();
-        if r.status == "judged" || r.status == "failed" {
+        if r.status == "judged" || r.status == "partial" || r.status == "failed" {
             if r.status != "judged" {
                 let lanes = store.list_lanes(&run.id).await.unwrap();
                 panic!(

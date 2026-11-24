@@ -231,7 +231,7 @@ async fn wait_run(store: &Store, run_id: &str, secs: u64) -> store::Run {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
     loop {
         let r = store.get_run(run_id).await.unwrap().unwrap();
-        if r.status == "judged" || r.status == "failed" {
+        if r.status == "judged" || r.status == "partial" || r.status == "failed" {
             return r;
         }
         if tokio::time::Instant::now() > deadline {

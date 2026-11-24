@@ -22,8 +22,25 @@
     return () => es.close();
   });
 
-  let judged = $derived(snap?.run?.status === 'judged' || snap?.run?.status === 'promoted');
-  let winner = $derived(judged ? snap?.run?.winnerLane : null);
+  // F27: run-status chip classes. Unknown statuses fall back to the neutral
+  // chip (no breakage when the server learns a new value first).
+  const STATUS_CHIPS = {
+    judged: 'chip-success',
+    partial: 'chip-warning',
+    promoted: 'chip-winner',
+    running: 'chip-info chip-pulse',
+    queued: 'chip-neutral chip-pulse',
+    failed: 'chip-error'
+  };
+  let runStatus = $derived(snap?.run?.status ?? null);
+  let runStatusChip = $derived(runStatus ? (STATUS_CHIPS[runStatus] ?? 'chip-neutral') : null);
+  // A partial run (F27: some lanes validated, some failed) still has a winner
+  // among the survivors — it renders the verdict card and is promotable.
+  let hasWinner = $derived(
+    runStatus === 'judged' || runStatus === 'partial' || runStatus === 'promoted'
+  );
+  let promotable = $derived(runStatus === 'judged' || runStatus === 'partial');
+  let winner = $derived(hasWinner ? snap?.run?.winnerLane : null);
   let verdict = $derived(snap?.run?.judgeVerdict);
   let briefFulfillment = $derived(snap?.run?.judgeBriefFulfillment);
   let totalCost = $derived(
@@ -102,6 +119,9 @@
 
 <div class="flex flex-wrap items-center gap-x-4 gap-y-2 mb-6">
   <span class="chip {conn === 'live' ? 'chip-success' : conn === 'error' ? 'chip-error' : 'chip-neutral chip-pulse'}">{conn}</span>
+  {#if runStatus && runStatusChip}
+    <span class="chip {runStatusChip}">{runStatus}</span>
+  {/if}
   <span class="text-[13px] text-base-content/55">lanes: <span class="mono-num">{snap?.lanes?.length ?? '—'}</span></span>
   {#if runningLanes > 0}
     <span class="flex items-center gap-2 text-[13px] text-base-content/55">
@@ -133,7 +153,7 @@
   </div>
 {/if}
 
-{#if snap && judged}
+{#if snap && promotable}
   <!-- CSRF double-submit token (review F3 #3): the server sets the same
        token in the squadron_csrf cookie on this page's GET. -->
   <form method="post" action="/{runId}/promote" class="mb-6">
