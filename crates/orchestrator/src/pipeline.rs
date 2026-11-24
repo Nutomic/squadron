@@ -107,30 +107,102 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
     // Wave B: brief decomposition decides the cases (and so the lane count).
     let (cases, decompose_cost, decompose_log, truncated_from) =
         generate_cases(&ctx, &run.id, &req.brief, req.n_lanes).await;
+    // F24: the tail below is THE one execution path — also entered directly
+    // with pre-existing cases via `start_run_cases` (confirm dialog).
+    launch_run_cases(
+        &ctx,
+        &run.id,
+        &cases,
+        req.harness,
+        decompose_cost,
+        &decompose_log,
+        truncated_from,
+    )
+    .await?;
+
     ctx.store
-        .set_run_n_lanes(&run.id, cases.len() as i64)
+        .get_run(&run.id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "run missing".to_owned())
+}
+
+/// F24: case-driven run start for paths that already hold the FINAL cases —
+/// the confirm dialog's submitted (edited) cases, with no decomposition in
+/// between. It is the same machinery as the post-decomposition tail of
+/// `start_run`: one run row, one queued lane per case, then slot-accounting —
+/// lanes that fit start immediately, otherwise the run is enqueued for FIFO
+/// promotion (`decompose_cost: None`: no decomposition happened). The lane
+/// count is `cases.len()`; the caller owns validation (web confirm enforces
+/// the 1..=MAX_WORKERS cap, so the 2..=10 `validate_n` range does NOT apply
+/// here — a single-worker submission is valid).
+pub async fn start_run_cases(
+    ctx: Arc<PipelineCtx>,
+    brief: &str,
+    cases: Vec<Value>,
+    harness: HarnessMode,
+    decompose_cost: Option<f64>,
+) -> Result<Run, String> {
+    if cases.is_empty() {
+        return Err("at least one case is required".to_owned());
+    }
+    let created = now_ms();
+    let run = ctx
+        .store
+        .create_run(brief, cases.len() as i64, created)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(reg) = &ctx.hub_registry {
+        let mut hubs = reg.write().await;
+        hubs.insert(run.id.clone(), ctx.sse.clone());
+    }
+    launch_run_cases(&ctx, &run.id, &cases, harness, decompose_cost, &[], None).await?;
+    ctx.store
+        .get_run(&run.id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "run missing".to_owned())
+}
+
+/// F24: the ONE execution path shared by every case-driven run (decomposed or
+/// submitted): persist the lane count + one lane per case, log decomposition
+/// diagnostics (if any), then slot-account — lanes that all fit start the
+/// pipeline task right away, otherwise the run is enqueued for FIFO
+/// promotion. The run row must already exist.
+#[allow(clippy::too_many_arguments)] // tail mirrors both callers' needs
+async fn launch_run_cases(
+    ctx: &Arc<PipelineCtx>,
+    run_id: &str,
+    cases: &[Value],
+    harness: HarnessMode,
+    decompose_cost: Option<f64>,
+    decompose_log: &[String],
+    truncated_from: Option<usize>,
+) -> Result<(), String> {
+    ctx.store
+        .set_run_n_lanes(run_id, cases.len() as i64)
         .await
         .map_err(|e| e.to_string())?;
     for (idx, case) in cases.iter().enumerate() {
         let vjson = serde_json::to_string(case).unwrap_or_else(|_| "{}".to_owned());
         ctx.store
-            .insert_lane(&run.id, idx as i64, &vjson)
+            .insert_lane(run_id, idx as i64, &vjson)
             .await
             .map_err(|e| e.to_string())?;
     }
     // Decomposition diagnostics land on lane 0's event log: no lanes existed
     // while the attempts ran, so retry/fallback notes are appended here.
-    for line in &decompose_log {
+    for line in decompose_log {
         let _ = ctx
             .store
-            .append_lane_event(&run.id, 0, now_ms(), "log", line)
+            .append_lane_event(run_id, 0, now_ms(), "log", line)
             .await;
     }
     if let Some(original) = truncated_from {
         let _ = ctx
             .store
             .append_lane_event(
-                &run.id,
+                run_id,
                 0,
                 now_ms(),
                 "log",
@@ -157,7 +229,7 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
                     let _ = ctx
                         .store
                         .append_lane_event(
-                            &run.id,
+                            run_id,
                             0,
                             now_ms(),
                             "log",
@@ -167,20 +239,15 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
                             ),
                         )
                         .await;
-                    publish(&ctx, &run.id).await;
+                    publish(ctx, run_id).await;
                     q.enqueue(queue::QueuedRun {
                         ctx: ctx.clone(),
-                        run_id: run.id.clone(),
+                        run_id: run_id.to_owned(),
                         lanes: need,
-                        harness: req.harness,
+                        harness,
                         decompose_cost,
                     });
-                    return ctx
-                        .store
-                        .get_run(&run.id)
-                        .await
-                        .map_err(|e| e.to_string())?
-                        .ok_or_else(|| "run missing".to_owned());
+                    return Ok(());
                 }
             }
         } else if ctx.slots.available() != capacity {
@@ -189,7 +256,7 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
             let _ = ctx
                 .store
                 .append_lane_event(
-                    &run.id,
+                    run_id,
                     0,
                     now_ms(),
                     "log",
@@ -198,45 +265,35 @@ pub async fn start_run(ctx: Arc<PipelineCtx>, req: RunRequest) -> Result<Run, St
                     ),
                 )
                 .await;
-            publish(&ctx, &run.id).await;
+            publish(ctx, run_id).await;
             q.enqueue(queue::QueuedRun {
                 ctx: ctx.clone(),
-                run_id: run.id.clone(),
+                run_id: run_id.to_owned(),
                 lanes: need,
-                harness: req.harness,
+                harness,
                 decompose_cost,
             });
-            return ctx
-                .store
-                .get_run(&run.id)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "run missing".to_owned());
+            return Ok(());
         }
     }
     ctx.store
-        .update_run_status(&run.id, "running")
+        .update_run_status(run_id, "running")
         .await
         .map_err(|e| e.to_string())?;
-    publish(&ctx, &run.id).await;
+    publish(ctx, run_id).await;
 
-    let run_id = run.id.clone();
     let ctx_bg = ctx.clone();
+    let run_id_bg = run_id.to_owned();
     let lane_count = cases.len();
     spawn_execute_run(
         ctx_bg,
-        run_id,
+        run_id_bg,
         lane_count,
-        req.harness,
+        harness,
         decompose_cost,
         reservation,
     );
-
-    ctx.store
-        .get_run(&run.id)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "run missing".to_owned())
+    Ok(())
 }
 
 /// Wave D: the background pipeline task shared by immediate starts and queue

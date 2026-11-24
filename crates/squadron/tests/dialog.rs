@@ -8,6 +8,11 @@
 //!   are created from the submitted (edited) cases.
 //! - CSRF double-submit is enforced on both endpoints.
 //!
+//! These tests run with `.without_pipeline()` (dev/test mode): confirm
+//! persists rows only, exactly as before. With the pipeline enabled the
+//! submitted cases additionally DRIVE execution (F24) — covered in
+//! `pipeline_cases.rs`.
+//!
 //! The decomposition runs against a fake LLM: a local HTTP server speaking
 //! the OpenAI chat-completions shape (same as the llm-gateway tests), so the
 //! real schema gate + injection scan validate its output for real.

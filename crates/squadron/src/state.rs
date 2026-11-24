@@ -6,6 +6,7 @@ use orchestrator::{
     HarnessMode, LaneQueue, PipelineConfig, PipelineCtx, RunRequest, ScreenshotQueue,
     SlotSemaphore, SseHub,
 };
+use serde_json::Value;
 use sprites_client::SpriteClient;
 use store::{Run, Store};
 use tokio::sync::RwLock;
@@ -27,6 +28,11 @@ pub struct AppState {
     pub fixtures: bool,
     pub static_dir: PathBuf,
     pub launch_pipeline: bool,
+    /// F24: the harness used by the case-driven entries (`start_pipeline_cases`
+    /// and the startup queued-run pickup). Always the real harness in
+    /// production; overridable for tests (the harness mode is not persisted,
+    /// so a picked-up run can only resume with the state's own harness).
+    pub pipeline_harness: HarnessMode,
     /// Review F3: bounded anonymous run creation (per-IP + process caps).
     pub limiter: RunLimiter,
 }
@@ -45,6 +51,10 @@ impl AppState {
         let slots = SlotSemaphore::new(config.max_running_slots);
         let lane_queue = Arc::new(LaneQueue::new());
         orchestrator::queue::spawn_dispatcher(lane_queue.clone());
+        // F24: the case-driven entries default to the state's real harness.
+        let pipeline_harness = HarnessMode::Real {
+            gateway_connector_id: config.gateway_connector_id.clone(),
+        };
         Self {
             store,
             sprite,
@@ -57,6 +67,7 @@ impl AppState {
             fixtures: false,
             static_dir: crate::static_dir(),
             launch_pipeline: true,
+            pipeline_harness,
             limiter: RunLimiter::new(RunLimits::from_env()),
         }
     }
@@ -78,6 +89,14 @@ impl AppState {
 
     pub fn without_pipeline(mut self) -> Self {
         self.launch_pipeline = false;
+        self
+    }
+
+    /// TEST-ONLY harness override for the case-driven entries (the confirm
+    /// path and the queued-run pickup always run the real harness in
+    /// production). Never constructed from untrusted input.
+    pub fn with_pipeline_harness(mut self, harness: HarnessMode) -> Self {
+        self.pipeline_harness = harness;
         self
     }
 
@@ -118,8 +137,58 @@ impl AppState {
         if !self.launch_pipeline {
             return self.create_queued_run(&brief, n_lanes).await;
         }
+        let ctx = self.build_ctx();
+        orchestrator::start_run(
+            ctx,
+            RunRequest {
+                brief,
+                n_lanes,
+                harness,
+            },
+        )
+        .await
+    }
+
+    /// F24: case-driven start for the confirm dialog — the SUBMITTED (edited)
+    /// cases drive the pipeline, with no decomposition in between. Builds the
+    /// same context as `start_pipeline` and enters the same execution
+    /// machinery (`orchestrator::start_run_cases`): run row + one lane per
+    /// case, slot-accounted (fits → lanes start; otherwise the run is queued
+    /// for FIFO promotion). Without the pipeline (dev/test), rows-only
+    /// persistence of the submitted cases — the old confirm behavior.
+    pub async fn start_pipeline_cases(
+        &self,
+        brief: String,
+        cases: Vec<Value>,
+    ) -> Result<Run, String> {
+        let harness = self.pipeline_harness.clone();
+        self.start_pipeline_cases_with_harness(brief, cases, harness)
+            .await
+    }
+
+    /// TEST-ONLY harness override for `start_pipeline_cases` (the web confirm
+    /// always uses the real harness). Never constructed from untrusted input.
+    pub async fn start_pipeline_cases_with_harness(
+        &self,
+        brief: String,
+        cases: Vec<Value>,
+        harness: HarnessMode,
+    ) -> Result<Run, String> {
+        if cases.is_empty() {
+            return Err("at least one case is required".to_owned());
+        }
+        if !self.launch_pipeline {
+            return self.create_queued_run_from_cases(&brief, &cases).await;
+        }
+        let ctx = self.build_ctx();
+        orchestrator::start_run_cases(ctx, &brief, cases, harness, None).await
+    }
+
+    /// Shared per-run pipeline context: a fresh SSE hub (registered under the
+    /// run id by the pipeline), shared store/sprite/slots/screenshots/queue.
+    fn build_ctx(&self) -> Arc<PipelineCtx> {
         let hub = SseHub::new(256);
-        let ctx = Arc::new(PipelineCtx {
+        Arc::new(PipelineCtx {
             store: self.store.clone(),
             sprite: self.sprite.clone(),
             machine_llm: self.machine_llm.clone(),
@@ -130,16 +199,7 @@ impl AppState {
             harness_cache: std::sync::Arc::new(orchestrator::harness::HarnessCache::new()),
             hub_registry: Some(self.hubs.clone()),
             lane_queue: Some(self.lane_queue.clone()),
-        });
-        orchestrator::start_run(
-            ctx,
-            RunRequest {
-                brief,
-                n_lanes,
-                harness,
-            },
-        )
-        .await
+        })
     }
 
     async fn create_queued_run(&self, brief: &str, n_lanes: usize) -> Result<Run, String> {
@@ -152,6 +212,31 @@ impl AppState {
         for idx in 0..n_lanes {
             self.store
                 .insert_lane(&run.id, idx as i64, "{}")
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(run)
+    }
+
+    /// F24: rows-only persistence of the submitted cases (the
+    /// `launch_pipeline = false` dev/test path): the same shape the old
+    /// confirm path persisted — one queued lane per case, the case JSON in
+    /// `variant_json`.
+    async fn create_queued_run_from_cases(
+        &self,
+        brief: &str,
+        cases: &[Value],
+    ) -> Result<Run, String> {
+        let now = store::now_ms();
+        let run = self
+            .store
+            .create_run(brief, cases.len() as i64, now)
+            .await
+            .map_err(|e| e.to_string())?;
+        for (idx, case) in cases.iter().enumerate() {
+            let vjson = serde_json::to_string(case).unwrap_or_else(|_| "{}".to_owned());
+            self.store
+                .insert_lane(&run.id, idx as i64, &vjson)
                 .await
                 .map_err(|e| e.to_string())?;
         }

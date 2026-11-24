@@ -199,8 +199,12 @@ fn template_cases(brief: &str, n: usize) -> Vec<Value> {
 /// Wave C #3: the confirm button. The ONLY persistence point of the dialog
 /// flow: the run row and its lanes are created from the SUBMITTED (edited)
 /// cases — the lane count comes from `cases.len()`, never from a decomposition
-/// at confirm time. Execution pickup is the pipeline's job (queued lanes carry
-/// the case JSON); this handler persists and returns.
+/// at confirm time. F24: the submitted cases also DRIVE the pipeline — the
+/// handler enters the same execution machinery as a decomposed run
+/// (`start_run_cases`): rows are created and the lanes start immediately, or
+/// the run is queued for FIFO promotion when the slots don't fit. A rows-only
+/// persist here is the bug this fixes: nothing ever picked the run up, so it
+/// sat `queued` forever.
 async fn confirm(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -295,7 +299,9 @@ async fn confirm(
     if let Err(rejection) = state.limiter.check(&ip, &state.store).await {
         return too_many_requests_json(&rejection);
     }
-    match persist_run_from_cases(&state, &brief, &cases).await {
+    // F24: the submitted cases DRIVE the pipeline — one execution path with
+    // decomposed runs (run row + lanes + slot accounting + start/enqueue).
+    match state.start_pipeline_cases(brief, cases).await {
         Ok(run) => {
             state.limiter.record(&ip, &run.id);
             (
@@ -309,31 +315,6 @@ async fn confirm(
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
-}
-
-/// Create the run row + one queued lane per submitted case; the lane's
-/// variant_json carries {"label","impl_prompt"} so the pipeline treats it as
-/// a case-driven lane (same shape the decomposition phase persists).
-async fn persist_run_from_cases(
-    state: &AppState,
-    brief: &str,
-    cases: &[Value],
-) -> Result<Run, String> {
-    let now = store::now_ms();
-    let run = state
-        .store
-        .create_run(brief, cases.len() as i64, now)
-        .await
-        .map_err(|e| e.to_string())?;
-    for (idx, case) in cases.iter().enumerate() {
-        let vjson = serde_json::to_string(case).unwrap_or_else(|_| "{}".to_owned());
-        state
-            .store
-            .insert_lane(&run.id, idx as i64, &vjson)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(run)
 }
 
 /// Review F3 #2: 429 + Retry-After as JSON (the dialog fetch reads the error
