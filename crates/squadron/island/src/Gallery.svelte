@@ -82,7 +82,7 @@
         ([label, v]) =>
           `<div class="flex items-center justify-between gap-6 py-2 border-b border-base-300 last:border-b-0">
             <span class="label-meta">${label}</span>
-            <span class="mono-num">${v == null ? '—' : Number(v).toLocaleString('en-US')}</span>
+            <span class="mono-num">${label === 'Bytes' ? fmtBytes(v) : v == null ? '—' : Number(v).toLocaleString('en-US')}</span>
           </div>`
       )
       .join('');
@@ -164,7 +164,7 @@
   </div>
 {:else}
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6" aria-hidden="true">
-    {#each [0, 1, 2] as _i}
+    {#each [0, 1, 2] as i (i)}
       <div class="card bg-base-100 border border-base-300 rounded-xl p-0 overflow-hidden">
         <div class="skeleton aspect-[16/10] rounded-none bg-base-200"></div>
         <div class="p-4 flex flex-col gap-3">

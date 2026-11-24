@@ -17,7 +17,6 @@
   let hasThumb = $derived(lane.screenshotState === 'done');
   let thumbUrl = $derived(lane.thumbnailDataUrl ?? `/${runId}/thumb/${lane.idx}`);
   let buildLabel = $derived(lane.buildMs == null ? null : fmtBuild(lane.buildMs));
-  let valPassed = $derived(lane.valVerdict === 'pass');
 
   function fmtBuild(ms) {
     const mins = Math.floor(ms / 60000);
