@@ -76,9 +76,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: YAML lint (workflows)
-        uses: ibiqlik/action-yamllint@v10
-        with:
-          config_file: .yamllint.yml
+        run: |
+          pip install yamllint
+          yamllint -c .yamllint.yml .
       - name: TOML lint (Cargo files + fly.toml)
         run: |
           python3 - <<'EOF'
