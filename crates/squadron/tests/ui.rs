@@ -1258,13 +1258,28 @@ async fn index_sample_chips_use_complete_short_labels() {
         .await
         .unwrap();
     let html = body_string(res.into_body()).await;
-    assert!(html.contains("1996 Netscape homepage"));
-    assert!(html.contains("VM product marketing site"));
-    assert!(html.contains("90s arcade clone"));
+    assert!(html.contains("Netscape homepage ×5 colors"));
+    assert!(html.contains("VM marketing site (Svelte or React)"));
+    assert!(html.contains("Pong or Tetris or Space Invaders"));
     assert!(
         !html.contains("&gt;..."),
         "chips must not be ellipsis-truncated"
     );
+}
+
+/// F28: the landing states the decomposition promise next to the sample
+/// chips, in the standard helper-text styling (body text at /65 contrast).
+#[tokio::test]
+async fn index_helper_line_explains_or_and_count_splitting() {
+    let (app, _) = app().await;
+    let res = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains(r#"We split "or"s and counts into parallel workers"#));
+    assert!(html.contains(r#"text-base-content/65"#));
 }
 
 #[tokio::test]

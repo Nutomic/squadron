@@ -43,17 +43,19 @@ fn is_promotable_status(status: &str) -> bool {
     matches!(status, "judged" | "partial")
 }
 
+/// F28: the samples demo the decomposition features — explicit counts and
+/// "or"-alternatives become one parallel worker per item.
 const SAMPLE_BRIEFS: [&str; 3] = [
-    "A 1996-style Netscape-era homepage for a fictional browser launch.",
-    "Marketing site for a VM product pitched at AI agents, not people.",
-    "Build the most fun 90s arcade clone you can in one hour.",
+    "Build a Netscape-era 1996 homepage in 5 different color schemes.",
+    "Marketing site for a fictional VM product in Svelte or React.",
+    "Make a playable Pong, Tetris, or Space Invaders arcade game.",
 ];
 
 /// Review F15 #3: complete short chip labels (never truncation ellipses).
 const SAMPLE_SHORTS: [&str; 3] = [
-    "1996 Netscape homepage",
-    "VM product marketing site",
-    "90s arcade clone",
+    "Netscape homepage ×5 colors",
+    "VM marketing site (Svelte or React)",
+    "Pong or Tetris or Space Invaders",
 ];
 
 pub fn router(state: SharedState) -> Router {
