@@ -276,7 +276,18 @@ pub fn tarball_cap_error(len: usize) -> Result<(), String> {
 /// unavailable or fails, fall back to rough counts marked `"degraded"` —
 /// stats are best-effort and must never cost the lane its artifacts.
 pub fn tokei_stats_from_tarball(bytes: &[u8]) -> (String, Option<i64>, Option<i64>) {
-    let dir = temp_extract_dir();
+    tokei_stats_from_tarball_in(bytes, &std::env::temp_dir())
+}
+
+/// Test seam (F20): identical stats run, but the temp extract dir is created
+/// under `parent` so tests can assert containment/cleanup on a scratch dir
+/// they own instead of racing on the shared system temp dir.
+#[doc(hidden)]
+pub fn tokei_stats_from_tarball_in(
+    bytes: &[u8],
+    parent: &Path,
+) -> (String, Option<i64>, Option<i64>) {
+    let dir = temp_extract_dir(parent);
     let cleanup = |dir: &Path| {
         let _ = std::fs::remove_dir_all(dir);
     };
@@ -303,12 +314,12 @@ pub fn tokei_stats_from_tarball(bytes: &[u8]) -> (String, Option<i64>, Option<i6
     (json, files, loc)
 }
 
-fn temp_extract_dir() -> PathBuf {
+fn temp_extract_dir(parent: &Path) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("squadron-tokei-{}-{}", std::process::id(), nanos))
+    parent.join(format!("squadron-tokei-{}-{}", std::process::id(), nanos))
 }
 
 fn extract_tarball_gz(bytes: &[u8], dest: &Path) -> Result<(), String> {
@@ -432,10 +443,11 @@ mod tests {
     /// absolute entries are dropped, nothing is created outside the temp dir).
     #[test]
     fn tokei_stats_from_tarball_counts_and_contains() {
-        let before_temp: Vec<_> = std::fs::read_dir(std::env::temp_dir())
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .collect();
+        // F20: cleanup/containment is asserted inside an isolated scratch dir
+        // this test owns (via the `tokei_stats_from_tarball_in` seam). The
+        // shared system temp dir is raced by every parallel test in the
+        // workspace, so counting its entries false-fails under load.
+        let scratch = tempfile::tempdir().unwrap();
         let bytes = tarball_bytes(&[
             // (the tar builder refuses `..` and absolute paths, so traversal
             // containment is asserted with a forged absolute-path entry —
@@ -447,28 +459,24 @@ mod tests {
             ("src/app.js", "console.log(1);\n"),
             ("src/lib.js", "let x = 1;\n"),
         ]);
-        let (json, files, loc) = tokei_stats_from_tarball(&bytes);
+        let (json, files, loc) = tokei_stats_from_tarball_in(&bytes, scratch.path());
         assert!(files.is_some(), "degraded stats must still count files");
         assert!(loc.is_some(), "degraded stats must still count loc");
         // tokei output parses into totals; the degraded marker json would be
         // flat, so a real tokei run yields the Total block.
         let parsed = parse_tokei_totals(&json);
         let _ = parsed; // (None, None) is legal for the degraded shape
-                        // nothing escaped the temp dir
-        let outside = std::env::temp_dir().join("escape.txt");
-        assert!(!outside.exists(), "absolute/.. entries must be contained");
-        let _ = std::fs::remove_file(&outside);
-        let abs_outside = std::env::temp_dir().join("abs.txt");
-        assert!(!abs_outside.exists());
-        // extract dir was cleaned up
-        let after_temp: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+                        // Extract dir was cleaned up AND nothing was created outside it:
+                        // safe_rel_path strips absolute names and rejects `..`, so the
+                        // scratch dir (which contained only the extract dir) must be empty.
+        let after: Vec<_> = std::fs::read_dir(scratch.path())
             .unwrap()
             .filter_map(|e| e.ok())
             .collect();
-        assert_eq!(
-            before_temp.len(),
-            after_temp.len(),
-            "temp extract dir must be removed"
+        assert!(
+            after.is_empty(),
+            "temp extract dir must be removed and nothing may escape: {:?}",
+            after.iter().map(|e| e.file_name()).collect::<Vec<_>>()
         );
     }
 }

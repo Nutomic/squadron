@@ -9,6 +9,10 @@ use orchestrator::harness::{HarnessCache, HarnessChoice};
 use sprites_client::mock_cli;
 use sprites_client::{SpriteClient, SpriteConfig};
 
+mod common;
+
+use common::wait_secs;
+
 // Tests here rewrite PATH and mock-state env vars: serialize them.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -184,7 +188,10 @@ async fn run_prompt_runs_the_curl_floor_and_parses_cost() {
             system: "system prompt",
             user: "user prompt",
             recipe: &recipe,
-            timeout: Duration::from_secs(30),
+            // Load-tolerant ceiling (F20): under full-suite parallel load the
+            // 12-turn floor run burned minutes of wall time and a 30s deadline
+            // false-failed. A healthy run still finishes in seconds.
+            timeout: Duration::from_secs(wait_secs()),
             connector_env: Some((
                 "FAKE_CURL_RESPONSE".to_owned(),
                 response_path.to_string_lossy().into_owned(),
@@ -230,7 +237,9 @@ async fn run_prompt_cli_choice_returns_agent_stdout() {
             system: "system prompt",
             user: "user prompt",
             recipe: &recipe,
-            timeout: Duration::from_secs(30),
+            // Load-tolerant ceiling (F20): solo these finish in seconds, but
+            // under full-suite parallel load a 30s deadline false-failed.
+            timeout: Duration::from_secs(wait_secs()),
             connector_env: Some((
                 "OPENCODE_FAKE_OUTPUT".to_owned(),
                 r#"{"summary":"agent done","files":2,"run_command":"x","done":true,"blockers":[]}"#
@@ -323,7 +332,9 @@ async fn run_prompt_retries_reasoning_only_floor_response() {
             system: "system prompt",
             user: "user prompt",
             recipe: &recipe,
-            timeout: Duration::from_secs(30),
+            // Load-tolerant ceiling (F20): solo these finish in seconds, but
+            // under full-suite parallel load a 30s deadline false-failed.
+            timeout: Duration::from_secs(wait_secs()),
             connector_env: None,
             workdir: Some(dir.path().join("lane-0").to_str().unwrap()),
             role: prompts::Role::Implementer,
@@ -380,7 +391,9 @@ async fn run_prompt_failure_carries_the_captured_attempt() {
             system: "system prompt",
             user: "user prompt",
             recipe: &recipe,
-            timeout: Duration::from_secs(30),
+            // Load-tolerant ceiling (F20): solo these finish in seconds, but
+            // under full-suite parallel load a 30s deadline false-failed.
+            timeout: Duration::from_secs(wait_secs()),
             connector_env: None,
             workdir: Some(dir.path().join("lane-0").to_str().unwrap()),
             role: prompts::Role::Implementer,
@@ -433,7 +446,9 @@ async fn run_prompt_reports_raw_excerpt_when_floor_response_has_no_text() {
             system: "system prompt",
             user: "user prompt",
             recipe: &recipe,
-            timeout: Duration::from_secs(30),
+            // Load-tolerant ceiling (F20): solo these finish in seconds, but
+            // under full-suite parallel load a 30s deadline false-failed.
+            timeout: Duration::from_secs(wait_secs()),
             connector_env: None,
             workdir: None,
             role: prompts::Role::Implementer,
