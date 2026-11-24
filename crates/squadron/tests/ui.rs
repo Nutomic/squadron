@@ -1348,6 +1348,52 @@ async fn index_meta_and_mobile_nav_present() {
     assert!(!html.contains("hidden sm:flex"));
 }
 
+/// F32: inline SVGs carry intrinsic width/height so a pre-CSS page switch
+/// cannot flash the header star (or any icon) at its unscaled viewBox size.
+#[test]
+fn inline_svgs_declare_intrinsic_dimensions() {
+    let dirs = [
+        concat!(env!("CARGO_MANIFEST_DIR"), "/templates"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/island/src"),
+    ];
+    for dir in dirs {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if !path.is_file() {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            for open_tag in source.split("<svg").skip(1) {
+                let attrs = open_tag.split('>').next().unwrap();
+                assert!(
+                    attrs.contains("width=") && attrs.contains("height="),
+                    "dimension-less inline SVG in {}: <svg{}",
+                    path.display(),
+                    attrs
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn header_star_svg_is_intrinsically_sized() {
+    let (app, _) = app().await;
+    for uri in ["/", "/runs"] {
+        let res = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let html = body_string(res.into_body()).await;
+        assert!(
+            html.contains(r#"width="20" height="20" viewBox="0 0 20 20""#),
+            "header star needs intrinsic dimensions on {uri}: {html}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn runs_nav_pill_has_aria_current() {
     let (app, _) = app().await;

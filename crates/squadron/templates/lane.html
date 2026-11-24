@@ -110,7 +110,7 @@
         </dl>
         <div class="card-actions mt-2 flex-wrap gap-2">
           <a href="/{{ run_id }}/source/{{ idx }}" class="btn btn-outline btn-sm rounded-full border-base-300 hover:border-primary hover:text-primary">
-            <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 2v8m0 0L5 7m3 3l3-3M3 12v1.5A.5.5 0 003.5 14h9a.5.5 0 00.5-.5V12"/></svg>
+            <svg class="w-3.5 h-3.5" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 2v8m0 0L5 7m3 3l3-3M3 12v1.5A.5.5 0 003.5 14h9a.5.5 0 00.5-.5V12"/></svg>
             source (.tar.gz)
           </a>
           <a href="/{{ run_id }}/thumb/{{ idx }}" class="btn btn-outline btn-sm rounded-full border-base-300 hover:border-primary hover:text-primary" {% if screenshot_state != "done" %}disabled{% endif %}>screenshot</a>

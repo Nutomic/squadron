@@ -25,7 +25,7 @@
 
 {#if points}
   <div class="flex items-center gap-2 mt-0.5">
-    <svg viewBox="0 0 100 20" preserveAspectRatio="none" class="w-full h-5" aria-hidden="true">
+    <svg width="100" height="20" viewBox="0 0 100 20" preserveAspectRatio="none" class="w-full h-5" aria-hidden="true">
       <polygon points={area} fill="var(--lane-hue, #71717A)" opacity="0.1" />
       <polyline
         {points}

@@ -34,7 +34,7 @@
 >
   {#if isWinner}
     <div class="win-ribbon">
-      <svg class="w-3 h-3" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <svg class="w-3 h-3" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
         <path d="M8 1l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 10.8l-3.8 2 .7-4.3-3.1-3 4.3-.6L8 1z" />
       </svg>
       Winner
@@ -59,7 +59,7 @@
             <span class="loading loading-spinner loading-sm"></span>
             <span class="mono-num !text-[11px]">screenshot {lane.screenshotState}</span>
           {:else}
-            <svg class="w-8 h-8 text-base-content/20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+            <svg class="w-8 h-8 text-base-content/20" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
               <rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="10" r="1.5" /><path d="M21 16l-5-5-8 9" />
             </svg>
             <span class="mono-num !text-[11px]">screenshot pending</span>
