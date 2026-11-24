@@ -26,7 +26,6 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "macros", "migr
 uuid = { version = "1", features = ["v4"] }
 askama = "0.12"
 tower = { version = "0.5", features = ["util"] }
-tokio-stream = "0.1"
 http-body-util = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 base64 = "0.22"
@@ -36,3 +35,6 @@ sprites-client = { path = "crates/sprites-client" }
 llm-gateway = { path = "crates/llm-gateway" }
 prompts = { path = "crates/prompts" }
 store = { path = "crates/store" }
+
+[workspace.lints.cargo]
+unused_workspace_dependencies = "deny"

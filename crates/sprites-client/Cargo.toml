@@ -34,3 +34,6 @@ path = "src/bin/mock-http-server.rs"
 [[bin]]
 name = "sprite-fixture"
 path = "src/bin/sprite-fixture.rs"
+
+[lints]
+workspace = true

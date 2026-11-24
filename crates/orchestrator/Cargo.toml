@@ -29,3 +29,6 @@ tempfile.workspace = true
 axum.workspace = true
 tar = "0.4"
 flate2 = "1"
+
+[lints]
+workspace = true
