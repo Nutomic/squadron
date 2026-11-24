@@ -191,6 +191,7 @@ async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
         harness_cache: Arc::new(orchestrator::harness::HarnessCache::new()),
         hub_registry: Some(hub_registry.clone()),
         lane_queue: None,
+        create_throttle: std::sync::Arc::new(orchestrator::SpriteCreateThrottle::disabled()),
     });
 
     let harness = HarnessMode::Command {
@@ -475,6 +476,7 @@ async fn persistent_auth_wall_fails_the_lane_after_one_retry() {
         harness_cache: Arc::new(orchestrator::harness::HarnessCache::new()),
         hub_registry: None,
         lane_queue: None,
+        create_throttle: std::sync::Arc::new(orchestrator::SpriteCreateThrottle::disabled()),
     });
 
     let harness = HarnessMode::Command {
@@ -607,6 +609,7 @@ async fn failing_config_update_fails_the_lane_before_any_exec() {
         harness_cache: Arc::new(orchestrator::harness::HarnessCache::new()),
         hub_registry: None,
         lane_queue: None,
+        create_throttle: std::sync::Arc::new(orchestrator::SpriteCreateThrottle::disabled()),
     });
 
     let harness = HarnessMode::Command {
@@ -790,6 +793,7 @@ async fn auth_wall_retry_verifies_public_before_reprobe() {
         harness_cache: Arc::new(orchestrator::harness::HarnessCache::new()),
         hub_registry: None,
         lane_queue: None,
+        create_throttle: std::sync::Arc::new(orchestrator::SpriteCreateThrottle::disabled()),
     });
 
     let harness = HarnessMode::Command {

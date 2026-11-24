@@ -168,6 +168,59 @@ pub fn rate_limit_requeue_delay(attempt: usize, base: Duration) -> Duration {
     base.saturating_mul(attempt as u32)
 }
 
+/// F26: process-wide sprite-create throttle. Parallel lanes create their
+/// sprites in a burst and trip the platform's 10-per-minute org rate limit;
+/// spacing the create calls at most one per `spacing` (7s comfortably fits 10
+/// per minute) keeps normal operation under the limit without ever seeing the
+/// error.
+///
+/// Holding the create lock across the wait strictly serializes concurrent
+/// acquirers, so the actual create calls are spaced `spacing` apart.
+#[derive(Debug)]
+pub struct SpriteCreateThrottle {
+    spacing: Duration,
+    last: tokio::sync::Mutex<Option<tokio::time::Instant>>,
+}
+
+impl SpriteCreateThrottle {
+    pub fn new(spacing: Duration) -> Self {
+        Self {
+            spacing,
+            last: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// No-spacing throttle for tests and contexts that must not wait.
+    pub fn disabled() -> Self {
+        Self::new(Duration::ZERO)
+    }
+
+    /// Pure spacing computation (unit-testable without sleeping): how long a
+    /// create at `now` must wait given the last create time.
+    pub fn wait_needed(
+        last: Option<tokio::time::Instant>,
+        now: tokio::time::Instant,
+        spacing: Duration,
+    ) -> Option<Duration> {
+        let last = last?;
+        Some(spacing.saturating_sub(now.saturating_duration_since(last)))
+    }
+
+    /// Serialize and space out sprite creates: callers acquire before each
+    /// `sprite create`; the wait is computed from the previous create's
+    /// completion time, and the stamp is taken after the wait so the NEXT
+    /// acquirer is spaced from the actual create time.
+    pub async fn acquire(&self) {
+        let mut last = self.last.lock().await;
+        if let Some(wait) = Self::wait_needed(*last, tokio::time::Instant::now(), self.spacing) {
+            if !wait.is_zero() {
+                tokio::time::sleep(wait).await;
+            }
+        }
+        *last = Some(tokio::time::Instant::now());
+    }
+}
+
 /// Bounded requeue budget for slot-exhaustion spawn failures: the lane waits
 /// out a growing backoff and retries; it only degrades to the ordinary
 /// failure path after this many consecutive requeues.
@@ -242,6 +295,65 @@ mod tests {
         assert_eq!(rate_limit_requeue_delay(1, base), Duration::from_secs(60));
         assert_eq!(rate_limit_requeue_delay(2, base), Duration::from_secs(120));
         assert_eq!(rate_limit_requeue_delay(3, base), Duration::from_secs(180));
+    }
+
+    #[test]
+    fn throttle_wait_needed_computes_spacing() {
+        let spacing = Duration::from_secs(7);
+        let t0 = tokio::time::Instant::now();
+        // first create never waits
+        assert_eq!(SpriteCreateThrottle::wait_needed(None, t0, spacing), None);
+        // immediately after a create: the full spacing remains
+        assert_eq!(
+            SpriteCreateThrottle::wait_needed(Some(t0), t0, spacing),
+            Some(spacing)
+        );
+        // half the spacing elapsed: the remainder remains
+        assert_eq!(
+            SpriteCreateThrottle::wait_needed(Some(t0), t0 + Duration::from_secs(3), spacing),
+            Some(Duration::from_secs(4))
+        );
+        // spacing fully elapsed: no wait (saturates at zero)
+        assert_eq!(
+            SpriteCreateThrottle::wait_needed(Some(t0), t0 + spacing, spacing),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(
+            SpriteCreateThrottle::wait_needed(Some(t0), t0 + spacing * 3, spacing),
+            Some(Duration::ZERO)
+        );
+    }
+
+    /// Concurrent acquirers serialize with at least the configured spacing
+    /// between the actual acquire times (small spacing so the test is fast).
+    #[tokio::test]
+    async fn throttle_serializes_concurrent_acquires_with_spacing() {
+        let spacing = Duration::from_millis(20);
+        let throttle = std::sync::Arc::new(SpriteCreateThrottle::new(spacing));
+        let mut joins = Vec::new();
+        for _ in 0..5 {
+            let t = throttle.clone();
+            joins.push(tokio::spawn(async move {
+                t.acquire().await;
+                tokio::time::Instant::now()
+            }));
+        }
+        let mut times: Vec<tokio::time::Instant> = Vec::new();
+        for j in joins {
+            times.push(j.await.unwrap());
+        }
+        times.sort();
+        // first acquire has no wait; each subsequent one is spaced
+        for pair in times.windows(2) {
+            let gap = pair[1].saturating_duration_since(pair[0]);
+            assert!(
+                gap >= spacing,
+                "acquires must be spaced >= {spacing:?}, got {gap:?}"
+            );
+        }
+        // total elapsed proves spacing held across all acquirers
+        let span = times[times.len() - 1].saturating_duration_since(times[0]);
+        assert!(span >= spacing * 4, "span {span:?} must cover 4 gaps");
     }
 
     #[test]

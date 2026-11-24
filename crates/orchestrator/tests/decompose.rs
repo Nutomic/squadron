@@ -222,6 +222,7 @@ async fn test_ctx(
         harness_cache: Arc::new(orchestrator::harness::HarnessCache::new()),
         hub_registry: None,
         lane_queue: None,
+        create_throttle: std::sync::Arc::new(orchestrator::SpriteCreateThrottle::disabled()),
     });
     (ctx, store)
 }

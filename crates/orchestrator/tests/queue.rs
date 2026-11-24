@@ -103,6 +103,7 @@ async fn setup(config: PipelineConfig) -> TestEnv {
         harness_cache: Arc::new(orchestrator::harness::HarnessCache::new()),
         hub_registry: Some(hub_registry.clone()),
         lane_queue: Some(queue.clone()),
+        create_throttle: std::sync::Arc::new(orchestrator::SpriteCreateThrottle::disabled()),
     });
     TestEnv {
         ctx,

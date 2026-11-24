@@ -91,6 +91,7 @@ async fn smoke_pipeline_mock_sprite_n3_judged_and_persisted() {
         harness_cache: std::sync::Arc::new(orchestrator::harness::HarnessCache::new()),
         hub_registry: Some(hub_registry.clone()),
         lane_queue: None,
+        create_throttle: std::sync::Arc::new(orchestrator::SpriteCreateThrottle::disabled()),
     });
 
     let harness = HarnessMode::Command {

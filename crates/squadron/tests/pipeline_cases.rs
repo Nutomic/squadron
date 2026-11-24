@@ -98,6 +98,9 @@ fn base_config(dir: &std::path::Path, max_running_slots: usize) -> PipelineConfi
         impl_deadline: Duration::from_secs(30),
         val_deadline: Duration::from_secs(30),
         judge_deadline: Duration::from_secs(15),
+        // F26: no 7s create spacing in tests (the throttle serializes lane
+        // creates process-wide; tests start many lanes in quick succession).
+        sprite_create_spacing: Duration::ZERO,
         ..PipelineConfig::default()
     }
 }

@@ -34,6 +34,10 @@ pub struct PipelineConfig {
     /// (the platform window is one minute; each attempt waits out a full
     /// window).
     pub rate_limit_requeue_backoff: Duration,
+    /// F26: process-wide spacing between sprite creates. 7s keeps even a
+    /// 10-lane burst comfortably under the platform's 10-per-minute org
+    /// rate limit, so normal operation never sees the error.
+    pub sprite_create_spacing: Duration,
 }
 
 /// Wave D: global default for concurrent lane sprites (org limit is 10
@@ -90,6 +94,7 @@ impl Default for PipelineConfig {
             probe_command: None,
             slot_requeue_backoff: Duration::from_secs(2),
             rate_limit_requeue_backoff: Duration::from_secs(60),
+            sprite_create_spacing: Duration::from_secs(7),
         }
     }
 }

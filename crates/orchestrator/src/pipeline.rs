@@ -43,6 +43,9 @@ pub struct PipelineCtx {
     /// Wave D: the process-wide lane-slot queue. None keeps the pre-queue
     /// behavior (every run starts immediately, lanes block on the semaphore).
     pub lane_queue: Option<Arc<queue::LaneQueue>>,
+    /// F26: the process-wide sprite-create throttle (one create per
+    /// `sprite_create_spacing`, shared across every run and lane).
+    pub create_throttle: Arc<queue::SpriteCreateThrottle>,
 }
 
 impl PipelineCtx {
@@ -924,6 +927,11 @@ async fn run_implementer_phase(
     let variant_json = lane.variant_json.clone();
 
     let sprite_name = lane_sprite_name(&run_id, idx);
+    // F26: space sprite creates across the whole process (at most one per
+    // `sprite_create_spacing`, 7s in production) so a parallel-lane burst
+    // stays under the platform's 10-per-minute org rate limit in normal
+    // operation.
+    ctx.create_throttle.acquire().await;
     // create sprite; if a stale sprite still holds the deterministic name,
     // destroy --force it once and retry the create. Wave D: an org-limit
     // (slot-exhaustion) spawn failure is NOT a stale-name problem — it
@@ -973,6 +981,8 @@ async fn run_implementer_phase(
             )
             .await;
         let _ = ctx.sprite.destroy(&sprite_name).await;
+        // F26: the retry create is throttled like the first one.
+        ctx.create_throttle.acquire().await;
         ctx.sprite
             .create(&sprite_name)
             .await

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use orchestrator::{
     HarnessMode, LaneQueue, PipelineConfig, PipelineCtx, RunRequest, ScreenshotQueue,
-    SlotSemaphore, SseHub,
+    SlotSemaphore, SpriteCreateThrottle, SseHub,
 };
 use serde_json::Value;
 use sprites_client::SpriteClient;
@@ -24,6 +24,9 @@ pub struct AppState {
     /// Wave D: the process-wide FIFO lane-slot queue; queued runs are
     /// promoted as global lane slots free.
     pub lane_queue: Arc<LaneQueue>,
+    /// F26: the process-wide sprite-create throttle (shared across all runs
+    /// and lanes; one create per `sprite_create_spacing`).
+    pub create_throttle: Arc<SpriteCreateThrottle>,
     pub hubs: Arc<RwLock<HashMap<String, SseHub>>>,
     pub fixtures: bool,
     pub static_dir: PathBuf,
@@ -51,6 +54,7 @@ impl AppState {
         let slots = SlotSemaphore::new(config.max_running_slots);
         let lane_queue = Arc::new(LaneQueue::new());
         orchestrator::queue::spawn_dispatcher(lane_queue.clone());
+        let create_throttle = Arc::new(SpriteCreateThrottle::new(config.sprite_create_spacing));
         // F24: the case-driven entries default to the state's real harness.
         let pipeline_harness = HarnessMode::Real {
             gateway_connector_id: config.gateway_connector_id.clone(),
@@ -63,6 +67,7 @@ impl AppState {
             config,
             slots,
             lane_queue,
+            create_throttle,
             hubs,
             fixtures: false,
             static_dir: crate::static_dir(),
@@ -199,6 +204,7 @@ impl AppState {
             harness_cache: std::sync::Arc::new(orchestrator::harness::HarnessCache::new()),
             hub_registry: Some(self.hubs.clone()),
             lane_queue: Some(self.lane_queue.clone()),
+            create_throttle: self.create_throttle.clone(),
         })
     }
 
