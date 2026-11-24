@@ -275,6 +275,43 @@ async fn gallery_renders_island_with_csp() {
     assert_eq!(referrer, "no-referrer");
 }
 
+/// F31: terminal runs must hydrate a settled state, not a live-stream chip
+/// that reconnects forever after the server closes the run's SSE hub.
+#[tokio::test]
+async fn gallery_hydrates_terminal_status_without_live_dot() {
+    let (app, store) = app().await;
+    let run = store
+        .create_run("terminal gallery test", 2, 1_732_020_000_000)
+        .await
+        .unwrap();
+    store.update_run_status(&run.id, "judged").await.unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/{}", run.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+    assert!(
+        html.contains("data-run-status=\"judged\""),
+        "terminal status must reach the island: {html}"
+    );
+    assert!(
+        html.contains(&format!("data-snapshot-url=\"/api/runs/{}\"", run.id)),
+        "terminal runs need a one-shot snapshot: {html}"
+    );
+    assert!(html.contains("chip-no-dot\">final"), "settled chip: {html}");
+    assert!(
+        !html.contains("chip-pulse\">connecting"),
+        "no live dot on a terminal run: {html}"
+    );
+}
+
 /// F25: the run page shows the FULL user prompt (brief) prominently at the
 /// top, outside the SSE island (server-rendered, no JS required).
 #[tokio::test]

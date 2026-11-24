@@ -199,6 +199,7 @@ async fn fixture_gallery() -> Response {
         run_id: "__fixtures".to_owned(),
         brief: "A retro arcade site for the fixture run — one brief, three lanes.".to_owned(),
         events_url: "/__fixtures/events".to_owned(),
+        snapshot_url: "/__fixtures/run".to_owned(),
         status: "judged".to_owned(),
         csrf_token: String::new(),
     };

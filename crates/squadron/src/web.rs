@@ -549,6 +549,7 @@ pub struct GalleryTemplate {
     /// F25: the FULL user prompt, shown prominently at the top of the page.
     pub brief: String,
     pub events_url: String,
+    pub snapshot_url: String,
     pub status: String,
     /// Review F3 #3: CSRF token for the island's promote form (also set as a
     /// cookie on this GET).
@@ -626,6 +627,7 @@ async fn gallery(State(state): State<SharedState>, Path(run_id): Path<String>) -
         run_id: run.id.clone(),
         brief: run.brief.clone(),
         events_url: format!("/{}/events", run.id),
+        snapshot_url: format!("/api/runs/{}", run.id),
         status: run.status.clone(),
         csrf_token: token.clone(),
     };

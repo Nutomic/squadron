@@ -11,6 +11,8 @@ if (el) {
     props: {
       runId: el.dataset.runId,
       eventsUrl: el.dataset.eventsUrl,
+      snapshotUrl: el.dataset.snapshotUrl,
+      initialStatus: el.dataset.runStatus,
       csrfToken: el.dataset.csrfToken
     }
   });

@@ -1,23 +1,48 @@
 <script>
   import LaneCard from './LaneCard.svelte';
 
-  let { runId, eventsUrl, csrfToken } = $props();
+  let { runId, eventsUrl, snapshotUrl, initialStatus, csrfToken } = $props();
+
+  // Terminal runs have no live hub to subscribe to (R3 leak fix), so opening
+  // an EventSource would only loop through reconnect forever.
+  const TERMINAL_STATUSES = ['judged', 'partial', 'failed', 'promoted'];
+  let settled = $derived(TERMINAL_STATUSES.includes(initialStatus));
 
   let snap = $state(null);
   let conn = $state('connecting');
 
   $effect(() => {
+    if (settled) {
+      conn = 'final';
+      let cancelled = false;
+      fetch(snapshotUrl ?? `/api/runs/${runId}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data && !cancelled) snap = data;
+        })
+        .catch(() => {
+          if (!cancelled) conn = 'error';
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
     const es = new EventSource(eventsUrl);
     es.onmessage = (e) => {
       try {
         snap = JSON.parse(e.data);
-        conn = 'live';
+        if (TERMINAL_STATUSES.includes(snap?.run?.status)) {
+          conn = 'final';
+          es.close();
+        } else {
+          conn = 'live';
+        }
       } catch {
         conn = 'error';
       }
     };
     es.onerror = () => {
-      conn = 'reconnecting';
+      if (!TERMINAL_STATUSES.includes(snap?.run?.status)) conn = 'reconnecting';
     };
     return () => es.close();
   });
@@ -32,7 +57,7 @@
     queued: 'chip-neutral chip-pulse',
     failed: 'chip-error'
   };
-  let runStatus = $derived(snap?.run?.status ?? null);
+  let runStatus = $derived(snap?.run?.status ?? initialStatus ?? null);
   let runStatusChip = $derived(runStatus ? (STATUS_CHIPS[runStatus] ?? 'chip-neutral') : null);
   // A partial run (F27: some lanes validated, some failed) still has a winner
   // among the survivors — it renders the verdict card and is promotable.
