@@ -11,7 +11,7 @@
     skipped: { label: 'skipped', cls: 'chip chip-neutral' }
   };
 
-  let { lane, runId, isWinner = false, onTokei } = $props();
+  let { lane, runId, isWinner = false } = $props();
 
   let chip = $derived(STATE_LABELS[lane.state] ?? { label: lane.state, cls: 'chip chip-neutral' });
   let hasThumb = $derived(lane.screenshotState === 'done');
@@ -123,9 +123,6 @@
     {/if}
 
     <div class="card-actions items-center justify-end mt-auto pt-2 flex-wrap gap-1">
-      {#if lane.files != null || lane.loc != null}
-        <button class="btn btn-ghost btn-xs text-base-content/60 hover:text-base-content" onclick={() => onTokei(lane.idx)}>tokei</button>
-      {/if}
       {#if lane.implUrl}
         <a class="btn btn-ghost btn-xs text-primary hover:text-primary" href={lane.implUrl} target="_blank" rel="noopener noreferrer">live</a>
       {/if}

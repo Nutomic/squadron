@@ -70,7 +70,6 @@ pub fn router(state: SharedState) -> Router {
         .route("/{run_id}", get(gallery))
         .route("/{run_id}/events", get(events))
         .route("/{run_id}/lane/{idx}", get(lane_detail))
-        .route("/{run_id}/lane/{idx}/tokei", get(lane_tokei))
         .route("/{run_id}/thumb/{idx}", get(thumb))
         .route("/{run_id}/source/{idx}", get(source))
         .route("/{run_id}/promote", post(promote))
@@ -430,7 +429,6 @@ pub struct LaneTemplate {
     pub val_features: Vec<String>,
     pub val_bugs: Vec<String>,
     pub val_security: Vec<String>,
-    pub tokei_json: String,
     pub console_tail: String,
     pub error: Option<String>,
     pub screenshot_state: String,
@@ -447,7 +445,6 @@ pub struct LaneCommon {
     pub build: String,
     pub cost: String,
     pub val_verdict: Option<String>,
-    pub tokei_json: String,
     pub console_tail: String,
     pub error: Option<String>,
     pub screenshot_state: String,
@@ -463,7 +460,6 @@ impl LaneCommon {
             build: build_time(lane),
             cost: fmt_cost(lane.cost_usd),
             val_verdict: lane.val_verdict.clone(),
-            tokei_json: lane.tokei_json.clone().unwrap_or_default(),
             console_tail: lane.console_tail.clone().unwrap_or_default(),
             error: lane.error.clone(),
             screenshot_state: lane.screenshot_state.clone().unwrap_or_default(),
@@ -482,7 +478,6 @@ impl LaneCommon {
                 .unwrap_or_else(|| "-".to_owned()),
             cost: fmt_cost(view.cost_usd),
             val_verdict: view.val_verdict.clone(),
-            tokei_json: String::new(),
             console_tail: view.console_tail.clone().unwrap_or_default(),
             error: None,
             screenshot_state: view.screenshot_state.clone().unwrap_or_default(),
@@ -506,7 +501,6 @@ impl LaneTemplate {
             val_features: Vec::new(),
             val_bugs: Vec::new(),
             val_security: Vec::new(),
-            tokei_json: c.tokei_json.clone(),
             console_tail: c.console_tail.clone(),
             error: c.error.clone(),
             screenshot_state: c.screenshot_state.clone(),
@@ -533,13 +527,6 @@ fn validator_report_view(lane: &store::Lane) -> (Vec<String>, Vec<String>, Vec<S
         .and_then(prompts::parse_validator_report)
         .map(|out| (out.features, out.bugs, out.security))
         .unwrap_or_default()
-}
-
-#[derive(Template)]
-#[template(path = "tokei.html")]
-pub struct TokeiTemplate {
-    pub idx: i64,
-    pub tokei_json: String,
 }
 
 #[derive(Template)]
@@ -780,23 +767,6 @@ async fn lane_detail(
     // #3: viewing a lane also triggers the lazy screenshot render.
     enqueue_pending_render(&state.screenshots, &run_id, &lane);
     HtmlResponse(lane_tpl.render().unwrap_or_default()).into_response()
-}
-
-async fn lane_tokei(
-    State(state): State<SharedState>,
-    Path((run_id, idx)): Path<(String, i64)>,
-) -> Response {
-    if !valid_id(&run_id) {
-        return not_found();
-    }
-    let Some(lane) = state.store.get_lane(&run_id, idx).await.ok().flatten() else {
-        return not_found();
-    };
-    let tpl = TokeiTemplate {
-        idx: lane.idx,
-        tokei_json: lane.tokei_json.clone().unwrap_or_default(),
-    };
-    HtmlResponse(tpl.render().unwrap_or_default()).into_response()
 }
 
 async fn thumb(

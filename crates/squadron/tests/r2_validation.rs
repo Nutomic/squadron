@@ -149,7 +149,6 @@ async fn invalid_run_id_is_404_everywhere() {
         format!("/{bad}/lane/0"),
         format!("/{bad}/thumb/0"),
         format!("/{bad}/source/0"),
-        format!("/{bad}/lane/0/tokei"),
     ] {
         let res = app
             .clone()

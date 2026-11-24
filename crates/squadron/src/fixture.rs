@@ -114,7 +114,6 @@ pub fn fixture_router() -> Router {
         .route("/__fixtures/events", get(fixture_events))
         .route("/__fixtures/gallery", get(fixture_gallery))
         .route("/__fixtures/lane/{idx}", get(fixture_lane))
-        .route("/__fixtures/lane/{idx}/tokei", get(fixture_lane_tokei))
         .route("/__fixtures/source/{idx}", get(fixture_source))
 }
 
@@ -144,15 +143,6 @@ async fn fixture_lane(Path(idx): Path<i64>) -> Response {
         "no eval".to_owned(),
         "no inline event handlers; all assets local".to_owned(),
     ];
-    tpl.tokei_json = r#"{"Total":{"bytes":44_320,"files":14,"code":1_832}}"#.to_owned();
-    Html(tpl.render().unwrap_or_default()).into_response()
-}
-
-async fn fixture_lane_tokei(Path(idx): Path<i64>) -> Response {
-    let tpl = crate::web::TokeiTemplate {
-        idx,
-        tokei_json: r#"{"Total":{"bytes":44_320,"files":14,"code":1_832}}"#.to_owned(),
-    };
     Html(tpl.render().unwrap_or_default()).into_response()
 }
 

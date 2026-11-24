@@ -594,33 +594,45 @@ async fn lane_detail_renders_report_arrays_and_plain_quality_number() {
     );
 }
 
+/// F31: the tokei button/dialog and its one-off fragment endpoint are gone;
+/// shared tokei stats still feed the lane card's Files / LOC display.
 #[tokio::test]
-async fn tokei_fragment_renders_plain_text() {
+async fn tokei_dialog_and_endpoint_are_gone() {
     let (app, store) = app().await;
     let run = store
-        .create_run("tokei test", 2, 1_732_020_000_000)
+        .create_run("dialog removal test", 1, 1_732_020_000_000)
         .await
         .unwrap();
-    store.insert_lane(&run.id, 1, "{}").await.unwrap();
-    let tokei = r#"{"Total":{"files":9,"code":1204}}"#;
-    store
-        .set_artifacts(&run.id, 1, "t.tar.gz", tokei, "log")
-        .await
-        .unwrap();
+    store.insert_lane(&run.id, 0, "{}").await.unwrap();
     let res = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/{}/lane/1/tokei", run.id))
+                .uri(format!("/{}/lane/0/tokei", run.id))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let html = body_string(res.into_body()).await;
-    assert!(html.contains("&quot;code&quot;:1204"));
-    assert!(html.contains("<pre"));
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    for uri in [format!("/{}", run.id), format!("/{}/lane/0", run.id)] {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let html = body_string(res.into_body()).await;
+        assert!(
+            !html.contains("tokei"),
+            "tokei UI must be gone: {uri}: {html}"
+        );
+    }
 }
 
 #[tokio::test]
