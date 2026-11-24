@@ -10,6 +10,10 @@ static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 use orchestrator::{
     HarnessMode, PipelineConfig, PipelineCtx, RunRequest, ScreenshotQueue, SlotSemaphore, SseHub,
 };
+
+mod common;
+
+use common::wait_secs;
 use sprites_client::{SpriteClient, SpriteConfig};
 use store::Store;
 
@@ -130,7 +134,7 @@ async fn impl_deadline_fails_lane_with_class_error() {
     .await
     .unwrap();
 
-    let final_run = wait_run(&store, &run.id, 30).await;
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
     assert_eq!(
         final_run.status, "failed",
         "no lane can finish past deadline"
@@ -175,7 +179,7 @@ async fn schema_gate_rejection_fails_lane() {
     .await
     .unwrap();
 
-    let final_run = wait_run(&store, &run.id, 30).await;
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
     assert_eq!(final_run.status, "failed");
 
     for lane in store.list_lanes(&run.id).await.unwrap() {
@@ -212,7 +216,7 @@ async fn slot_exhaustion_queues_lanes_and_completes() {
     .await
     .unwrap();
 
-    let final_run = wait_run(&store, &run.id, 60).await;
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
     assert_eq!(final_run.status, "judged");
     for lane in store.list_lanes(&run.id).await.unwrap() {
         assert_eq!(lane.state, "validated", "lane {:?}", lane.idx);
@@ -272,7 +276,7 @@ async fn harness_budget_is_independent_of_lane_retries() {
     .await
     .unwrap();
 
-    let final_run = wait_run(&store, &run.id, 60).await;
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
     assert_eq!(
         final_run.status, "judged",
         "harness retries must carry the lane past the two gate failures"
@@ -343,7 +347,7 @@ async fn run_fails_without_judging_when_every_lane_fails() {
     .await
     .unwrap();
 
-    let final_run = wait_run(&store, &run.id, 30).await;
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
     assert_eq!(final_run.status, "failed");
     assert_eq!(final_run.winner_lane, None);
     for lane in store.list_lanes(&run.id).await.unwrap() {
@@ -393,7 +397,7 @@ async fn injection_marker_fails_lane() {
     .await
     .unwrap();
 
-    let final_run = wait_run(&store, &run.id, 30).await;
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
     assert_eq!(final_run.status, "failed");
     for lane in store.list_lanes(&run.id).await.unwrap() {
         assert_eq!(lane.state, "failed", "lane {:?}", lane.idx);
@@ -467,7 +471,7 @@ async fn validator_fail_verdict_demotes_lane_out_of_judge_set() {
     .await
     .unwrap();
 
-    let final_run = wait_run(&store, &run.id, 60).await;
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
     assert_eq!(final_run.status, "judged");
     let winner = final_run.winner_lane.expect("winner selected");
     assert_ne!(winner, 0, "a fail-verdict lane can never win");
@@ -518,7 +522,7 @@ async fn single_surviving_lane_is_judged_with_winner() {
     .await
     .unwrap();
 
-    let final_run = wait_run(&store, &run.id, 60).await;
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
     assert_eq!(
         final_run.status, "judged",
         "one surviving validated lane is enough to judge the run"

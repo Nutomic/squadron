@@ -23,6 +23,10 @@ use orchestrator::{
     HarnessMode, HubRegistry, PipelineConfig, PipelineCtx, RunRequest, ScreenshotQueue,
     SlotSemaphore, SseHub,
 };
+
+mod common;
+
+use common::wait_secs;
 use sprites_client::{SpriteClient, SpriteConfig};
 use store::Store;
 use tokio::sync::{Mutex, RwLock};
@@ -221,7 +225,7 @@ async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
         std::fs::write(dir.join("index.html"), "<h1>pulled from sprite</h1>\n").unwrap();
     }
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs());
     loop {
         let r = store.get_run(&run.id).await.unwrap().unwrap();
         if r.status == "judged" || r.status == "failed" {
@@ -486,7 +490,7 @@ async fn persistent_auth_wall_fails_the_lane_after_one_retry() {
     .await
     .unwrap();
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs());
     loop {
         let r = store.get_run(&run.id).await.unwrap().unwrap();
         if r.status == "judged" || r.status == "failed" {
@@ -621,7 +625,7 @@ async fn failing_config_update_fails_the_lane_before_any_exec() {
     // The run must reach a terminal state well within the deadline: the lane
     // fails fast pre-session (3 config attempts + 1s/3s backoff), not after
     // an implementer hour.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs());
     loop {
         let r = store.get_run(&run.id).await.unwrap().unwrap();
         if r.status == "judged" || r.status == "failed" {
@@ -801,7 +805,7 @@ async fn auth_wall_retry_verifies_public_before_reprobe() {
     .await
     .unwrap();
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs());
     loop {
         let r = store.get_run(&run.id).await.unwrap().unwrap();
         if r.status == "judged" || r.status == "failed" {

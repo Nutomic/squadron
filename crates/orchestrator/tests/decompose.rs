@@ -19,6 +19,10 @@ use axum::extract::{Json as AxumJson, State};
 use axum::http::HeaderMap;
 use axum::routing::post;
 use axum::{Json, Router};
+
+mod common;
+
+use common::wait_secs;
 use llm_gateway::MachineLlmClient;
 use orchestrator::{
     HarnessMode, PipelineConfig, PipelineCtx, RunRequest, ScreenshotQueue, SlotSemaphore, SseHub,
@@ -301,7 +305,7 @@ async fn or_alternatives_multiply_into_four_lanes() {
 
     let brief = "green or red product website in framework A or B";
     let run = start(ctx, brief).await;
-    let final_run = wait_run(&store, &run.id, 60).await;
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
     assert_eq!(final_run.status, "judged", "4 lanes must judge");
 
     let lanes = store.list_lanes(&run.id).await.unwrap();
@@ -334,7 +338,7 @@ async fn explicit_number_brief_creates_five_lanes() {
     let (ctx, store) = test_ctx(dir.path(), Some(Arc::new(llm))).await;
 
     let run = start(ctx, "poster wall with 5 different colors").await;
-    let final_run = wait_run(&store, &run.id, 60).await;
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
     assert_eq!(final_run.status, "judged");
 
     let lanes = store.list_lanes(&run.id).await.unwrap();
@@ -359,7 +363,7 @@ async fn plain_brief_defaults_to_six_lanes() {
     let (ctx, store) = test_ctx(dir.path(), Some(Arc::new(llm))).await;
 
     let run = start(ctx, "a tidy landing page for a bakery").await;
-    let final_run = wait_run(&store, &run.id, 60).await;
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
     assert_eq!(final_run.status, "judged");
 
     let lanes = store.list_lanes(&run.id).await.unwrap();
@@ -385,7 +389,7 @@ async fn twelve_cases_are_capped_at_eight_with_truncation_event() {
     let (ctx, store) = test_ctx(dir.path(), Some(Arc::new(llm))).await;
 
     let run = start(ctx, "12 variants of a dashboard").await;
-    let final_run = wait_run(&store, &run.id, 60).await;
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
     assert_eq!(final_run.status, "judged");
 
     let lanes = store.list_lanes(&run.id).await.unwrap();
@@ -419,7 +423,7 @@ async fn empty_output_is_retried_then_succeeds() {
     let (ctx, store) = test_ctx(dir.path(), Some(Arc::new(llm))).await;
 
     let run = start(ctx, "a tidy landing page for a bakery").await;
-    let final_run = wait_run(&store, &run.id, 60).await;
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
     assert_eq!(final_run.status, "judged");
 
     assert_eq!(
@@ -457,10 +461,10 @@ async fn four_empty_outputs_fall_back_to_single_raw_brief_lane() {
 
     let brief = "a tidy landing page for a bakery";
     let run = start(ctx, brief).await;
-    let final_run = wait_run(&store, &run.id, 60).await;
-    // F18: a single validated lane is enough to reach the judge (a run only
-    // fails when NO lane validates), so the fallback run is judged — the lane
-    // itself must exist and be driven by the brief.
+    let final_run = wait_run(&store, &run.id, wait_secs()).await;
+    // F18: a single surviving lane still reaches the judge (judge ranks the
+    // survivors; only an empty validated set fails the run), so the fallback
+    // lane is judged — but it must exist and be driven by the brief.
     assert_eq!(final_run.status, "judged");
 
     assert_eq!(

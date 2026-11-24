@@ -7,6 +7,10 @@ use std::time::Duration;
 use orchestrator::{
     HarnessMode, PipelineConfig, PipelineCtx, RunRequest, ScreenshotQueue, SlotSemaphore, SseHub,
 };
+
+mod common;
+
+use common::wait_secs;
 use sprites_client::{SpriteClient, SpriteConfig};
 use store::Store;
 
@@ -106,7 +110,7 @@ async fn lane_retry_destroys_sprite_and_recovers() {
     .await
     .unwrap();
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs());
     loop {
         let r = store.get_run(&run.id).await.unwrap().unwrap();
         if r.status == "judged" || r.status == "failed" {

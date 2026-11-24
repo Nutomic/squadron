@@ -11,6 +11,10 @@ use std::time::Duration;
 use orchestrator::{
     HarnessMode, PipelineConfig, PipelineCtx, RunRequest, ScreenshotQueue, SlotSemaphore, SseHub,
 };
+
+mod common;
+
+use common::wait_secs;
 use sprites_client::mock_cli::MockState;
 use sprites_client::{SpriteClient, SpriteConfig};
 use store::Store;
@@ -165,7 +169,7 @@ async fn validator_failure_retries_in_place_without_sprite_recreation() {
     .await
     .unwrap();
 
-    let final_run = wait_terminal(&store, &run.id, 60).await;
+    let final_run = wait_terminal(&store, &run.id, wait_secs()).await;
     assert_eq!(
         final_run.status,
         "judged",
@@ -252,7 +256,7 @@ async fn implementer_failure_still_recreates_the_sprite() {
     .await
     .unwrap();
 
-    let final_run = wait_terminal(&store, &run.id, 60).await;
+    let final_run = wait_terminal(&store, &run.id, wait_secs()).await;
     assert_eq!(
         final_run.status,
         "judged",

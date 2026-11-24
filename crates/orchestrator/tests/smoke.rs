@@ -9,6 +9,10 @@ use orchestrator::{
     HarnessMode, HubRegistry, PipelineConfig, PipelineCtx, RunRequest, ScreenshotQueue,
     SlotSemaphore, SseHub,
 };
+
+mod common;
+
+use common::wait_secs;
 use sprites_client::{SpriteClient, SpriteConfig};
 use store::Store;
 
@@ -106,7 +110,7 @@ async fn smoke_pipeline_mock_sprite_n3_judged_and_persisted() {
     assert_eq!(run.n_lanes, 3);
 
     // wait for completion (background task)
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs());
     loop {
         let r = store.get_run(&run.id).await.unwrap().unwrap();
         if r.status == "judged" || r.status == "failed" {
