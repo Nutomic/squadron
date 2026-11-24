@@ -1142,7 +1142,7 @@ async fn runs_page_empty_state_renders_outside_the_table() {
         let html = body_string(res.into_body()).await;
         assert!(html.contains("No runs yet"), "GET {uri}");
         assert!(html.contains("Launch one"), "GET {uri}");
-        assert!(html.contains("squadron.fly.dev/…"), "GET {uri}");
+        assert!(html.contains("squadron.nutomic.com/…"), "GET {uri}");
         // No runs means no <table> at all: the empty state must not sit
         // inside the min-width table that clips it on small screens.
         assert!(!html.contains("<table"), "GET {uri}");

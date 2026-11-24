@@ -300,8 +300,8 @@ async fn launch_run_cases(
 }
 
 /// Wave D: the background pipeline task shared by immediate starts and queue
-/// promotions. On failure the run is marked failed and its hub dropped, exactly
-/// like the pre-queue flow.
+/// promotions. A pre-judge failure marks the run failed and drops its hub;
+/// judge-phase failures are terminalized with a fallback verdict instead (F29).
 pub fn spawn_execute_run(
     ctx: Arc<PipelineCtx>,
     run_id: String,
@@ -420,7 +420,24 @@ async fn execute_run(
         } else {
             "partial"
         };
-        run_judge_phase(&ctx, &run_id, &validated, decompose_cost, final_status).await?;
+        // F29: no judge-phase error may escape to spawn_execute_run's blanket
+        // failure handler. Persist a deterministic verdict with the same F27
+        // terminal status instead — failed lanes never fail a judged run.
+        if let Err(e) =
+            run_judge_phase(&ctx, &run_id, &validated, decompose_cost, final_status).await
+        {
+            tracing::warn!(run_id, error = %e, "judge phase failed; keeping terminal status");
+            let _ = persist_judge_verdict(
+                &ctx,
+                &run_id,
+                &fallback_verdict(&validated, "judge phase error"),
+                Some(0.0),
+                decompose_cost,
+                final_status,
+                judge::JudgeRung::Deterministic.label(),
+            )
+            .await;
+        }
     }
 
     publish(&ctx, &run_id).await;
@@ -1755,9 +1772,12 @@ async fn run_judge_phase(
             extracts.push(String::new());
         }
     }
-    let (verdict, judge_cost) = if let Some(llm) = &ctx.machine_llm {
+    // F29: judge failures are lane-level degradations, never run-level ones.
+    // Exhaust the image-capable ladder, then fall back to a deterministic
+    // winner among survivors so the run still finishes with its F27 status.
+    let (verdict, judge_cost, rung) = if let Some(llm) = &ctx.machine_llm {
         let images = collect_lane_screenshot_images(&ctx.config.data_dir, run_id, validated).await;
-        judge::run_judge(
+        match judge::run_judge_ladder(
             llm,
             &llm_gateway::machine_session_id(run_id),
             &brief,
@@ -1766,25 +1786,46 @@ async fn run_judge_phase(
             &images,
             ctx.config.judge_deadline,
         )
-        .await?
+        .await
+        {
+            Ok(result) => (result.output, result.cost_usd, result.rung.label()),
+            Err(e) => {
+                tracing::warn!(run_id, error = %e, "judge ladder exhausted; deterministic verdict");
+                (
+                    fallback_verdict(validated, "all judge attempts failed"),
+                    Some(0.0),
+                    judge::JudgeRung::Deterministic.label(),
+                )
+            }
+        }
     } else {
-        // fallback deterministic judge (should not happen in proper runs; but keep safe)
-        let winner = validated.first().map(|l| l.idx as usize).unwrap_or(0);
         (
-            JudgeOutput {
-                ranking: validated.iter().map(|l| l.idx as usize).collect(),
-                winner,
-                verdict_card: "Winner selected by fallback. Criteria met.".to_owned(),
-                reasons: prompts::TextOrList::Text("fallback".to_owned()),
-                brief_fulfillment: BriefFulfillment {
-                    state: BriefFulfillmentState::Unverifiable,
-                    evidence: "fallback judge (no machine LLM): brief fulfillment not assessed"
-                        .to_owned(),
-                },
-            },
+            fallback_verdict(validated, "no machine LLM"),
             Some(0.0),
+            judge::JudgeRung::Deterministic.label(),
         )
     };
+    persist_judge_verdict(
+        ctx,
+        run_id,
+        &verdict,
+        judge_cost,
+        decompose_cost,
+        final_status,
+        rung,
+    )
+    .await
+}
+
+async fn persist_judge_verdict(
+    ctx: &PipelineCtx,
+    run_id: &str,
+    verdict: &JudgeOutput,
+    judge_cost: Option<f64>,
+    decompose_cost: Option<f64>,
+    final_status: &str,
+    rung: &str,
+) -> Result<(), String> {
     let ts = now_ms();
     // compute total cost from lanes + judge
     let lanes = ctx
@@ -1824,11 +1865,31 @@ async fn run_judge_phase(
             .store
             .append_lane_event(run_id, l.idx, ts, "log", "run_judged")
             .await;
+        // F29: audit which ladder rung actually served the verdict.
+        let _ = ctx
+            .store
+            .append_lane_event(run_id, l.idx, ts, "log", &format!("judge_rung: {rung}"))
+            .await;
     }
     // The run is terminal: nothing can change screenshot states anymore, so
     // drop cached terminal entries (R2 finding 6).
     ctx.screenshots.evict_terminal(run_id).await;
     Ok(())
+}
+
+/// Deterministic fallback verdict: schema-valid, winner among survivors only.
+fn fallback_verdict(validated: &[store::Lane], reason: &str) -> JudgeOutput {
+    let winner = validated.first().map(|l| l.idx as usize).unwrap_or(0);
+    JudgeOutput {
+        ranking: validated.iter().map(|l| l.idx as usize).collect(),
+        winner,
+        verdict_card: "Winner selected by fallback. Criteria met.".to_owned(),
+        reasons: prompts::TextOrList::Text("fallback".to_owned()),
+        brief_fulfillment: BriefFulfillment {
+            state: BriefFulfillmentState::Unverifiable,
+            evidence: format!("fallback judge ({reason}): brief fulfillment not assessed"),
+        },
+    }
 }
 
 async fn transition(

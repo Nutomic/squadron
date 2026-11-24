@@ -7,7 +7,8 @@
 //! - The validator (curl-floor reviewer) MUST be a different model than the
 //!   implementer: same-model self-review is a rubber stamp.
 //! - The judge stays on the full-strength glm-5.3 (which also differs from
-//!   the validator, so the judge never re-runs the reviewer's model either).
+//!   the validator, so the judge never re-runs the reviewer's model either),
+//!   with a pinned same-family flash fallback for image-bearing requests.
 
 /// Implementer lanes: glm-5.3-flash only (lane alternation removed).
 pub const IMPLEMENTER_MODEL: &str = "glm-5.3-flash";
@@ -23,6 +24,12 @@ pub const VALIDATOR_MODEL: &str = "deepseek-v4.1-flash";
 /// Machine judge: full-strength glm-5.3 (unchanged; differs from the
 /// validator's model too).
 pub const JUDGE_MODEL: &str = "glm-5.3";
+
+/// Judge fallback for screenshot-bearing requests: the same family as the
+/// primary judge, but the big model started rejecting image input upstream
+/// (HTTP 400 `[invalid_request]`); the flash variant was probe-verified to
+/// still accept the identical image parts on 2026-11-24.
+pub const JUDGE_IMAGE_FALLBACK_MODEL: &str = "glm-5.3-flash";
 
 /// Machine-side diversity generator (prompt-level diversity stays).
 pub const DIVERSITY_MODEL: &str = "glm-5.3";

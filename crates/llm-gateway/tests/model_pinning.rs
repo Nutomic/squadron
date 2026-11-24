@@ -6,8 +6,8 @@
 //! and the judge stays glm-5.3.
 
 use llm_gateway::{
-    lane_model, SpriteRecipe, DECOMPOSE_MODEL, DIVERSITY_MODEL, IMPLEMENTER_MODEL, JUDGE_MODEL,
-    LANE_MODELS, VALIDATOR_MODEL,
+    lane_model, SpriteRecipe, DECOMPOSE_MODEL, DIVERSITY_MODEL, IMPLEMENTER_MODEL,
+    JUDGE_IMAGE_FALLBACK_MODEL, JUDGE_MODEL, LANE_MODELS, VALIDATOR_MODEL,
 };
 
 #[test]
@@ -23,6 +23,9 @@ fn pinned_models_have_their_contracted_values() {
     assert_eq!(IMPLEMENTER_MODEL, "glm-5.3-flash");
     assert_eq!(VALIDATOR_MODEL, "deepseek-v4.1-flash");
     assert_eq!(JUDGE_MODEL, "glm-5.3");
+    // F29: image-bearing judge requests fall back to the same-family flash
+    // model (probe-verified 2026-11-24 after the big model rejected images).
+    assert_eq!(JUDGE_IMAGE_FALLBACK_MODEL, "glm-5.3-flash");
     assert_eq!(DIVERSITY_MODEL, "glm-5.3");
     assert_eq!(DECOMPOSE_MODEL, "glm-5.3");
 }

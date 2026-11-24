@@ -1,9 +1,43 @@
 use llm_gateway::MachineLlmClient;
 use std::time::Duration;
-use tokio::time::timeout;
+use tokio::time::{timeout, timeout_at, Instant};
 
 pub use prompts::LaneJudgeReport;
 use prompts::{gate_with_options, parse, GateOptions, JudgeOutput, Role, ValidatorOutput};
+
+/// Which rung of the judge ladder produced the verdict. Logged into lane
+/// events so a run's verdict can be audited without replaying gateway traffic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JudgeRung {
+    PrimaryWithImages,
+    FlashWithImages,
+    TextOnly,
+    Deterministic,
+}
+
+impl JudgeRung {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PrimaryWithImages => "glm-5.3+images",
+            Self::FlashWithImages => "glm-5.3-flash+images",
+            Self::TextOnly => "glm-5.3 text-only",
+            Self::Deterministic => "deterministic_fallback",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct JudgeVerdict {
+    pub output: JudgeOutput,
+    pub cost_usd: Option<f64>,
+    pub rung: JudgeRung,
+}
+
+struct JudgeAttempt {
+    rung: JudgeRung,
+    model: &'static str,
+    with_images: bool,
+}
 
 pub async fn run_judge(
     client: &MachineLlmClient,
@@ -14,6 +48,24 @@ pub async fn run_judge(
     images: &[Option<String>],
     deadline: Duration,
 ) -> Result<(JudgeOutput, Option<f64>), String> {
+    run_judge_ladder(client, session, brief, reports, extracts, images, deadline)
+        .await
+        .map(|v| (v.output, v.cost_usd))
+}
+
+/// F29: never let one judge request kill a run. Try the primary judge with
+/// screenshots, then the pinned flash variant with the SAME image parts (the
+/// big model now rejects image input upstream), then the primary text-only,
+/// before reporting failure so the caller can pick a deterministic winner.
+pub async fn run_judge_ladder(
+    client: &MachineLlmClient,
+    session: &str,
+    brief: &str,
+    reports: &[LaneJudgeReport],
+    extracts: &[String],
+    images: &[Option<String>],
+    deadline: Duration,
+) -> Result<JudgeVerdict, String> {
     if reports.is_empty() {
         return Err("judge: no validator reports".to_owned());
     }
@@ -29,12 +81,49 @@ pub async fn run_judge(
         max_verdict_sentences: Some(2),
         expected_lane_indices: Some(lane_indices),
     };
-    // The judge future itself owns the request; the deadline is enforced here so
-    // an unresponsive judge cannot stall a run forever.
-    timeout(
-        deadline,
-        judge_once(client, session, brief, reports, extracts, images, &opts),
-    )
+    // Wave A: the judge sees the user's ORIGINAL brief so its verdict carries
+    // a brief_fulfillment assessment for the winning lane.
+    let prompt = prompts::judge_prompt(brief, reports, extracts);
+    let has_images = images.iter().any(|i| i.is_some());
+    let per_rung = deadline / 3;
+    timeout(deadline, async {
+        let mut last_error = "judge: no rung attempted".to_owned();
+        let rungs = [
+            JudgeAttempt {
+                rung: JudgeRung::PrimaryWithImages,
+                model: llm_gateway::JUDGE_MODEL,
+                with_images: has_images,
+            },
+            JudgeAttempt {
+                rung: JudgeRung::FlashWithImages,
+                model: llm_gateway::JUDGE_IMAGE_FALLBACK_MODEL,
+                with_images: has_images,
+            },
+            JudgeAttempt {
+                rung: JudgeRung::TextOnly,
+                model: llm_gateway::JUDGE_MODEL,
+                with_images: false,
+            },
+        ];
+        for attempt in rungs {
+            if !attempt.with_images && attempt.rung != JudgeRung::TextOnly {
+                continue;
+            }
+            let call = judge_once(client, session, &prompt, reports, images, &opts, &attempt);
+            match timeout_at(Instant::now() + per_rung, call).await {
+                Ok(Ok((output, cost_usd))) => {
+                    return Ok(JudgeVerdict {
+                        output,
+                        cost_usd,
+                        rung: attempt.rung,
+                    })
+                }
+                Ok(Err(e)) => last_error = e,
+                Err(_) => last_error = format!("judge: {} deadline exceeded", attempt.rung.label()),
+            }
+        }
+        Err(last_error)
+    })
     .await
     .map_err(|_| "judge: deadline exceeded".to_owned())?
 }
@@ -42,22 +131,19 @@ pub async fn run_judge(
 async fn judge_once(
     client: &MachineLlmClient,
     session: &str,
-    brief: &str,
+    prompt: &prompts::Prompt,
     reports: &[LaneJudgeReport],
-    extracts: &[String],
     images: &[Option<String>],
     opts: &GateOptions,
+    attempt: &JudgeAttempt,
 ) -> Result<(JudgeOutput, Option<f64>), String> {
-    // Wave A: the judge sees the user's ORIGINAL brief so its verdict carries
-    // a brief_fulfillment assessment for the winning lane.
-    let prompt = prompts::judge_prompt(brief, reports, extracts);
     // #12: when lane screenshots exist, attach them as image parts so the judge
     // can see the rendered sites, not just the text extracts. Audit R3 finding:
     // images must stay keyed to their lane, never flattened — after one missing
     // render a flattened list would shift every later image onto the wrong
     // lane. Each image is preceded by a per-lane label text part; lanes without
     // a render contribute no image part (they stay text-only in the prompt).
-    let request = if images.iter().any(|i| i.is_some()) {
+    let request = if attempt.with_images && images.iter().any(|i| i.is_some()) {
         let mut parts = vec![llm_gateway::ContentPart::text(&prompt.user)];
         for (report, img) in reports.iter().zip(images.iter()) {
             if let Some(img) = img {
@@ -68,12 +154,12 @@ async fn judge_once(
                 parts.push(llm_gateway::ContentPart::image(img));
             }
         }
-        llm_gateway::ChatRequest::new(llm_gateway::JUDGE_MODEL)
+        llm_gateway::ChatRequest::new(attempt.model)
             .system(&prompt.system)
             .user_parts(parts)
             .temperature(0.2)
     } else {
-        llm_gateway::ChatRequest::new(llm_gateway::JUDGE_MODEL)
+        llm_gateway::ChatRequest::new(attempt.model)
             .system(&prompt.system)
             .user(&prompt.user)
             .temperature(0.2)
