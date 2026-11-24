@@ -200,7 +200,10 @@ async fn smoke_pipeline_mock_sprite_n3_judged_and_persisted() {
     assert_eq!(runs[0].id, run.id);
 
     // Audit R3 finding 5: the terminal (judged) run must have removed its hub
-    // from the registry — no leaked broadcast channel per run.
+    // from the registry — no leaked broadcast channel per run. `drop_hub` runs
+    // in the spawned pipeline task after the DB status flips terminal — poll
+    // until it drains before asserting (CI drain-race).
+    common::wait_hub_drained(&hub_registry, &run.id).await;
     assert!(
         hub_registry.read().await.is_empty(),
         "hub registry must not retain a terminal run's hub"

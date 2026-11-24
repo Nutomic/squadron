@@ -382,6 +382,9 @@ async fn real_mode_url_auth_200_gate_and_artifact_pull_run_together() {
     );
 
     // Audit R3 finding 5: the terminal run removed its hub from the registry.
+    // `drop_hub` runs in the spawned pipeline task after the DB status flips
+    // terminal — poll until it drains before asserting (CI drain-race).
+    common::wait_hub_drained(&hub_registry, &run.id).await;
     assert!(
         hub_registry.read().await.is_empty(),
         "hub registry must not leak the terminal run's channel"
