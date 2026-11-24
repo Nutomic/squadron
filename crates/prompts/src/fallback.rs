@@ -69,3 +69,16 @@ pub fn template_variants(n: usize) -> Vec<Variant> {
         })
         .collect()
 }
+
+/// User-visible case text for the template fallback: the original prompt
+/// appears exactly once, followed by this case's distinct angle (with its
+/// stack/tone). No boilerplate constraints — those are appended at execution
+/// time, and no second copy of the prompt.
+pub fn template_case_prompt(prompt: &str, variant: &Variant) -> String {
+    format!(
+        "{prompt}\n\nAngle: {angle}. Stack: {stack}. Tone: {tone}.",
+        angle = variant.angle,
+        stack = variant.stack,
+        tone = variant.tone
+    )
+}

@@ -207,9 +207,9 @@ async fn preview_without_llm_returns_template_cases() {
     assert!(store.list_runs().await.unwrap().is_empty());
 }
 
-/// F25: the template fallback's impl_prompt carries only the brief + the
-/// variant's angle/stack/tone — the boilerplate constraint line must NOT
-/// appear in user-visible case text (it is appended at execution time).
+/// F25/F32: the template fallback's impl_prompt carries the brief exactly once
+/// + the variant's angle/stack/tone — no second copy of the brief and no
+/// boilerplate constraint line in user-visible case text (appended at execution).
 #[tokio::test]
 async fn preview_template_cases_do_not_embed_constraints() {
     let (app, _store) = app_no_llm().await;
@@ -225,6 +225,16 @@ async fn preview_template_cases_do_not_embed_constraints() {
     let value: Value = serde_json::from_str(&body_string(res.into_body()).await).unwrap();
     for case in value["cases"].as_array().unwrap() {
         let prompt = case["impl_prompt"].as_str().unwrap();
+        assert_eq!(
+            prompt.matches("tiny site").count(),
+            1,
+            "the prompt must appear exactly once: {prompt}"
+        );
+        assert!(prompt.contains("Angle:"), "case angle missing: {prompt}");
+        assert!(
+            !prompt.to_ascii_lowercase().contains("repeat"),
+            "no second copy of the prompt: {prompt}"
+        );
         assert!(
             !prompt.contains("Constraints:"),
             "template case text must not embed constraints: {prompt}"

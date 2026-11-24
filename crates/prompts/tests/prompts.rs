@@ -5,8 +5,9 @@ use std::collections::HashSet;
 use prompts::{
     data_block, diversity_prompt, gate, gate_and_scan_injections, gate_with_options,
     implementer_prompt, injection_markers, judge_prompt, neutralize_data_closers, parse, preamble,
-    sentence_count, template_variants, validator_prompt, DiversityOutput, GateOptions,
-    ImplementerOutput, JudgeOutput, Role, SchemaError, ValidatorOutput, Verdict, PREAMBLE_TEMPLATE,
+    sentence_count, template_case_prompt, template_variants, validator_prompt, DiversityOutput,
+    GateOptions, ImplementerOutput, JudgeOutput, Role, SchemaError, ValidatorOutput, Verdict,
+    PREAMBLE_TEMPLATE,
 };
 use serde_json::json;
 
@@ -541,6 +542,23 @@ fn template_fallback_produces_distinct_variants() {
     assert_eq!(template_variants(3).len(), 3);
 }
 
+/// F32: the fallback case text carries the original prompt once, then the
+/// case's angle — no second copy and no "repeat" instruction.
+#[test]
+fn template_case_prompt_states_the_prompt_once() {
+    let prompt = "Build a Netscape-era 1996 homepage in 5 different color schemes.";
+    for variant in template_variants(3) {
+        let case = template_case_prompt(prompt, &variant);
+        assert_eq!(case.matches(prompt).count(), 1, "case: {case}");
+        assert!(
+            case.contains(&format!("Angle: {}", variant.angle)),
+            "case: {case}"
+        );
+        assert!(!case.to_lowercase().contains("repeat"), "case: {case}");
+        assert!(!case.contains("Constraints:"), "case: {case}");
+    }
+}
+
 #[test]
 fn data_block_escapes_closing_tag_breakout() {
     let cases = [
@@ -806,6 +824,25 @@ fn decompose_prompt_encodes_the_lane_count_rules() {
         "decomposer data rule must use the prose rule: {}",
         prompt.user
     );
+}
+
+/// F32: the decomposer must no longer ask for a second copy of the brief. A
+/// real run produced "Repeat the brief: '<full brief>'" inside each case;
+/// the case text is now the prompt exactly once plus its distinct angle.
+#[test]
+fn decompose_prompt_forbids_a_second_copy_of_the_prompt() {
+    let prompt = prompts::decompose_prompt(
+        "Build a Netscape-era 1996 homepage in 5 different color schemes.",
+    );
+    let user = prompt.user.to_ascii_lowercase();
+    assert!(user.contains("exactly once"), "prompt: {}", prompt.user);
+    assert!(user.contains("angle:"), "prompt: {}", prompt.user);
+    assert!(
+        !user.contains("repeat the brief"),
+        "prompt: {}",
+        prompt.user
+    );
+    assert!(!user.contains("repeat"), "prompt: {}", prompt.user);
 }
 
 /// Wave D: both implementer prompt paths (variant and decomposition case)

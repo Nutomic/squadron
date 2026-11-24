@@ -3,7 +3,7 @@ pub mod preamble;
 pub mod roles;
 pub mod schema;
 
-pub use fallback::template_variants;
+pub use fallback::{template_case_prompt, template_variants};
 pub use preamble::{
     data_block, data_rule, neutralize_data_closers, preamble, DATA_RULE, PREAMBLE_TEMPLATE,
     PROSE_DATA_RULE, PROSE_REPORT_RULE,

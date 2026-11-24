@@ -187,19 +187,15 @@ async fn preview(
 /// template variants of the default lane count, reshaped into the dialog's
 /// {label, impl_prompt} cases. F25: the impl_prompt carries only the brief +
 /// the variant's angle/stack/tone — NO boilerplate constraints (those are
-/// appended at execution time, never shown to the user).
+/// appended at execution time, never shown to the user). F32: the shared
+/// `template_case_prompt` states the prompt exactly once, then its angle.
 fn template_cases(brief: &str, n: usize) -> Vec<Value> {
     prompts::template_variants(n)
         .into_iter()
         .map(|v| {
             json!({
                 "label": v.angle,
-                "impl_prompt": format!(
-                    "{brief}\n\nDistinct angle: {angle}. Stack: {stack}. Tone: {tone}.",
-                    angle = v.angle,
-                    stack = v.stack,
-                    tone = v.tone
-                )
+                "impl_prompt": prompts::template_case_prompt(brief, &v)
             })
         })
         .collect()
