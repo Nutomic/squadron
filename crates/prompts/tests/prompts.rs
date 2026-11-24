@@ -771,16 +771,19 @@ fn decompose_prompt_encodes_the_lane_count_rules() {
         "prompt must state the 8-case hard cap: {}",
         prompt.user
     );
-    // each case's impl_prompt must be a full self-contained implementer prompt
+    // F25: boilerplate constraints moved OUT of the user-visible case text —
+    // the decomposer must no longer instruct cases to embed them; the pipeline
+    // appends the standard line itself at execution time.
     for needle in [
         "port 8080",
         "PUBLIC URL",
         "external CDNs",
         "1 hour deadline",
+        "Constraints:",
     ] {
         assert!(
-            prompt.user.contains(needle),
-            "impl_prompt constraints must include {needle}: {}",
+            !prompt.user.contains(needle),
+            "decompose prompt must not carry constraint boilerplate ({needle}): {}",
             prompt.user
         );
     }
@@ -869,6 +872,53 @@ fn implementer_case_prompt_carries_the_standard_constraints() {
         "case prompt must keep the report-schema requirement: {}",
         prompt.system
     );
+}
+
+/// F25: the standard constraint line is appended to the user-visible case
+/// prompt at EXECUTION time (single append site), and appending twice is a
+/// no-op so legacy prompts that already embed the line stay verbatim.
+#[test]
+fn impl_prompt_with_constraints_appends_the_standard_line() {
+    let base = "Build a green arcade landing page — the brief's distinct green angle.";
+    let with = prompts::impl_prompt_with_constraints(base);
+    assert!(
+        with.starts_with(base),
+        "the case text must stay untouched: {with}"
+    );
+    for needle in [
+        "work self-contained in one directory",
+        "port 8080 bound to 0.0.0.0",
+        "PUBLIC URL answers HTTP 200",
+        "no external CDNs or network services",
+        "finish within a 1 hour deadline",
+    ] {
+        assert!(
+            with.contains(needle),
+            "appended prompt must include {needle}: {with}"
+        );
+    }
+    // Idempotent: re-appending changes nothing.
+    assert_eq!(
+        prompts::impl_prompt_with_constraints(&with),
+        with,
+        "double append must be a no-op"
+    );
+}
+
+/// F25: the composition the pipeline runs — the case lane's user prompt is
+/// the user-visible case text PLUS the standard constraint line, while the
+/// system prompt still carries the full site constraints.
+#[test]
+fn case_lane_prompt_composes_case_text_with_constraints() {
+    let case_text = "green arcade landing page for the brief";
+    let composed = prompts::impl_prompt_with_constraints(case_text);
+    let prompt = prompts::implementer_case_prompt(
+        &composed,
+        &prompts::planning_first_rule("session minute 6"),
+    );
+    assert!(prompt.user.contains(case_text));
+    assert!(prompt.user.contains("1 hour deadline"));
+    assert!(prompt.system.contains("0.0.0.0"));
 }
 
 /// Wave B: the decomposition gate accepts well-formed cases and rejects the

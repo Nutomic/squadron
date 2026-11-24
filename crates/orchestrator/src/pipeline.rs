@@ -1196,13 +1196,18 @@ async fn run_implementer(
         HarnessMode::Real { .. } => {
             let variant: Value = serde_json::from_str(variant_json)
                 .map_err(|e| format!("implementer variant: {e}"))?;
-            // Wave B: decomposition lanes carry a full self-contained
-            // `impl_prompt`; template-fallback lanes keep the classic variant
-            // shape. Both paths get the standard site constraints.
+            // Wave B / F25: decomposition lanes carry the USER-VISIBLE case
+            // prompt (brief + the case's distinct angle, no boilerplate
+            // constraints). The standard site constraints are appended HERE —
+            // the single execution-time append site — so the implementer still
+            // receives them verbatim (the system prompt carries the full
+            // IMPLEMENTER_SITE_CONSTRAINTS too). Template-fallback lanes keep
+            // the classic variant shape.
             let prompt = match variant.get("impl_prompt").and_then(Value::as_str) {
-                Some(case_impl_prompt) => {
-                    prompts::implementer_case_prompt(case_impl_prompt, plan_rule)
-                }
+                Some(case_impl_prompt) => prompts::implementer_case_prompt(
+                    &prompts::impl_prompt_with_constraints(case_impl_prompt),
+                    plan_rule,
+                ),
                 None => prompts::implementer_prompt(&variant, plan_rule),
             };
             let recipe =

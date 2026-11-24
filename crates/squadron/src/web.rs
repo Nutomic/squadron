@@ -21,7 +21,8 @@ use crate::state::AppState;
 /// hard cap shared with the decomposition phase (MAX_DECOMPOSE_CASES = 8).
 pub const MAX_WORKERS: usize = orchestrator::MAX_DECOMPOSE_CASES;
 /// Case prompts are DATA: a decomposed impl_prompt is the brief plus the
-/// case's angle and the standard constraints, so a multiple of the brief cap
+/// case's angle (the boilerplate constraints ride along at execution time, see
+/// `prompts::impl_prompt_with_constraints`), so a multiple of the brief cap
 /// bounds the payload without rejecting realistic decompositions.
 pub const MAX_CASE_PROMPT_CHARS: usize = crate::api::MAX_BRIEF_CHARS * 4;
 const MAX_LABEL_CHARS: usize = 200;
@@ -175,7 +176,9 @@ async fn preview(
 
 /// No machine LLM (dev/test): mirror the pipeline's deterministic fallback —
 /// template variants of the default lane count, reshaped into the dialog's
-/// {label, impl_prompt} cases.
+/// {label, impl_prompt} cases. F25: the impl_prompt carries only the brief +
+/// the variant's angle/stack/tone — NO boilerplate constraints (those are
+/// appended at execution time, never shown to the user).
 fn template_cases(brief: &str, n: usize) -> Vec<Value> {
     prompts::template_variants(n)
         .into_iter()
@@ -183,11 +186,10 @@ fn template_cases(brief: &str, n: usize) -> Vec<Value> {
             json!({
                 "label": v.angle,
                 "impl_prompt": format!(
-                    "{brief}\n\nDistinct angle: {angle}. Stack: {stack}. Tone: {tone}.\nConstraints: {constraints}",
+                    "{brief}\n\nDistinct angle: {angle}. Stack: {stack}. Tone: {tone}.",
                     angle = v.angle,
                     stack = v.stack,
-                    tone = v.tone,
-                    constraints = v.constraints.join("; ")
+                    tone = v.tone
                 )
             })
         })

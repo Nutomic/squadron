@@ -202,6 +202,35 @@ async fn preview_without_llm_returns_template_cases() {
     assert!(store.list_runs().await.unwrap().is_empty());
 }
 
+/// F25: the template fallback's impl_prompt carries only the brief + the
+/// variant's angle/stack/tone — the boilerplate constraint line must NOT
+/// appear in user-visible case text (it is appended at execution time).
+#[tokio::test]
+async fn preview_template_cases_do_not_embed_constraints() {
+    let (app, _store) = app_no_llm().await;
+    let token = csrf_token(&app).await;
+    let res = post_json(
+        &app,
+        "/api/preview",
+        json!({"brief": "tiny site"}),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let value: Value = serde_json::from_str(&body_string(res.into_body()).await).unwrap();
+    for case in value["cases"].as_array().unwrap() {
+        let prompt = case["impl_prompt"].as_str().unwrap();
+        assert!(
+            !prompt.contains("Constraints:"),
+            "template case text must not embed constraints: {prompt}"
+        );
+        assert!(
+            !prompt.contains("0.0.0.0") && !prompt.contains("1 hour deadline"),
+            "template case text must not embed constraint boilerplate: {prompt}"
+        );
+    }
+}
+
 /// Preview rejects an empty brief and an over-cap brief with 400.
 #[tokio::test]
 async fn preview_validates_the_brief() {

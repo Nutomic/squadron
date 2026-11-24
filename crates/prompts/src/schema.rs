@@ -222,11 +222,13 @@ pub struct JudgeOutput {
     pub brief_fulfillment: BriefFulfillment,
 }
 
-/// Wave B: one decomposition case — a distinct interpretation of the brief
-/// whose `impl_prompt` is a FULL self-contained implementer prompt (brief +
-/// the case's distinct angle + the standard implementer site constraints).
-/// Both fields are untrusted DATA downstream (they feed implementer prompts
-/// and are injection-scanned like any agent output).
+/// Wave B / F25: one decomposition case — a distinct interpretation of the
+/// brief whose `impl_prompt` is the user-visible case text (the brief plus the
+/// case's distinct angle, WITHOUT the boilerplate constraints: the pipeline
+/// appends the standard constraint line at execution time via
+/// `impl_prompt_with_constraints`). Both fields are untrusted DATA downstream
+/// (they feed implementer prompts and are injection-scanned like any agent
+/// output).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DecomposeCase {

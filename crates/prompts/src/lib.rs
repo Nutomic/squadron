@@ -9,8 +9,9 @@ pub use preamble::{
     PROSE_DATA_RULE, PROSE_REPORT_RULE,
 };
 pub use roles::{
-    decompose_prompt, diversity_prompt, implementer_case_prompt, implementer_prompt, judge_prompt,
-    planning_first_rule, validator_prompt, Prompt, IMPLEMENTER_SITE_CONSTRAINTS,
+    decompose_prompt, diversity_prompt, impl_prompt_with_constraints, implementer_case_prompt,
+    implementer_prompt, judge_prompt, planning_first_rule, validator_prompt, Prompt,
+    CASE_CONSTRAINTS_LINE, IMPLEMENTER_SITE_CONSTRAINTS,
 };
 pub use schema::{
     gate, gate_and_scan_injections, gate_with_options, injection_markers, parse,
