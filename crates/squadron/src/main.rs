@@ -39,6 +39,11 @@ async fn main() {
     if let Some(llm) = squadron::AppState::machine_llm_from_env() {
         state = state.with_machine_llm(llm);
     }
+    // F24: crash-safe queue pickup — runs left `queued` in the DB by a
+    // restart (crash or deploy) re-enter the FIFO queue before the server
+    // accepts requests. This also un-strands runs queued by a previous
+    // deploy; each picked-up run is logged.
+    state.pickup_queued_runs().await;
     let app = router(Arc::new(state));
 
     let addr = match std::env::var("BIND") {

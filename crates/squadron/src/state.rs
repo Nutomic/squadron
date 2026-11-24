@@ -202,6 +202,68 @@ impl AppState {
         })
     }
 
+    /// F24: crash-safe queue pickup. `LaneQueue` is in-memory, so runs left in
+    /// `queued` status by a process restart (crash or deploy) would stay
+    /// stranded forever: the DB says queued but nothing re-enqueues them.
+    /// Called once at startup, before the server accepts requests: every
+    /// DB-queued run is rebuilt into a `QueuedRun` and handed to the FIFO
+    /// dispatcher, which promotes it with the same slot accounting as any
+    /// freshly queued run (MAX lanes cap respected at promote time). Returns
+    /// the number of runs re-enqueued; each is logged.
+    pub async fn pickup_queued_runs(&self) -> usize {
+        if !self.launch_pipeline {
+            return 0;
+        }
+        let stranded = match self.store.list_queued_runs().await {
+            Ok(runs) => runs,
+            Err(e) => {
+                tracing::warn!("queued-run pickup scan failed: {e}");
+                return 0;
+            }
+        };
+        let mut picked = 0usize;
+        for run in stranded {
+            let lanes = match self.store.list_lanes(&run.id).await {
+                Ok(lanes) => lanes,
+                Err(e) => {
+                    tracing::warn!(
+                        "queued-run pickup: skipping run {} (cannot list lanes: {e})",
+                        run.id
+                    );
+                    continue;
+                }
+            };
+            if lanes.is_empty() {
+                // Rows were never written (crash between run and lane
+                // inserts): nothing to rebuild — leave it queued with a loud
+                // log rather than enqueue a run the dispatcher cannot run.
+                tracing::warn!(
+                    "queued-run pickup: run {} has no lanes; cannot rebuild, leaving it queued",
+                    run.id
+                );
+                continue;
+            }
+            let ctx = self.build_ctx();
+            if let Some(reg) = &ctx.hub_registry {
+                reg.write().await.insert(run.id.clone(), ctx.sse.clone());
+            }
+            self.lane_queue.enqueue(orchestrator::queue::QueuedRun {
+                ctx,
+                run_id: run.id.clone(),
+                lanes: lanes.len(),
+                harness: self.pipeline_harness.clone(),
+                decompose_cost: None,
+            });
+            tracing::info!(
+                "queued-run pickup: re-enqueued run {} ({} lanes) after restart; waiting for FIFO promotion",
+                run.id,
+                lanes.len()
+            );
+            picked += 1;
+        }
+        picked
+    }
+
     async fn create_queued_run(&self, brief: &str, n_lanes: usize) -> Result<Run, String> {
         let now = store::now_ms();
         let run = self

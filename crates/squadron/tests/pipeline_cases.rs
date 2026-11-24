@@ -138,6 +138,24 @@ async fn setup(max_running_slots: usize) -> TestEnv {
     }
 }
 
+/// A second AppState over the SAME store + mock state: a simulated process
+/// restart (fresh in-memory queue, fresh slot pool, same DB rows). The
+/// pipeline harness is overridden to the test-only canned command mode — in
+/// production the pickup resumes with the state's real harness; the harness
+/// mode itself is not persisted, so a picked-up run can only ever resume
+/// with the (new) state's own harness.
+fn restart(env: &TestEnv, config: PipelineConfig, harness: HarnessMode) -> AppState {
+    let sprite = SpriteClient::new(SpriteConfig {
+        cli_path: mock_cli_path(),
+        command_timeout: Duration::from_secs(10),
+        ..SpriteConfig::default()
+    });
+    std::fs::create_dir_all(&config.data_dir).unwrap();
+    AppState::new(env.store.clone(), sprite, config)
+        .with_static_dir(PathBuf::from(STATIC_DIR))
+        .with_pipeline_harness(harness)
+}
+
 async fn wait_run_status(store: &Store, run_id: &str, statuses: &[&str], secs: u64) -> String {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
     loop {
@@ -206,15 +224,12 @@ async fn confirm_submitted_cases_execute_to_judged() {
 /// (a, web level) The confirm handler itself must start execution: a fitting
 /// submission is `running` in the store by the time the 201 is returned.
 /// (The bug: it stayed `queued` forever with no dispatcher activity.)
-/// The state's pipeline harness is overridden to the test-only canned
-/// command mode, so the driven pipeline runs entirely against fakes.
 #[tokio::test(flavor = "multi_thread")]
 async fn web_confirm_starts_execution() {
     let env = setup(8).await;
-    let state = env.state.clone().with_pipeline_harness(harness_for(""));
-    let app = router(Arc::new(state)).layer(axum::extract::connect_info::MockConnectInfo(
-        MOCK_CONNECT_INFO,
-    ));
+    let app = router(Arc::new(env.state.clone())).layer(
+        axum::extract::connect_info::MockConnectInfo(MOCK_CONNECT_INFO),
+    );
 
     // GET / issues the double-submit CSRF token.
     let res = app
@@ -266,10 +281,93 @@ async fn web_confirm_starts_execution() {
         run.status, "running",
         "confirm must drive the pipeline, not just persist rows"
     );
+}
 
-    // The driven run executes all the way through the judge.
-    let status = wait_run_status(&env.store, &run_id, &["judged", "failed"], 60).await;
-    assert_eq!(status, "judged", "web-confirmed run must reach the judge");
-    let lanes = env.store.list_lanes(&run_id).await.unwrap();
-    assert!(lanes.iter().all(|l| l.state == "validated"));
+/// (b) Lanes that don't fit → the run is enqueued (status `queued`), and
+/// after a simulated restart (fresh AppState + `pickup_queued_runs`) the
+/// stranded DB-queued run is re-enqueued, FIFO-promoted, and executed.
+#[tokio::test(flavor = "multi_thread")]
+async fn queued_run_is_picked_up_and_promoted_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = base_config(dir.path(), 3);
+    let env = setup(3).await;
+
+    // Fill the whole 3-slot pool with a slow run so the subject cannot fit.
+    let fill = env
+        .state
+        .start_pipeline_cases_with_harness(
+            "slow run".to_owned(),
+            vec![
+                json!({"label": "s0", "impl_prompt": "slow 0"}),
+                json!({"label": "s1", "impl_prompt": "slow 1"}),
+                json!({"label": "s2", "impl_prompt": "slow 2"}),
+            ],
+            harness_for("sleep 30"),
+        )
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let lanes = env.store.list_lanes(&fill.id).await.unwrap();
+        if lanes.len() == 3 && lanes.iter().all(|l| l.state == "running") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "filler lanes never started: {:?}",
+            lanes.iter().map(|l| (&l.idx, &l.state)).collect::<Vec<_>>()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // The subject: 3 lanes, 0 free slots → must be queued, not started.
+    let subject = env
+        .state
+        .start_pipeline_cases_with_harness(
+            "queued run".to_owned(),
+            submitted_cases(),
+            harness_for(""),
+        )
+        .await
+        .unwrap();
+    assert_eq!(subject.status, "queued", "lanes that don't fit must queue");
+    assert!(env
+        .store
+        .list_queued_runs()
+        .await
+        .unwrap()
+        .iter()
+        .any(|r| r.id == subject.id));
+
+    // ---- simulated restart: fresh AppState over the same DB ----
+    let restarted = restart(&env, config, harness_for(""));
+    let picked = restarted.pickup_queued_runs().await;
+    assert_eq!(picked, 1, "exactly the stranded run is re-enqueued");
+
+    // The pickup promotes and executes: judged, with the promotion audit trail.
+    let status = wait_run_status(&env.store, &subject.id, &["judged", "failed"], 60).await;
+    assert_eq!(
+        status,
+        "judged",
+        "picked-up run must be promoted and judged; lanes: {:?}",
+        env.store
+            .list_lanes(&subject.id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|l| (l.idx, l.state.clone(), l.error.clone()))
+            .collect::<Vec<_>>()
+    );
+    let events = env.store.list_lane_events(&subject.id, 0).await.unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.payload.contains("run promoted from queue")),
+        "promotion must be logged: {:?}",
+        events.iter().map(|e| &e.payload).collect::<Vec<_>>()
+    );
+    let lanes = env.store.list_lanes(&subject.id).await.unwrap();
+    for lane in &lanes {
+        assert_eq!(lane.state, "validated", "lane {} must validate", lane.idx);
+    }
 }
