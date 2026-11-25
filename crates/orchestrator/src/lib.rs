@@ -9,6 +9,7 @@ pub mod net;
 pub mod pipeline;
 pub mod probe;
 pub mod queue;
+pub mod revive;
 pub mod screenshot;
 pub mod slots;
 pub mod snapshot;
@@ -21,6 +22,7 @@ pub use probe::{parse_probe_reply, probe_prompt, ProbeReport};
 pub use queue::{
     is_slot_exhaustion_error, is_sprite_rate_limit_error, LaneQueue, SpriteCreateThrottle,
 };
+pub use revive::{revive_exec_cmd, revive_lane, ReviveOutcome, REVIVE_COOLDOWN_MS};
 pub use screenshot::{render_dest, HubRegistry, ScreenshotQueue};
 pub use slots::SlotSemaphore;
 pub use sse::SseHub;

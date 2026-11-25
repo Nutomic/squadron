@@ -599,10 +599,12 @@ async fn gallery(State(state): State<SharedState>, Path(run_id): Path<String>) -
         return not_found();
     };
     // R2 finding 2: viewing the gallery enqueues pending renders so gallery
-    // cards fill in without visiting each lane page first.
+    // cards fill in without visiting each lane page first — and lazily
+    // revives lanes whose public URL died with the sprite's sleep (F30).
     if let Ok(lanes) = state.store.list_lanes(&run.id).await {
         for lane in &lanes {
             enqueue_pending_render(&state.screenshots, &run.id, lane);
+            spawn_lane_revive(&state, &run.id, lane);
         }
     }
     let token = csrf::new_token();
@@ -760,9 +762,69 @@ async fn lane_detail(
     lane_tpl.val_features = val_features;
     lane_tpl.val_bugs = val_bugs;
     lane_tpl.val_security = val_security;
-    // #3: viewing a lane also triggers the lazy screenshot render.
+    // #3: viewing a lane also triggers the lazy screenshot render — and the
+    // lazy lane revival (F30) when its public URL went dead.
     enqueue_pending_render(&state.screenshots, &run_id, &lane);
+    spawn_lane_revive(&state, &run_id, &lane);
     HtmlResponse(lane_tpl.render().unwrap_or_default()).into_response()
+}
+
+/// F30: lazy lane revival. Spawned in the background so the page render is
+/// never blocked: the revive module probes the lane's public URL, and when a
+/// previously-good URL is dead it execs the lane's stored run_command
+/// detached nohup-style on the lane sprite, waits, and re-verifies the 200
+/// (logging `lane_revived` / `lane_revive_failed` lane events). Attempts are
+/// capped at one per lane per hour inside the revive module. Skipped for
+/// test/fixture lanes and for lanes whose implementer phase never passed the
+/// 200-gate (only previously-good URLs are revived).
+fn spawn_lane_revive(state: &AppState, run_id: &str, lane: &Lane) {
+    if state.config.test_mode || state.fixtures {
+        return;
+    }
+    let (Some(sprite_name), Some(url)) = (&lane.sprite_name, &lane.impl_url) else {
+        return;
+    };
+    if !matches!(lane.state.as_str(), "done" | "validated" | "judged") {
+        return;
+    }
+    let store = state.store.clone();
+    let sprite = state.sprite.clone();
+    let allow_loopback = state.config.probe_allow_loopback;
+    let rid = run_id.to_owned();
+    let idx = lane.idx;
+    let sprite_name = sprite_name.clone();
+    let url = url.clone();
+    tokio::spawn(async move {
+        let workdir = orchestrator::pipeline::sprite_workdir(&rid, idx);
+        let _ = orchestrator::revive::revive_lane(
+            &store,
+            &sprite,
+            &rid,
+            idx,
+            &sprite_name,
+            &url,
+            &workdir,
+            allow_loopback,
+        )
+        .await;
+    });
+}
+
+async fn lane_tokei(
+    State(state): State<SharedState>,
+    Path((run_id, idx)): Path<(String, i64)>,
+) -> Response {
+    if !valid_id(&run_id) {
+        return not_found();
+    }
+    let Some(lane) = state.store.get_lane(&run_id, idx).await.ok().flatten() else {
+        return not_found();
+    };
+    let tpl = TokeiTemplate {
+        idx: lane.idx,
+        tokei_json: lane.tokei_json.clone().unwrap_or_default(),
+    };
+    HtmlResponse(tpl.render().unwrap_or_default()).into_response()
 }
 
 async fn thumb(

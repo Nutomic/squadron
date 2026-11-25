@@ -1121,6 +1121,13 @@ async fn run_implementer_phase(
             &format!("impl run_command: {}", impl_out.run_command),
         )
         .await;
+    // F30: the run_command also travels as its own typed event
+    // (kind="run_command") so lazy lane revival can restart the detached
+    // server from the stored command instead of re-parsing log lines.
+    let _ = ctx
+        .store
+        .append_lane_event(&run_id, idx, now_ms(), "run_command", &impl_out.run_command)
+        .await;
 
     // #10: the sprite URL must answer with 200 before the lane can be Done.
     // Test mode uses fake URLs, so the probe is skipped to stay deterministic;
@@ -1975,7 +1982,9 @@ fn lane_workdir(ctx: &PipelineCtx, run_id: &str, idx: i64) -> PathBuf {
 
 /// Sprite-side (relative) workdir for real harness runs; the command cd's into
 /// it via the SQUADRON_WORKDIR env so mock and real execs share one convention.
-fn sprite_workdir(run_id: &str, idx: i64) -> String {
+/// F30: public — the lazy lane revival builds the same workdir path to restart
+/// the lane's detached server from its stored run_command.
+pub fn sprite_workdir(run_id: &str, idx: i64) -> String {
     format!("squadron-work/{}/lane-{idx}", short_run_id(run_id))
 }
 
