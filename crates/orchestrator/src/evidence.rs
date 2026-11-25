@@ -45,6 +45,11 @@ pub const EVIDENCE_LIST_MAX_ENTRIES: usize = 100;
 /// HTTP-probe body prefix cap (~2KB of HTML).
 pub const EVIDENCE_HTTP_CAP_BYTES: usize = 2 * 1024;
 
+/// F30: the serving-protocol security probe. The public URL must never expose
+/// agent config or server logs; the validator hard-fails any 200 for these
+/// paths (its prompt carries the matching rule).
+pub const SECURITY_PROBE_PATHS: [&str; 2] = ["/opencode.json", "/server.log"];
+
 /// Text-ish extensions eligible for file excerpts (binaries are skipped: the
 /// evidence is prompt-embedded text, not a file dump).
 const TEXT_EXTENSIONS: [&str; 24] = [
@@ -247,7 +252,34 @@ pub async fn gather_validator_evidence(
         }
     }
 
+    // 4. F30 security probe: GET /opencode.json and /server.log on the
+    //    public URL. Any 200 exposes agent config or logs (a security
+    //    disclosure); the validator's prompt turns a 200 into a hard fail
+    //    with a security-array entry naming the exposed path.
+    blocks.push_str(&data_block(
+        "security-probe",
+        &security_probe_text(impl_url, allow_loopback).await,
+    ));
+
     blocks
+}
+
+/// F30: build the security-probe DATA payload. Bounded: one GET per
+/// configured path, status (or sanitized transport error) per line.
+pub async fn security_probe_text(url: &str, allow_loopback: bool) -> String {
+    let mut lines = Vec::with_capacity(SECURITY_PROBE_PATHS.len() + 1);
+    lines.push(
+        "Serving-protocol probe: any HTTP 200 below exposes agent config or server logs (hard fail; report it in the security array).".to_owned(),
+    );
+    for path in SECURITY_PROBE_PATHS {
+        let target = format!("{}{}", url.trim_end_matches('/'), path);
+        let line = match net::fetch_public_status(&target, allow_loopback).await {
+            Ok(status) => format!("GET {target} -> HTTP {status}"),
+            Err(e) => format!("GET {target} failed: {}", sanitize_excerpt(&e, 200)),
+        };
+        lines.push(line);
+    }
+    lines.join("\n")
 }
 
 /// Render decoded file bytes as the excerpt payload: text content capped at

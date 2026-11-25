@@ -1013,3 +1013,101 @@ fn decompose_output_injection_markers_are_surfaced() {
         .expect("schema itself is valid");
     assert_eq!(markers, vec![String::from("$.cases[0].impl_prompt")]);
 }
+
+/// F30: implementers must serve ONLY the site's built output directory —
+/// never the workdir root. Both prompt paths (variant and decomposition
+/// case) carry the requirement, the forbidden files (agent config, logs,
+/// plans), and the detached run_command convention (`cd <serve-dir> && ...`).
+#[test]
+fn implementer_prompts_require_serving_the_site_dir_only() {
+    let prompt = implementer_prompt(
+        &variant(0),
+        &prompts::planning_first_rule("session minute 6"),
+    );
+    for needle in [
+        "SERVE-DIR REQUIREMENT: serve ONLY the site's built output directory",
+        "NEVER serve the workdir root",
+        "opencode.json",
+        "server.log",
+        "plan.md",
+        "probes `/opencode.json` and `/server.log` on your public URL",
+        "any HTTP 200 there is an automatic fail",
+        "cd dist && python3 -m http.server 8080 --bind 0.0.0.0",
+        "run_command field must be exactly that serving command",
+    ] {
+        assert!(
+            prompt.user.contains(needle),
+            "implementer prompt must carry the serve-dir protocol ({needle}): {}",
+            prompt.user
+        );
+    }
+
+    let case = prompts::implementer_case_prompt(
+        "green arcade landing page",
+        &prompts::planning_first_rule("session minute 6"),
+    );
+    for needle in [
+        "SERVE-DIR REQUIREMENT: serve ONLY the site's built output directory",
+        "NEVER serve the workdir root",
+        "cd dist && python3 -m http.server 8080 --bind 0.0.0.0",
+    ] {
+        assert!(
+            case.system.contains(needle),
+            "case prompt system must carry the serve-dir protocol ({needle}): {}",
+            case.system
+        );
+    }
+}
+
+/// F30: the compact execution-time constraint line (appended to every
+/// decomposition case prompt) carries the serve-dir-only rule and the
+/// forbidden-file list too.
+#[test]
+fn case_constraints_line_forbids_the_workdir_root_serve() {
+    let line = prompts::CASE_CONSTRAINTS_LINE;
+    for needle in [
+        "serve ONLY the site's built output directory",
+        "never the workdir root",
+        "opencode.json",
+        "server.log",
+        "plan.md",
+        "agent config",
+    ] {
+        assert!(
+            line.contains(needle),
+            "constraint line must forbid workdir-root exposure ({needle}): {line}"
+        );
+    }
+    // the appended case prompt therefore carries it end to end
+    let with = prompts::impl_prompt_with_constraints("base case text");
+    assert!(with.contains("serve ONLY the site's built output directory"));
+}
+
+/// F30: the validator prompt carries the security-probe rule — the evidence's
+/// <security-probe> block GETs /opencode.json and /server.log on the public
+/// URL, and any 200 there is a hard fail (security disclosure) reported in
+/// the security array.
+#[test]
+fn validator_prompt_carries_the_security_probe_rule() {
+    let validator = validator_prompt(
+        "summary text",
+        "https://lane.sprites.app",
+        "/workdir",
+        "<data label=\"security-probe\">\nGET https://lane.sprites.app/opencode.json -> HTTP 200\n</data>\n",
+    );
+    for needle in [
+        "SECURITY-PROBE RULE",
+        "<security-probe>",
+        "/opencode.json",
+        "/server.log",
+        "HTTP 200 for EITHER path is a hard fail",
+        "security array MUST name every exposed path",
+        "Any non-200 (403/404/other) means the path is not exposed and is NOT a finding",
+    ] {
+        assert!(
+            validator.user.contains(needle),
+            "validator prompt must carry the security-probe rule ({needle}): {}",
+            validator.user
+        );
+    }
+}

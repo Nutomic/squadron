@@ -261,3 +261,73 @@ async fn gather_validator_evidence_states_tarball_unavailability_explicitly() {
         "no file excerpts can exist without the tarball: {evidence}"
     );
 }
+
+/// F30: the evidence embeds a <security-probe> block that GETs
+/// /opencode.json and /server.log on the public URL. A 200 for either is the
+/// workdir-root-exposure failure mode — the validator's prompt turns it into
+/// a hard-fail security finding, so the probe result must be in the DATA.
+#[tokio::test(flavor = "multi_thread")]
+async fn gather_validator_evidence_embeds_the_security_probe_block() {
+    // One server exposing BOTH forbidden paths with 200 (the exact
+    // workdir-root serving failure from the production runs).
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().fallback(get(|| async {
+        (
+            axum::http::StatusCode::OK,
+            "{\"$schema\":\"https://opencode.ai/config.json\"}",
+        )
+    }));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let url = format!("http://{addr}/");
+    let evidence = gather_validator_evidence(None, &url, true).await;
+
+    assert!(
+        evidence.contains("<data label=\"security-probe\">"),
+        "security probe block missing: {evidence}"
+    );
+    assert!(
+        evidence.contains(&format!("GET {url}opencode.json -> HTTP 200")),
+        "exposed opencode.json must be reported with its 200: {evidence}"
+    );
+    assert!(
+        evidence.contains(&format!("GET {url}server.log -> HTTP 200")),
+        "exposed server.log must be reported with its 200: {evidence}"
+    );
+    assert!(
+        evidence.contains("any HTTP 200 below exposes agent config or server logs"),
+        "the hard-fail framing must travel with the DATA: {evidence}"
+    );
+}
+
+/// F30: non-200 answers (404) mean the path is NOT exposed — the block must
+/// still carry the exact statuses so the validator can calibrate (only a 200
+/// is a finding).
+#[tokio::test(flavor = "multi_thread")]
+async fn security_probe_block_carries_non_200_statuses_verbatim() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().fallback(get(|| async {
+        (axum::http::StatusCode::NOT_FOUND, "gone")
+    }));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let url = format!("http://{addr}/site");
+    let evidence = gather_validator_evidence(None, &url, true).await;
+
+    assert!(
+        evidence.contains(&format!("GET {url}/opencode.json -> HTTP 404")),
+        "404 must be embedded verbatim: {evidence}"
+    );
+    assert!(
+        evidence.contains(&format!("GET {url}/server.log -> HTTP 404")),
+        "404 must be embedded verbatim: {evidence}"
+    );
+}
