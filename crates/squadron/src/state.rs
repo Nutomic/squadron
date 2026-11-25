@@ -50,7 +50,11 @@ impl AppState {
             config.test_mode,
             config.data_dir.clone(),
             Some(hubs.clone()),
-        );
+        )
+        // F37: capture-integrity gate wiring — the queue probes the lane's
+        // public URL before capturing and can run the bounded lazy-revive
+        // path (detached restart of the stored run_command) when it is dead.
+        .with_revive(sprite.clone(), config.probe_allow_loopback);
         let slots = SlotSemaphore::new(config.max_running_slots);
         let lane_queue = Arc::new(LaneQueue::new());
         orchestrator::queue::spawn_dispatcher(lane_queue.clone());

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -6,11 +7,35 @@ use base64::Engine;
 use futures::StreamExt;
 use tokio::sync::{mpsc, Notify, RwLock};
 
+use sprites_client::{ExecOptions, SpriteClient};
 use store::{now_ms, Store};
+
+use crate::revive::revive_exec_cmd;
+
+/// F37: bounded revive attempts before a capture (max 2 tries — a dead URL
+/// gets the lazy-revive path, never an unbounded retry loop).
+pub const CAPTURE_REVIVE_MAX_TRIES: usize = 2;
+
+/// How long a restarted detached server gets before the re-probe (mirrors
+/// `REVIVE_SETTLE`: a freshly woken sprite's server can take a few seconds
+/// to bind).
+pub const CAPTURE_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Shared hub registry: run_id -> SSE hub. Wired into the screenshot queue so
 /// thumbnail state changes reach live SSE subscribers (audit R3 finding 3).
-pub type HubRegistry = Arc<tokio::sync::RwLock<HashMap<String, crate::sse::SseHub>>>;
+pub type HubRegistry = Arc<RwLock<HashMap<String, crate::sse::SseHub>>>;
+
+/// Injectable public-URL status probe (production: the SSRF-safe shared
+/// `net::fetch_public_status`; tests: deterministic fakes). Returns the HTTP
+/// status or a transport error.
+pub type StatusProbe =
+    Arc<dyn Fn(String) -> futures::future::BoxFuture<'static, Result<u16, String>> + Send + Sync>;
+
+/// Injectable detached-restart step for the capture gate (production: a
+/// `sprite exec` of the stored run_command; tests: deterministic fakes). The
+/// argument is the fully built nohup command.
+pub type ReviveExecHook =
+    Arc<dyn Fn(String) -> futures::future::BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScreenshotState {
@@ -208,13 +233,175 @@ async fn render_chromium(url: &str, dest: &std::path::Path) -> Result<RenderMode
     }
 }
 
-#[derive(Debug, Clone)]
+/// F37: the testable capture-gate core. Probes the lane's public URL; a 2xx
+/// answer passes immediately. A dead URL gets the bounded lazy-revive path
+/// (the `revive` closure restarts the lane's detached server from its stored
+/// run_command — at most [`CAPTURE_REVIVE_MAX_TRIES`] tries, each followed by
+/// a settle and a re-probe). Still dead after the budget → Err, and the
+/// caller must mark the screenshot FAILED without storing a frame: a
+/// screenshot of a transient 502/error page misleads the judge (run 2,
+/// 2026-11-25: a passing lane was weighed down by a stale error frame while
+/// the validator's live probe had verified 200).
+pub async fn ensure_live_for_capture<P, PFut, R, RFut>(
+    url: &str,
+    probe: P,
+    revive: R,
+    settle: std::time::Duration,
+) -> Result<(), String>
+where
+    P: Fn(String) -> PFut,
+    PFut: Future<Output = Result<u16, String>>,
+    R: Fn(usize) -> RFut,
+    RFut: Future<Output = Result<(), String>>,
+{
+    if let Ok(status) = probe(url.to_owned()).await {
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+    }
+    for try_n in 1..=CAPTURE_REVIVE_MAX_TRIES {
+        if let Err(e) = revive(try_n).await {
+            return Err(format!("revive attempt {try_n} failed: {e}"));
+        }
+        tokio::time::sleep(settle).await;
+        match probe(url.to_owned()).await {
+            Ok(status) if (200..300).contains(&status) => return Ok(()),
+            _ => continue,
+        }
+    }
+    Err(format!(
+        "public URL not 2xx after {CAPTURE_REVIVE_MAX_TRIES} revive tries; rejecting capture"
+    ))
+}
+
+/// One status probe through the hook (test) or the shared SSRF-safe fetcher
+/// (production); true only on a 2xx answer.
+async fn probe_is_2xx(probe_hook: Option<&StatusProbe>, allow_loopback: bool, url: &str) -> bool {
+    match probe_hook {
+        Some(hook) => matches!(hook(url.to_owned()).await, Ok(s) if (200..300).contains(&s)),
+        None => matches!(
+            crate::net::fetch_public_status(url, allow_loopback).await,
+            Ok(s) if (200..300).contains(&s)
+        ),
+    }
+}
+
+/// F37 production capture gate: probe the lane's public URL; when dead, run
+/// the bounded lazy-revive path (detached restart of the stored run_command
+/// on the lane sprite, at most [`CAPTURE_REVIVE_MAX_TRIES`] tries), then let
+/// the caller capture. Every attempt is logged to lane_events so the run's
+/// evidence shows why a frame exists or does not.
+async fn capture_gate(
+    store: &Store,
+    job: &ScreenshotJob,
+    probe_hook: Option<&StatusProbe>,
+    revive_hook: Option<&ReviveExecHook>,
+    revive: Option<&(SpriteClient, bool)>,
+) -> Result<(), String> {
+    let allow_loopback = revive.map(|(_, lo)| *lo).unwrap_or(false);
+    let can_revive = revive_hook.is_some() || revive.is_some();
+    if !can_revive {
+        // No revive capability wired (test-mode queues never reach here;
+        // production always wires the sprite): a single probe decides.
+        return if probe_is_2xx(probe_hook, allow_loopback, &job.url).await {
+            Ok(())
+        } else {
+            Err("public URL dead and revive not wired; rejecting capture".to_owned())
+        };
+    }
+    let probe = {
+        let hook = probe_hook.cloned();
+        move |url: String| {
+            let hook = hook.clone();
+            async move {
+                match &hook {
+                    Some(h) => h(url).await,
+                    None => crate::net::fetch_public_status(&url, allow_loopback).await,
+                }
+            }
+        }
+    };
+    let store_rev = store.clone();
+    let run_id = job.run_id.clone();
+    let lane_idx = job.lane_idx;
+    let revive_hook_rev = revive_hook.cloned();
+    let sprite_rev = revive.cloned();
+    let revive = move |try_n: usize| {
+        let store_rev = store_rev.clone();
+        let run_id = run_id.clone();
+        let revive_hook_rev = revive_hook_rev.clone();
+        let sprite_rev = sprite_rev.clone();
+        async move {
+            let _ = store_rev
+                .append_lane_event(
+                    &run_id,
+                    lane_idx,
+                    now_ms(),
+                    "log",
+                    &format!(
+                        "screenshot capture gate: public URL dead; revive attempt {try_n}/{CAPTURE_REVIVE_MAX_TRIES} (detached restart of the stored run_command)"
+                    ),
+                )
+                .await;
+            let run_command = match store_rev
+                .latest_lane_event_of_kind(&run_id, lane_idx, "run_command")
+                .await
+            {
+                Ok(Some(event)) if !event.payload.trim().is_empty() => event.payload,
+                _ => {
+                    return Err("no stored run_command; cannot revive".to_owned());
+                }
+            };
+            let workdir = crate::pipeline::sprite_workdir(&run_id, lane_idx);
+            let cmd = revive_exec_cmd(&workdir, &run_command);
+            if let Some(hook) = revive_hook_rev {
+                return hook(cmd).await;
+            }
+            let Some((sprite, _)) = sprite_rev else {
+                return Err("revive not wired; cannot restart the lane server".to_owned());
+            };
+            let sprite_name = match store_rev.get_lane(&run_id, lane_idx).await {
+                Ok(Some(lane)) => lane.sprite_name,
+                _ => None,
+            };
+            let Some(sprite_name) = sprite_name else {
+                return Err("lane has no sprite name; cannot revive".to_owned());
+            };
+            let opts = ExecOptions::default().with_timeout(crate::revive::REVIVE_EXEC_TIMEOUT);
+            match sprite.exec(&sprite_name, &cmd, &opts).await {
+                Ok(out) if out.exit_code == 0 => Ok(()),
+                Ok(out) => Err(format!("restart exited {}", out.exit_code)),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+    };
+    ensure_live_for_capture(&job.url, probe, revive, CAPTURE_SETTLE).await
+}
+
+/// Manual Debug: the injected probe/revive hooks are opaque closures.
+impl std::fmt::Debug for ScreenshotQueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScreenshotQueue").finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone)]
 pub struct ScreenshotQueue {
     tx: mpsc::Sender<ScreenshotJob>,
     store: Store,
     pending: Arc<RwLock<HashMap<(String, i64), String>>>, // value: terminal state string
     notify: Arc<Notify>,
     hubs: Option<HubRegistry>,
+    /// F37: probe override point (tests inject deterministic fakes). None =
+    /// the shared SSRF-safe `net::fetch_public_status` with `allow_loopback`.
+    probe_hook: Option<StatusProbe>,
+    /// F37: detached-restart override for the capture gate's revive step
+    /// (tests inject fakes). None = `sprite exec` via the wired sprite.
+    revive_hook: Option<ReviveExecHook>,
+    /// F37: sprite + loopback policy for the gate's probe/revive steps.
+    /// None = revive is not wired; the gate still probes and rejects a dead
+    /// URL's capture without a revive attempt.
+    revive: Option<(SpriteClient, bool)>,
 }
 
 impl ScreenshotQueue {
@@ -241,6 +428,42 @@ impl ScreenshotQueue {
         data_dir: PathBuf,
         hubs: Option<HubRegistry>,
     ) -> Self {
+        Self::build(store, test_mode, data_dir, hubs, None, None, None)
+    }
+
+    /// F37: production wiring for the capture gate — the sprite client (for
+    /// the detached restart exec) and the loopback policy for the probe.
+    /// Without this the gate still probes and rejects a dead URL's capture,
+    /// but cannot attempt a revive.
+    pub fn with_revive(mut self, sprite: SpriteClient, allow_loopback: bool) -> Self {
+        self.revive = Some((sprite, allow_loopback));
+        self
+    }
+
+    /// F37: test-only probe injection (deterministic dead/alive states
+    /// without the network). Production callers leave it unset.
+    pub fn with_probe_hook(mut self, probe: StatusProbe) -> Self {
+        self.probe_hook = Some(probe);
+        self
+    }
+
+    /// F37: test-only detached-restart injection (deterministic revive
+    /// outcomes without sprite infra). Production callers leave it unset.
+    pub fn with_revive_hook(mut self, revive: ReviveExecHook) -> Self {
+        self.revive_hook = Some(revive);
+        self
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        store: Store,
+        test_mode: bool,
+        data_dir: PathBuf,
+        hubs: Option<HubRegistry>,
+        probe_hook: Option<StatusProbe>,
+        revive_hook: Option<ReviveExecHook>,
+        revive: Option<(SpriteClient, bool)>,
+    ) -> Self {
         let (tx, mut rx) = mpsc::channel::<ScreenshotJob>(128);
         let store_worker = store.clone();
         let data_dir_worker = data_dir.clone();
@@ -250,6 +473,9 @@ impl ScreenshotQueue {
         let pending_worker = pending.clone();
         let notify_worker = notify.clone();
         let hubs_worker = hubs.clone();
+        let probe_worker = probe_hook.clone();
+        let revive_hook_worker = revive_hook.clone();
+        let revive_worker = revive.clone();
         tokio::spawn(async move {
             // serial: one-at-a-time by nature of single consumer loop
             while let Some(job) = rx.recv().await {
@@ -277,6 +503,8 @@ impl ScreenshotQueue {
                 let (state, path_opt) = if test_mode {
                     // Test mode: same path convention as real renders, and a
                     // real placeholder file so /{run}/thumb/{idx} serves it.
+                    // F37 gate skipped: test URLs are fake; the production
+                    // probe/revive path is covered by the gate's own tests.
                     let dest = render_dest(&data_dir_worker, &job.run_id, job.lane_idx);
                     match write_test_png(&dest).await {
                         Ok(()) => ("done".to_owned(), Some(dest.to_string_lossy().into_owned())),
@@ -292,30 +520,88 @@ impl ScreenshotQueue {
                     // sandbox mode that served the render (review F4) is
                     // recorded in lane_events.
                     let dest = render_dest(&data_dir_worker, &job.run_id, job.lane_idx);
-                    // F14: create the destination directory before the render
-                    // (save_screenshot does not mkdir; a missing
-                    // DATA_DIR/screenshots/{run} failed real renders with ENOENT).
-                    let rendered = match ensure_dest_dir(&dest).await {
-                        Ok(()) => render_chromium(&job.url, &dest).await,
-                        Err(e) => Err(e),
-                    };
-                    match rendered {
-                        Ok(mode) => {
-                            let ts = now_ms();
+                    // F37 capture integrity gate: probe the lane's public URL
+                    // before capturing; if dead, run the bounded lazy-revive
+                    // path (max CAPTURE_REVIVE_MAX_TRIES tries), then
+                    // capture. A non-200 gate answer rejects the capture —
+                    // the screenshot is marked FAILED with NO stored frame,
+                    // never a misleading error-page image (the judge then
+                    // judges that lane text-only via the existing degrade).
+                    let gate = capture_gate(
+                        &store_worker,
+                        &job,
+                        probe_worker.as_ref(),
+                        revive_hook_worker.as_ref(),
+                        revive_worker.as_ref(),
+                    )
+                    .await;
+                    match gate {
+                        Err(reason) => {
+                            tracing::warn!(error = %reason, "screenshot capture gate rejected");
                             let _ = store_worker
                                 .append_lane_event(
                                     &job.run_id,
                                     job.lane_idx,
-                                    ts,
-                                    "state",
-                                    &format!("screenshot_render_mode={}", mode.as_str()),
+                                    now_ms(),
+                                    "log",
+                                    &format!(
+                                        "screenshot capture gate: {reason}; no frame stored"
+                                    ),
                                 )
                                 .await;
-                            ("done".to_owned(), Some(dest.to_string_lossy().into_owned()))
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "screenshot render failed");
                             ("failed".to_owned(), None)
+                        }
+                        Ok(()) => {
+                            // F14: create the destination directory before the render
+                            // (save_screenshot does not mkdir; a missing
+                            // DATA_DIR/screenshots/{run} failed real renders with ENOENT).
+                            let rendered = match ensure_dest_dir(&dest).await {
+                                Ok(()) => render_chromium(&job.url, &dest).await,
+                                Err(e) => Err(e),
+                            };
+                            match rendered {
+                                Ok(mode) => {
+                                    // F37: the URL could have died mid-render;
+                                    // a re-probe that answers non-2xx means
+                                    // the stored frame is an error page —
+                                    // reject it instead of storing it.
+                                    let still_live = probe_is_2xx(
+                                        probe_worker.as_ref(),
+                                        revive_worker.as_ref().map(|(_, lo)| *lo).unwrap_or(false),
+                                        &job.url,
+                                    )
+                                    .await;
+                                    if !still_live {
+                                        let _ = tokio::fs::remove_file(&dest).await;
+                                        let _ = store_worker
+                                            .append_lane_event(
+                                                &job.run_id,
+                                                job.lane_idx,
+                                                now_ms(),
+                                                "log",
+                                                "screenshot capture gate: public URL died mid-render; rejected the error-page frame",
+                                            )
+                                            .await;
+                                        ("failed".to_owned(), None)
+                                    } else {
+                                        let ts = now_ms();
+                                        let _ = store_worker
+                                            .append_lane_event(
+                                                &job.run_id,
+                                                job.lane_idx,
+                                                ts,
+                                                "state",
+                                                &format!("screenshot_render_mode={}", mode.as_str()),
+                                            )
+                                            .await;
+                                        ("done".to_owned(), Some(dest.to_string_lossy().into_owned()))
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "screenshot render failed");
+                                    ("failed".to_owned(), None)
+                                }
+                            }
                         }
                     }
                 };
@@ -349,6 +635,9 @@ impl ScreenshotQueue {
             pending,
             notify,
             hubs,
+            probe_hook,
+            revive_hook,
+            revive,
         }
     }
 
@@ -563,5 +852,240 @@ mod tests {
         assert!(data_dir.is_dir());
         // Idempotent on a second call (real retries / test mode).
         ensure_dest_dir(&dest).await.unwrap();
+    }
+
+    // --- F37: capture-integrity gate -------------------------------------
+
+    /// Env-mutating queue-level tests run under this lock so a parallel env
+    /// test (or another queue test) never sees a half-mutated CHROMIUM_BIN.
+    static GATE_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn gate_test_store() -> Store {
+        let store = Store::connect_in_memory().await.unwrap();
+        store.migrate().await.unwrap();
+        store.create_run("brief", 1, 0).await.unwrap();
+        let run = store.list_runs().await.unwrap().remove(0);
+        store.insert_lane(&run.id, 0, "{}").await.unwrap();
+        store
+    }
+
+    fn boxed_probe<F>(f: F) -> StatusProbe
+    where
+        F: Fn(String) -> futures::future::BoxFuture<'static, Result<u16, String>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Arc::new(f)
+    }
+
+    /// F37: a dead public URL is revived before the capture — the detached
+    /// restart runs, the re-probe sees 200, and the gate passes.
+    #[tokio::test]
+    async fn gate_revives_a_dead_url_before_capture() {
+        let up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let up_probe = up.clone();
+        let up_revive = up.clone();
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe_count = probes.clone();
+        let revives = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let revive_count = revives.clone();
+        let probe = move |_: String| {
+            probe_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let up = up_probe.clone();
+            async move {
+                if up.load(std::sync::atomic::Ordering::SeqCst) {
+                    Ok(200)
+                } else {
+                    Ok(502)
+                }
+            }
+        };
+        let revive = move |_: usize| {
+            revive_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            up_revive.store(true, std::sync::atomic::Ordering::SeqCst);
+            async { Ok(()) }
+        };
+        let out = ensure_live_for_capture(
+            "https://lane.example/",
+            probe,
+            revive,
+            std::time::Duration::ZERO,
+        )
+        .await;
+        assert!(out.is_ok(), "gate must pass after the revive: {out:?}");
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(revives.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// F37: the revive budget is bounded (max CAPTURE_REVIVE_MAX_TRIES) — a
+    /// lane that stays dead gets exactly that many tries, then the capture
+    /// is rejected.
+    #[tokio::test]
+    async fn gate_is_bounded_and_rejects_a_lane_that_stays_dead() {
+        let revives = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let revive_count = revives.clone();
+        let revive = move |_: usize| {
+            revive_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Ok(()) }
+        };
+        let err = ensure_live_for_capture(
+            "https://lane.example/",
+            |_: String| async { Ok(502) },
+            revive,
+            std::time::Duration::ZERO,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.contains("not 2xx after 2 revive tries"),
+            "error must name the bounded budget: {err}"
+        );
+        assert_eq!(
+            revives.load(std::sync::atomic::Ordering::SeqCst),
+            CAPTURE_REVIVE_MAX_TRIES
+        );
+    }
+
+    /// F37: a non-200 public URL means the screenshot is FAILED with no
+    /// stored frame — never a misleading 502/error-page image. The render is
+    /// never even attempted (no CHROMIUM_BIN needed on this path).
+    #[tokio::test]
+    async fn non_200_url_marks_screenshot_failed_without_a_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let store = gate_test_store().await;
+        let run = store.list_runs().await.unwrap().remove(0);
+        let probe = boxed_probe(|_: String| Box::pin(async { Ok::<u16, String>(502) }));
+        // Real (non-test) mode so the capture gate runs; the gate rejects
+        // before any render, so no Chromium is involved.
+        let queue = ScreenshotQueue::with_data_dir(store.clone(), false, data_dir.clone())
+            .with_probe_hook(probe);
+        let state = queue.request(&run.id, 0, "https://dead.example/").await;
+        assert_eq!(state, "queued");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let lane = store.get_lane(&run.id, 0).await.unwrap().unwrap();
+            if lane.screenshot_state.as_deref() == Some("failed") {
+                assert!(
+                    lane.screenshot_path.is_none(),
+                    "no frame may be stored for a dead URL"
+                );
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "gate never finished");
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        // No file was written at the render destination either.
+        assert!(
+            !render_dest(&data_dir, &run.id, 0).exists(),
+            "a dead URL must not produce a stored frame"
+        );
+        // The rejection is visible in the lane's evidence.
+        let events = store.list_lane_events(&run.id, 0).await.unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.payload.contains("screenshot capture gate")),
+            "gate rejection must be logged: {events:?}"
+        );
+    }
+
+    /// F37: a URL that answers 502 at gate time gets the lazy-revive path
+    /// (detached restart of the stored run_command, bounded) BEFORE the
+    /// capture — the revive attempt is logged, and the capture then proceeds
+    /// to the render stage (which fails here only for lack of a real
+    /// Chromium, proving the gate let it through).
+    #[tokio::test]
+    async fn dead_url_is_revived_before_the_capture_proceeds() {
+        let _env = GATE_ENV_LOCK.lock().await;
+        let old_chromium = std::env::var_os("CHROMIUM_BIN");
+        std::env::set_var("CHROMIUM_BIN", "/nonexistent-chromium-f37");
+        let result = async {
+            let dir = tempfile::tempdir().unwrap();
+            let data_dir = dir.path().join("data");
+            std::fs::create_dir_all(&data_dir).unwrap();
+            let store = gate_test_store().await;
+            let run = store.list_runs().await.unwrap().remove(0);
+            // The stored run_command the revive path restarts from.
+            store
+                .append_lane_event(
+                    &run.id,
+                    0,
+                    now_ms(),
+                    "run_command",
+                    "cd dist && python3 -m http.server 8080 --bind 0.0.0.0",
+                )
+                .await
+                .unwrap();
+            let up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let up_probe = up.clone();
+            let up_revive = up.clone();
+            let probe = boxed_probe(move |_: String| {
+                let up = up_probe.clone();
+                Box::pin(async move {
+                    if up.load(std::sync::atomic::Ordering::SeqCst) {
+                        Ok::<u16, String>(200)
+                    } else {
+                        Ok::<u16, String>(502)
+                    }
+                })
+            });
+            let revive_cmds = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let revive_cmds_hook = revive_cmds.clone();
+            let revive_hook: ReviveExecHook = Arc::new(move |cmd: String| {
+                let up = up_revive.clone();
+                let cmds = revive_cmds_hook.clone();
+                Box::pin(async move {
+                    cmds.lock().unwrap().push(cmd);
+                    up.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                })
+            });
+            let queue = ScreenshotQueue::with_data_dir(store.clone(), false, data_dir.clone())
+                .with_probe_hook(probe)
+                .with_revive_hook(revive_hook);
+            let state = queue.request(&run.id, 0, "https://cold.example/").await;
+            assert_eq!(state, "queued");
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                let lane = store.get_lane(&run.id, 0).await.unwrap().unwrap();
+                if lane.screenshot_state.as_deref() == Some("failed") {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "run never reached a terminal screenshot state"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            // The revive ran exactly once (bounded) and the restart command
+            // was the detached nohup form built from the stored run_command.
+            let cmds = revive_cmds.lock().unwrap();
+            assert_eq!(cmds.len(), 1, "exactly one revive try: {cmds:?}");
+            assert!(
+                cmds[0].contains("nohup sh -c")
+                    && cmds[0].contains("python3 -m http.server 8080"),
+                "restart must be the detached stored run_command: {cmds:?}"
+            );
+            // The gate passed (the revive attempt is logged) — the failure
+            // afterwards is the missing Chromium, proving the capture was
+            // allowed to proceed only after the revive.
+            let events = store.list_lane_events(&run.id, 0).await.unwrap();
+            assert!(
+                events.iter().any(|e| e
+                    .payload
+                    .contains("revive attempt 1/2")),
+                "the revive-before-capture attempt must be logged: {events:?}"
+            );
+        }
+        .await;
+        // Restore the environment whatever the assertions did.
+        match old_chromium {
+            Some(v) => std::env::set_var("CHROMIUM_BIN", v),
+            None => std::env::remove_var("CHROMIUM_BIN"),
+        }
+        result
     }
 }
