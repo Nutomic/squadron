@@ -122,7 +122,7 @@ impl RunLimiter {
     pub async fn check(&self, ip: &str, store: &Store) -> Result<(), Rejection> {
         let now = now_ms();
         let recorded: Vec<(String, i64)> = {
-            let mut inner = self.inner.lock().expect("limiter lock");
+            let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
             let entry = inner.created.entry(ip.to_owned()).or_default();
             entry.retain(|(_, ts)| now - *ts < HOUR_MS);
             entry.clone()
@@ -159,7 +159,7 @@ impl RunLimiter {
 
     /// Record a successful creation against `ip`.
     pub fn record(&self, ip: &str, run_id: &str) {
-        let mut inner = self.inner.lock().expect("limiter lock");
+        let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         inner
             .created
             .entry(ip.to_owned())

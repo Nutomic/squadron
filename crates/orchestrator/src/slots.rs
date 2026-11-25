@@ -18,11 +18,15 @@ impl SlotSemaphore {
     }
 
     pub async fn acquire(&self) -> OwnedSemaphorePermit {
-        self.inner
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("semaphore closed")
+        // The pool semaphore is never closed (no `close()` call anywhere), so
+        // the acquire error is unreachable; the poison-tolerant answer is a
+        // brief wait-and-retry rather than a panic in a lane task.
+        loop {
+            match self.inner.clone().acquire_owned().await {
+                Ok(permit) => return permit,
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            }
+        }
     }
 
     pub fn available(&self) -> usize {

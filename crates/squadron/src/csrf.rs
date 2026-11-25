@@ -27,9 +27,14 @@ pub fn cookie_value(token: &str) -> String {
 }
 
 pub fn set_cookie_header(token: &str) -> (HeaderName, HeaderValue) {
+    // The cookie string is ASCII by construction (the uuid token is hex + the
+    // fixed attributes). A malformed token degrades FAIL-CLOSED — an empty
+    // cookie value that can never satisfy the double-submit check — rather
+    // than panicking.
     (
         SET_COOKIE,
-        HeaderValue::from_str(&cookie_value(token)).expect("cookie value is ASCII"),
+        HeaderValue::from_str(&cookie_value(token))
+            .unwrap_or_else(|_| HeaderValue::from_static("squadron_csrf=")),
     )
 }
 
@@ -79,7 +84,7 @@ mod tests {
 
     fn headers_with_cookie(value: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert(COOKIE, HeaderValue::from_str(value).expect("cookie header"));
+        headers.insert(COOKIE, HeaderValue::from_str(value).unwrap());
         headers
     }
 

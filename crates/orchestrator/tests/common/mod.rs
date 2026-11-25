@@ -1,4 +1,5 @@
 //! Shared test-only helpers for the orchestrator integration binaries.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: panics on failure are the assertion mechanism
 
 use std::time::Duration;
 

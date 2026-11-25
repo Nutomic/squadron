@@ -376,28 +376,29 @@ impl HarnessCache {
                 }
                 match choice {
                     HarnessChoice::Opencode => ensure_opencode(sprite, name).await.is_ok(),
-                    _ => {
-                        let cmd = choice
-                            .probe_cmd()
-                            .expect("non-install chain members probe via cli");
-                        matches!(
+                    _ => match choice.probe_cmd() {
+                        Some(cmd) => matches!(
                             sprite.exec(name, cmd, &ExecOptions::default()).await,
                             Ok(out) if out.exit_code == 0
-                        )
-                    }
+                        ),
+                        // A chain member without a probe command (the
+                        // blacklisted Codex) is unavailable, not a panic.
+                        None => false,
+                    },
                 }
             }
         })
         .await;
         if winner.is_none() {
-            let cmd = HarnessChoice::Curl
-                .probe_cmd()
-                .expect("curl floor has a probe command");
-            if matches!(
-                sprite.exec(name, cmd, &ExecOptions::default()).await,
-                Ok(out) if out.exit_code == 0
-            ) {
-                winner = Some(HarnessChoice::Curl);
+            // The curl floor always carries a probe command; a None degrades
+            // to "unavailable" and the error below surfaces instead.
+            if let Some(cmd) = HarnessChoice::Curl.probe_cmd() {
+                if matches!(
+                    sprite.exec(name, cmd, &ExecOptions::default()).await,
+                    Ok(out) if out.exit_code == 0
+                ) {
+                    winner = Some(HarnessChoice::Curl);
+                }
             }
         }
         match winner {
@@ -450,9 +451,10 @@ where
 
 /// opencode availability probe inside the sprite (PATH or the installer dir).
 async fn opencode_available(sprite: &SpriteClient, name: &str) -> bool {
-    let cmd = HarnessChoice::Opencode
-        .probe_cmd()
-        .expect("opencode has a probe command");
+    let Some(cmd) = HarnessChoice::Opencode.probe_cmd() else {
+        // No probe command means availability cannot be established.
+        return false;
+    };
     matches!(
         sprite.exec(name, cmd, &ExecOptions::default()).await,
         Ok(out) if out.exit_code == 0
@@ -844,7 +846,7 @@ pub async fn run_prompt(
                                         ))
                                     }
                                 };
-                                *last_raw.lock().expect("raw capture lock") =
+                                *last_raw.lock().unwrap_or_else(|p| p.into_inner()) =
                                     Some(raw.clone());
                                 let (body, _) = split_http_status(&raw);
                                 match classify_gateway_response(&raw) {
@@ -876,7 +878,7 @@ pub async fn run_prompt(
                                         let delay = gateway_retry_delay(attempt, retry_backoff);
                                         retry_log
                                             .lock()
-                                            .expect("retry log lock")
+                                            .unwrap_or_else(|p| p.into_inner())
                                             .push(format!(
                                                 "harness[curl-loop]: transient gateway response (attempt {} of {}, retrying in {}s): raw: {}",
                                                 attempt + 1,
@@ -945,7 +947,7 @@ pub async fn run_prompt(
                             output,
                             cost_usd: (cost > 0.0).then_some(cost),
                             retry_log: std::mem::take(
-                                &mut retry_log.lock().expect("retry log lock"),
+                                &mut retry_log.lock().unwrap_or_else(|p| p.into_inner()),
                             ),
                         })
                     }
@@ -955,7 +957,7 @@ pub async fn run_prompt(
                     Err(e) => {
                         let raw = last_raw
                             .lock()
-                            .expect("raw capture lock")
+                            .unwrap_or_else(|p| p.into_inner())
                             .take()
                             .unwrap_or_default();
                         last_attempt = Some(HarnessRun {
@@ -963,7 +965,7 @@ pub async fn run_prompt(
                             output: raw,
                             cost_usd: None,
                             retry_log: std::mem::take(
-                                &mut retry_log.lock().expect("retry log lock"),
+                                &mut retry_log.lock().unwrap_or_else(|p| p.into_inner()),
                             ),
                         });
                         Err(HarnessError::Fatal(e))
@@ -1568,8 +1570,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(cost, 0.01);
-        let parsed: ImplementerOutput =
-            parse(Role::Implementer, &text).expect("floor answer must pass the schema gate");
+        let parsed: ImplementerOutput = parse(Role::Implementer, &text).unwrap();
         assert_eq!(parsed.files, 2, "files synthesized from the written set");
         assert_eq!(parsed.summary, "built it");
         assert!(parsed.done);
@@ -1597,8 +1598,7 @@ mod tests {
         })
         .await
         .unwrap();
-        let parsed: ImplementerOutput =
-            parse(Role::Implementer, &text).expect("multi-turn floor answer must pass the gate");
+        let parsed: ImplementerOutput = parse(Role::Implementer, &text).unwrap();
         assert_eq!(parsed.files, 2, "a.txt counted once, b.txt once");
     }
 
@@ -1680,8 +1680,7 @@ mod tests {
         // the loop stopped on turn 1 (verdict detected), not at the budget
         assert_eq!(prompts_seen.borrow().len(), 1);
         assert_eq!(cost, 0.01);
-        let parsed: ValidatorOutput =
-            parse(SchemaRole::Validator, &text).expect("validator floor answer must pass the gate");
+        let parsed: ValidatorOutput = parse(SchemaRole::Validator, &text).unwrap();
         assert_eq!(parsed.verdict, prompts::schema::Verdict::Pass);
         assert_eq!(parsed.quality_score, 88.0);
         // the echoed transport/role keys are gone from the final answer

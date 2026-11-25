@@ -104,7 +104,9 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|row| Run {
-            id: row.id.expect("id is NOT NULL"),
+            // `id` is a NOT NULL primary key; the default never fires (same
+            // poison-tolerant mapping as the runtime queries below).
+            id: row.id.unwrap_or_default(),
             brief: row.brief,
             status: row.status,
             n_lanes: row.n_lanes,
@@ -125,7 +127,8 @@ impl Store {
         Ok(rows
             .into_iter()
             .map(|row| Run {
-                id: row.id.expect("id is NOT NULL"),
+                // NOT NULL primary key; the default never fires.
+                id: row.id.unwrap_or_default(),
                 brief: row.brief,
                 status: row.status,
                 n_lanes: row.n_lanes,

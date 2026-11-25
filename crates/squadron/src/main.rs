@@ -7,7 +7,7 @@ use squadron::{router, static_dir, AppState};
 use store::Store;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -17,9 +17,7 @@ async fn main() {
     let db_url = std::env::var("DATABASE_URL")
         .or_else(|_| std::env::var("SQUADRON_DB_URL"))
         .unwrap_or_else(|_| "sqlite:/data/squadron.db?mode=rwc".to_owned());
-    let store = Store::connect_with_migrations(&db_url)
-        .await
-        .expect("failed to open database");
+    let store = Store::connect_with_migrations(&db_url).await?;
 
     let mut config = PipelineConfig::default();
     if let Ok(dir) = std::env::var("DATA_DIR") {
@@ -47,7 +45,7 @@ async fn main() {
     let app = router(Arc::new(state));
 
     let addr = match std::env::var("BIND") {
-        Ok(bind) => bind.parse().expect("invalid BIND address"),
+        Ok(bind) => bind.parse()?,
         Err(_) => {
             let port: u16 = std::env::var("PORT")
                 .ok()
@@ -56,15 +54,13 @@ async fn main() {
             SocketAddr::from(([0, 0, 0, 0], port))
         }
     };
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("failed to bind");
+    let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("squadron listening on {addr}");
     // ConnectInfo is needed by the F3 per-IP run-creation rate limit.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await
-    .expect("server error");
+    .await?;
+    Ok(())
 }

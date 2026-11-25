@@ -60,6 +60,13 @@
           {#if lane.screenshotState === 'rendering' || lane.screenshotState === 'queued'}
             <span class="loading loading-spinner loading-sm"></span>
             <span class="mono-num !text-[11px]">screenshot {lane.screenshotState}</span>
+          {:else if lane.screenshotState === 'failed'}
+            <!-- The card must agree with the lane detail page: a settled
+                 failure reads as failed, never as a still-pending render. -->
+            <svg class="w-8 h-8 text-error/50" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="10" r="1.5" /><path d="M21 16l-5-5-8 9" />
+            </svg>
+            <span class="mono-num !text-[11px] text-error/80">screenshot failed</span>
           {:else}
             <svg class="w-8 h-8 text-base-content/20" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
               <rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="10" r="1.5" /><path d="M21 16l-5-5-8 9" />

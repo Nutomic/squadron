@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
 
 use std::path::PathBuf;
 use std::sync::Arc;

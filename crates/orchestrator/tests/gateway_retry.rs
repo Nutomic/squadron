@@ -6,7 +6,7 @@
 //! 4xx (e.g. a schema 400) must still fail fast without retry. The same
 //! wrapper serves the implementer, validator, and floor-validator loops
 //! (they share the curl-loop code).
-#![allow(clippy::unwrap_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
 
 use std::path::PathBuf;
 use std::time::Duration;

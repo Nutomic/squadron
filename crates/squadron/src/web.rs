@@ -594,9 +594,12 @@ async fn gallery(State(state): State<SharedState>, Path(run_id): Path<String>) -
     // R2 finding 2: viewing the gallery enqueues pending renders so gallery
     // cards fill in without visiting each lane page first — and lazily
     // revives lanes whose public URL died with the sprite's sleep (F30).
+    // A TERMINAL run additionally re-adopts failed/pending screenshot lanes
+    // through the bounded requeue (R2 backlog: screenshot failed-state
+    // re-adoption) — see `adopt_screenshot_render`.
     if let Ok(lanes) = state.store.list_lanes(&run.id).await {
         for lane in &lanes {
-            enqueue_pending_render(&state.screenshots, &run.id, lane);
+            adopt_screenshot_render(&state, &run, lane);
             spawn_lane_revive(&state, &run.id, lane);
         }
     }
@@ -734,6 +737,78 @@ fn enqueue_pending_render(queue: &orchestrator::ScreenshotQueue, run_id: &str, l
     }
 }
 
+/// R2 backlog (screenshot failed-state re-adoption): on a TERMINAL run a lane
+/// screenshot that is still `pending` (never attempted — the queue drained at
+/// terminal time, or the judge-time 200 gate skipped it) or `failed`
+/// (attempted and settled without a frame) never resolves: `request` adopts a
+/// persisted terminal state and would return it forever. Viewing the run
+/// re-adopts both through ONE bounded re-render attempt — the capture gate +
+/// revive machinery decide live/dead, and a still-dead lane settles back to
+/// `failed` with no frame. The guard is the revive-cooldown shape: at most
+/// one re-adoption per lane per hour, persisted as a `screenshot_requeue`
+/// lane event so it survives restarts — a permanently-dead lane must not
+/// re-render on every view.
+const SCREENSHOT_REQUEUE_COOLDOWN_MS: i64 = 60 * 60 * 1000;
+const EVENT_SCREENSHOT_REQUEUE: &str = "screenshot_requeue";
+
+/// One lane on one page view: pick the lazy screenshot path. A live run keeps
+/// the fresh-attempt adoption (`enqueue_pending_render` — never-started
+/// renders only); a terminal run re-adopts every not-done screenshot state
+/// through the bounded, cooldown-gated requeue.
+fn adopt_screenshot_render(state: &AppState, run: &Run, lane: &Lane) {
+    if is_terminal_status(&run.status) {
+        requeue_terminal_screenshot(&state.store, &state.screenshots, &run.id, lane);
+        return;
+    }
+    enqueue_pending_render(&state.screenshots, &run.id, lane);
+}
+
+/// Spawn the bounded terminal-run re-adoption for one lane (never blocks the
+/// page render). `done` needs nothing; `queued`/`rendering` on a terminal run
+/// are stale leftovers (e.g. a restart mid-render) — exactly what requeue
+/// re-sends; an attempt genuinely still in flight is deduped by the queue's
+/// in-memory map.
+fn requeue_terminal_screenshot(
+    store: &Store,
+    queue: &orchestrator::ScreenshotQueue,
+    run_id: &str,
+    lane: &Lane,
+) {
+    let Some(url) = lane.impl_url.clone() else {
+        return;
+    };
+    if lane.screenshot_state.as_deref() == Some("done") {
+        return;
+    }
+    let store = store.clone();
+    let queue = queue.clone();
+    let rid = run_id.to_owned();
+    let idx = lane.idx;
+    tokio::spawn(async move {
+        // Bounded retry guard: the newest screenshot_requeue event timestamps
+        // the last re-adoption; inside the cooldown window the view is a no-op.
+        if let Ok(Some(event)) = store
+            .latest_lane_event_of_kind(&rid, idx, EVENT_SCREENSHOT_REQUEUE)
+            .await
+        {
+            if store::now_ms() - event.ts < SCREENSHOT_REQUEUE_COOLDOWN_MS {
+                return;
+            }
+        }
+        let _ = store
+            .append_lane_event(
+                &rid,
+                idx,
+                store::now_ms(),
+                EVENT_SCREENSHOT_REQUEUE,
+                "terminal-run view re-adopted the screenshot render (bounded: at most one \
+                 requeue per lane per hour; the capture gate settles it done or failed)",
+            )
+            .await;
+        queue.requeue(&rid, idx, &url).await;
+    });
+}
+
 async fn lane_detail(
     State(state): State<SharedState>,
     Path((run_id, idx)): Path<(String, i64)>,
@@ -756,8 +831,9 @@ async fn lane_detail(
     lane_tpl.val_bugs = val_bugs;
     lane_tpl.val_security = val_security;
     // #3: viewing a lane also triggers the lazy screenshot render — and the
-    // lazy lane revival (F30) when its public URL went dead.
-    enqueue_pending_render(&state.screenshots, &run_id, &lane);
+    // lazy lane revival (F30) when its public URL went dead. The terminal-run
+    // re-adoption (failed/pending re-render, bounded) rides the same entry.
+    adopt_screenshot_render(&state, &run, &lane);
     spawn_lane_revive(&state, &run_id, &lane);
     HtmlResponse(lane_tpl.render().unwrap_or_default()).into_response()
 }

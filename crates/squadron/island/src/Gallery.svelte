@@ -15,14 +15,34 @@
     if (settled) {
       conn = 'final';
       let cancelled = false;
-      fetch(snapshotUrl ?? `/api/runs/${runId}`)
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data) => {
-          if (data && !cancelled) snap = data;
-        })
-        .catch(() => {
-          if (!cancelled) conn = 'error';
-        });
+      // A terminal run has no SSE stream, but its screenshot states can still
+      // move AFTER this fetch: viewing the gallery re-adopts failed/pending
+      // renders (bounded, once per lane per hour). Poll briefly while any lane
+      // screenshot is unsettled so the card reflects the settled state without
+      // a reload; the poll stops on its own once every lane is done/failed.
+      const POLL_MS = 10_000;
+      const MAX_POLLS = 15;
+      const fetchSnapshot = () =>
+        fetch(snapshotUrl ?? `/api/runs/${runId}`)
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => {
+            if (cancelled) return;
+            snap = data;
+            return data;
+          })
+          .catch(() => {
+            if (!cancelled) conn = 'error';
+            return null;
+          });
+      const poll = async (n) => {
+        const data = await fetchSnapshot();
+        if (cancelled || !data) return;
+        const unsettled = (data.lanes ?? []).some(
+          (l) => l.implUrl && !['done', 'failed'].includes(l.screenshotState ?? '')
+        );
+        if (unsettled && n < MAX_POLLS) setTimeout(() => void poll(n + 1), POLL_MS);
+      };
+      void poll(0);
       return () => {
         cancelled = true;
       };

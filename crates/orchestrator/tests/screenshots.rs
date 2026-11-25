@@ -155,6 +155,134 @@ async fn screenshot_state_changes_reach_the_sse_hub() {
     assert_eq!(state, "done");
 }
 
+/// Terminal-run re-adoption (R2 backlog): `requeue` re-renders a lane whose
+/// persisted state is `failed` — `request` adopts the persisted terminal
+/// state and would return it forever. Test mode settles the re-render to
+/// `done`, proving the job actually ran again.
+#[tokio::test(flavor = "multi_thread")]
+async fn requeue_re_renders_a_failed_lane() {
+    let store = Store::connect_in_memory().await.unwrap();
+    store.migrate().await.unwrap();
+    store.create_run("brief", 3, 0).await.unwrap();
+    let run = store.list_runs().await.unwrap().remove(0);
+    store.insert_lane(&run.id, 0, "{}").await.unwrap();
+
+    let (_dir, data_dir) = queue_data_dir();
+    let queue = ScreenshotQueue::with_data_dir(store.clone(), true, data_dir);
+
+    // A previous queue instance settled the render to `failed` (e.g. a dead
+    // lane URL at judge time): the persisted terminal state.
+    store
+        .set_screenshot_state(&run.id, 0, "failed", None)
+        .await
+        .unwrap();
+    let adopted = queue.request(&run.id, 0, "https://example.invalid").await;
+    assert_eq!(
+        adopted, "failed",
+        "request adopts the persisted failure without re-rendering"
+    );
+
+    // The terminal-run view path instead requeues: the job runs again and
+    // settles to a fresh terminal state.
+    let state = queue.requeue(&run.id, 0, "https://example.invalid").await;
+    assert_eq!(state, "queued", "requeue re-enqueues a failed lane");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let lane = store.get_lane(&run.id, 0).await.unwrap().unwrap();
+        if lane.screenshot_state.as_deref() == Some("done") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "requeued render never settled"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// The requeue double-enqueue guard: an attempt already in flight
+/// (queued/rendering in the live map) is returned as-is, never enqueued twice
+/// — a gallery view and a lane view racing on the same lane share the queue.
+#[tokio::test(flavor = "multi_thread")]
+async fn requeue_never_double_enqueues_an_in_flight_job() {
+    let store = Store::connect_in_memory().await.unwrap();
+    store.migrate().await.unwrap();
+    store.create_run("brief", 3, 0).await.unwrap();
+    let run = store.list_runs().await.unwrap().remove(0);
+    store.insert_lane(&run.id, 0, "{}").await.unwrap();
+
+    let (_dir, data_dir) = queue_data_dir();
+    // Real mode so the capture gate runs; the probe blocks inside the gate
+    // until the test opens it, freezing the job mid-flight (rendering).
+    let (gate, gate_rx) = tokio::sync::watch::channel(false);
+    let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let probe_count = probes.clone();
+    let probe_rx = gate_rx.clone();
+    let probe: orchestrator::StatusProbe = Arc::new(move |_: String| {
+        probe_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut rx = probe_rx.clone();
+        Box::pin(async move {
+            while !*rx.borrow_and_update() {
+                if rx.changed().await.is_err() {
+                    return Err("capture gate closed".to_owned());
+                }
+            }
+            Ok::<u16, String>(200)
+        })
+    });
+    let queue =
+        ScreenshotQueue::with_data_dir(store.clone(), false, data_dir).with_probe_hook(probe);
+
+    assert_eq!(
+        queue.request(&run.id, 0, "https://example.invalid").await,
+        "queued"
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if queue.pending_state(&run.id, 0).await.as_deref() == Some("rendering")
+            && probes.load(std::sync::atomic::Ordering::SeqCst) == 1
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "job never reached the blocked capture gate"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // A concurrent requeue sees the in-flight job and does NOT send a second
+    // one (no second probe, no duplicate render).
+    let state = queue.requeue(&run.id, 0, "https://example.invalid").await;
+    assert_eq!(state, "rendering");
+    assert_eq!(
+        probes.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "no second job may run the capture gate"
+    );
+
+    // Release the gate: the render then fails for lack of a real Chromium and
+    // the job settles, leaving exactly one attempt in the evidence.
+    gate.send(true).unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let lane = store.get_lane(&run.id, 0).await.unwrap().unwrap();
+        if lane.screenshot_state.as_deref() == Some("failed") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "in-flight job never settled"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        probes.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "exactly one capture-gate attempt total"
+    );
+}
+
 /// F14 regression: in real (non-test) mode the destination directory is
 /// created BEFORE the render attempt, so a render can never fail with ENOENT
 /// because `DATA_DIR/screenshots/{run}` was missing. The browser is mocked by

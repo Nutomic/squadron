@@ -218,7 +218,10 @@ fn validate_url(url: &Url) -> Result<(), String> {
 /// Resolve the host and reject the URL unless every resolved address is
 /// allowed by the policy.
 async fn resolve_validated(url: &Url, policy: FetchPolicy) -> Result<Vec<SocketAddr>, String> {
-    let host = url.host_str().expect("host checked").to_owned();
+    let host = url
+        .host_str()
+        .ok_or_else(|| "url has no host".to_owned())?
+        .to_owned();
     let port = url.port_or_known_default().unwrap_or(80);
     let addrs: Vec<SocketAddr> = match host.parse::<IpAddr>() {
         Ok(ip) => vec![SocketAddr::new(ip, port)],
@@ -242,7 +245,10 @@ async fn resolve_validated(url: &Url, policy: FetchPolicy) -> Result<Vec<SocketA
 }
 
 fn client_for(url: &Url, addrs: &[SocketAddr]) -> Result<reqwest::Client, String> {
-    let host = url.host_str().expect("host checked").to_owned();
+    let host = url
+        .host_str()
+        .ok_or_else(|| "url has no host".to_owned())?
+        .to_owned();
     let mut builder = reqwest::Client::builder()
         .timeout(DEFAULT_TIMEOUT)
         .redirect(Policy::none());

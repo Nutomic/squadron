@@ -7,7 +7,7 @@
 //!
 //! The tests mutate process env (PATH, cwd, MOCK_* vars) and must not
 //! race with each other; ENV_LOCK serializes them.
-#![allow(clippy::unwrap_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
 
 use std::collections::HashMap;
 use std::path::PathBuf;

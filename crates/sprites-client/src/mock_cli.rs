@@ -3,7 +3,9 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -480,9 +482,42 @@ fn exec(args: &[String]) -> Result<String, (i32, String)> {
     for (key, value) in &env_vars {
         child.env(key, value);
     }
-    let output = child.output().map_err(|e| (3, e.to_string()))?;
+    // The direct child's exit is the exec's finish line: a real sprite exec
+    // returns when the exec'd process exits, and the revive flow's DETACHED
+    // command (`... && nohup sh -c 'server' >/dev/null 2>&1 &`) leaves a
+    // forked subshell + server alive that would hold the output pipes open
+    // forever. So output is drained by reader threads and the exec returns on
+    // `try_wait` instead of blocking on pipe EOF (which `child.output()`
+    // does, breaking the "exec returns immediately" contract).
+    child
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = child.spawn().map_err(|e| (3, e.to_string()))?;
+    let out_pipe = child.stdout.take();
+    let err_pipe = child.stderr.take();
+    let (out_buf, out_done) = drain_pipe(out_pipe);
+    let (err_buf, err_done) = drain_pipe(err_pipe);
+    let status = loop {
+        match child.try_wait().map_err(|e| (3, e.to_string()))? {
+            Some(status) => break status,
+            // A hung foreground command is bounded by the client-side
+            // command timeout (SpriteClient kills the CLI), not here.
+            None => thread::sleep(Duration::from_millis(5)),
+        }
+    };
+    // The child's own output is flushed by its exit; give the readers a short
+    // grace window to drain it. A detached grandchild keeps them blocked
+    // longer — that output is intentionally discarded (it goes to /dev/null
+    // by the detach redirect anyway).
+    for _ in 0..20 {
+        if out_done.load(Ordering::SeqCst) && err_done.load(Ordering::SeqCst) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
     let http_200 = probe_http_200();
-    let exit_code = output.status.code().unwrap_or(-1);
+    let exit_code = status.code().unwrap_or(-1);
     with_state(|state| {
         if let Some(sprite) = state.sprites.get_mut(&name) {
             sprite.exec_count += 1;
@@ -493,8 +528,10 @@ fn exec(args: &[String]) -> Result<String, (i32, String)> {
     })
     .map_err(|e| (3, e))?;
 
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let out_bytes = out_buf.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let mut text = String::from_utf8_lossy(&out_bytes).into_owned();
+    let err_bytes = err_buf.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let stderr = String::from_utf8_lossy(&err_bytes);
     if !stderr.is_empty() {
         text.push_str(&stderr);
     }
@@ -502,6 +539,35 @@ fn exec(args: &[String]) -> Result<String, (i32, String)> {
         return Err((exit_code, text));
     }
     Ok(text)
+}
+
+/// Drain one output pipe into a shared buffer on its own thread. The thread
+/// finishes when the pipe closes (EOF); for a detached grandchild that can be
+/// long after the exec returned — the caller abandons the thread after its
+/// grace window and the process exit reclaims it.
+fn drain_pipe(pipe: Option<impl Read + Send + 'static>) -> (Arc<Mutex<Vec<u8>>>, Arc<AtomicBool>) {
+    let buf = Arc::new(Mutex::new(Vec::new()));
+    let done = Arc::new(AtomicBool::new(false));
+    if let Some(mut pipe) = pipe {
+        let buf = buf.clone();
+        let done = done.clone();
+        thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            loop {
+                match pipe.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => buf
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .extend_from_slice(&chunk[..n]),
+                }
+            }
+            done.store(true, Ordering::SeqCst);
+        });
+    } else {
+        done.store(true, Ordering::SeqCst);
+    }
+    (buf, done)
 }
 
 fn destroy(args: &[String]) -> Result<String, (i32, String)> {

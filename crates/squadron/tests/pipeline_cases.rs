@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
 
 //! F24: the confirm path must DRIVE the pipeline.
 //!

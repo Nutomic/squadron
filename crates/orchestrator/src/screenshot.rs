@@ -716,6 +716,36 @@ impl ScreenshotQueue {
         "queued".to_owned()
     }
 
+    /// Terminal-run re-adoption (the web layer's gallery/lane view): enqueue a
+    /// render for a lane whose persisted screenshot state is `pending` (never
+    /// attempted) or `failed` (attempted, settled without a frame) — `request`
+    /// adopts a persisted terminal state and would return it forever. An
+    /// attempt already in flight (queued/rendering in the live map) is never
+    /// double-enqueued; the caller filters `done`. Returns the state string
+    /// the lane should now show.
+    pub async fn requeue(&self, run_id: &str, lane_idx: i64, url: &str) -> String {
+        let key = (run_id.to_owned(), lane_idx);
+        {
+            let mut map = self.pending.write().await;
+            match map.get(&key).cloned() {
+                Some(s) if s == "queued" || s == "rendering" => return s,
+                _ => {}
+            }
+            map.insert(key.clone(), "queued".to_owned());
+        }
+        let job = ScreenshotJob {
+            run_id: run_id.to_owned(),
+            lane_idx,
+            url: url.to_owned(),
+        };
+        if self.tx.send(job).await.is_err() {
+            let mut map = self.pending.write().await;
+            map.insert(key, "failed".to_owned());
+            return "failed".to_owned();
+        }
+        "queued".to_owned()
+    }
+
     pub fn notify(&self) -> Arc<Notify> {
         self.notify.clone()
     }

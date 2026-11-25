@@ -1,4 +1,5 @@
 //! Shared test-only helpers for the squadron integration binaries.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: panics on failure are the assertion mechanism
 
 use store::Store;
 

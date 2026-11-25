@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
 
 //! Review F3: bounded anonymous run creation + CSRF double-submit tokens.
 //! The store is the in-memory mock; no real sprites are launched

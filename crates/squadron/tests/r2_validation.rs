@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: panics on failure are the assertion mechanism
 
 //! R2-3 gate tests: API validation (400s), brief cap, run-id gating (404),
 //! and static-asset Cache-Control preservation.
