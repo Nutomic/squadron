@@ -3,7 +3,7 @@ use std::time::Duration;
 use tokio::time::{timeout, timeout_at, Instant};
 
 pub use prompts::LaneJudgeReport;
-use prompts::{gate_with_options, parse, GateOptions, JudgeOutput, Role, ValidatorOutput};
+use prompts::{gate_and_scan_injections, parse, GateOptions, JudgeOutput, Role, ValidatorOutput};
 
 /// Which rung of the judge ladder produced the verdict. Logged into lane
 /// events so a run's verdict can be audited without replaying gateway traffic.
@@ -166,7 +166,18 @@ async fn judge_once(
     let text = response
         .text()
         .ok_or_else(|| "judge: empty response".to_owned())?;
-    gate_with_options(Role::Judge, &text, opts).map_err(|e| e.to_string())?;
+    // Security review F36: the judge runs the SAME gate + `[INJECTION?]`
+    // marker scan as every other role — a poisoned lane's evidence could
+    // otherwise make the judge emit markers that flow into the verdict card.
+    // Markers hard-fail the attempt down the existing fallback ladder.
+    let (_, markers) =
+        gate_and_scan_injections(Role::Judge, &text, opts).map_err(|e| e.to_string())?;
+    if !markers.is_empty() {
+        return Err(format!(
+            "judge: injection markers detected at {}",
+            markers.join(",")
+        ));
+    }
     let out: JudgeOutput = parse(Role::Judge, &text).map_err(|e| e.to_string())?;
     // R3-A #5: unknown judge cost stays None, never a fabricated 0.00.
     Ok((out, response.cost_usd()))

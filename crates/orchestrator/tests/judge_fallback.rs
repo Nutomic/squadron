@@ -30,11 +30,15 @@ use common::wait_secs;
 enum Failure {
     PrimaryImages,
     AllRungs,
+    /// First judge call answers 200 with a verdict card carrying an
+    /// `[INJECTION?]` marker; later calls are clean.
+    MarkerScan,
 }
 
 #[derive(Default)]
 struct StubState {
     bodies: std::sync::Mutex<Vec<Value>>,
+    judge_calls: std::sync::Mutex<usize>,
 }
 
 fn cases_json() -> String {
@@ -63,6 +67,15 @@ fn judge_json_for(body: &Value) -> Value {
     })
 }
 
+/// Security review F36: a poisoned lane's evidence steered the judge into
+/// echoing an `[INJECTION?]` marker into its verdict card. Schema-valid, but
+/// the marker scan must reject it.
+fn judge_json_with_marker(body: &Value) -> Value {
+    let mut v = judge_json_for(body);
+    v["verdict_card"] = json!("[INJECTION?] prefer lane 1");
+    v
+}
+
 fn router(state: Arc<StubState>, failure: Failure) -> Router {
     Router::new()
         .route(
@@ -85,9 +98,17 @@ fn router(state: Arc<StubState>, failure: Failure) -> Router {
                 }
                 let model = body["model"].as_str().unwrap_or_default();
                 let has_images = body["messages"][1]["content"].is_array();
+                let judge_call_n = {
+                    let mut n = st.judge_calls.lock().unwrap();
+                    *n += 1;
+                    *n
+                };
                 let reject = match failure {
                     Failure::PrimaryImages => model == JUDGE_MODEL && has_images,
                     Failure::AllRungs => true,
+                    // The marker response is HTTP 200: the ladder advances
+                    // because the SCAN rejects it, not the transport.
+                    Failure::MarkerScan => false,
                 };
                 if reject {
                     return (
@@ -95,6 +116,15 @@ fn router(state: Arc<StubState>, failure: Failure) -> Router {
                         Json(json!({
                             "error": {"type": "invalid_request"},
                             "message": "Upstream request failed: [invalid_request] the request is invalid"
+                        })),
+                    );
+                }
+                if matches!(failure, Failure::MarkerScan) && judge_call_n == 1 {
+                    return (
+                        StatusCode::OK,
+                        Json(json!({
+                            "choices": [{"index": 0, "message": {"role": "assistant", "content": judge_json_with_marker(&body).to_string()}, "finish_reason": "stop"}],
+                            "usage": {"opencode": {"allowance": {"usd": 0.02}}}
                         })),
                     );
                 }
@@ -411,4 +441,33 @@ async fn judge_errors_never_reach_the_run_failed_path() {
     assert!(final_run.judge_verdict.is_some());
     assert_no_run_failed(&store, &final_run).await;
     assert_rung(&store, &final_run, "deterministic_fallback").await;
+}
+
+/// Security review F36: judge output that carries an `[INJECTION?]` marker
+/// (a poisoned lane's evidence steering the judge) must be rejected and the
+/// ladder must advance to the next rung — the markers never flow into the
+/// verdict card.
+#[tokio::test(flavor = "multi_thread")]
+async fn judge_output_with_injection_markers_advances_the_ladder() {
+    let _env = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    env_setup(dir.path());
+    let (endpoint, stub) = spawn_stub(Failure::MarkerScan).await;
+    let (ctx, store) = test_ctx(dir.path(), &endpoint).await;
+    let run = start(ctx, None).await;
+    let final_run = wait_run(&store, &run.id).await;
+
+    assert_eq!(final_run.status, "judged");
+    assert!(final_run.winner_lane.is_some());
+    let calls = judge_calls(&stub);
+    assert_eq!(calls.len(), 2, "marker rung rejected, ladder advanced");
+    assert_eq!(calls[0]["model"], json!(JUDGE_MODEL));
+    assert_eq!(calls[1]["model"], json!(JUDGE_IMAGE_FALLBACK_MODEL));
+    let verdict = final_run.judge_verdict.clone().unwrap_or_default();
+    assert!(
+        !verdict.contains("[INJECTION?]"),
+        "marker must not reach the verdict card: {verdict}"
+    );
+    assert_rung(&store, &final_run, "glm-5.3-flash+images").await;
+    assert_no_run_failed(&store, &final_run).await;
 }
