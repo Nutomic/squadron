@@ -79,9 +79,14 @@ const DECOMPOSE_JSON: &str = r#"{"cases":[
     {"label":"red","impl_prompt":"build the red variant of the brief"}
 ]}"#;
 
-async fn app_with_llm(content: &'static str) -> (axum::Router, Store) {
-    let store = Store::connect_in_memory().await.unwrap();
-    store.migrate().await.unwrap();
+mod common;
+
+use common::migrated_store;
+
+async fn app_with_llm(content: &'static str) -> (axum::Router, Store, tempfile::TempDir) {
+    // F34: file-backed unique DB — an idle-reaped in-memory pool reopens an
+    // EMPTY database under load ("no such table: runs").
+    let (store, db_dir) = migrated_store().await;
     let state = AppState::new(
         store.clone(),
         SpriteClient::from_env(),
@@ -93,12 +98,11 @@ async fn app_with_llm(content: &'static str) -> (axum::Router, Store) {
     let app = router(Arc::new(state)).layer(axum::extract::connect_info::MockConnectInfo(
         MOCK_CONNECT_INFO,
     ));
-    (app, store)
+    (app, store, db_dir)
 }
 
-async fn app_no_llm() -> (axum::Router, Store) {
-    let store = Store::connect_in_memory().await.unwrap();
-    store.migrate().await.unwrap();
+async fn app_no_llm() -> (axum::Router, Store, tempfile::TempDir) {
+    let (store, db_dir) = migrated_store().await;
     let state = AppState::new(
         store.clone(),
         SpriteClient::from_env(),
@@ -109,7 +113,7 @@ async fn app_no_llm() -> (axum::Router, Store) {
     let app = router(Arc::new(state)).layer(axum::extract::connect_info::MockConnectInfo(
         MOCK_CONNECT_INFO,
     ));
-    (app, store)
+    (app, store, db_dir)
 }
 
 async fn body_string(body: Body) -> String {
@@ -161,7 +165,7 @@ async fn post_json(
 /// Preview returns the decomposition's cases and persists NOTHING.
 #[tokio::test]
 async fn preview_returns_cases_and_persists_nothing() {
-    let (app, store) = app_with_llm(DECOMPOSE_JSON).await;
+    let (app, store, _db) = app_with_llm(DECOMPOSE_JSON).await;
     let token = csrf_token(&app).await;
     let res = post_json(
         &app,
@@ -187,7 +191,7 @@ async fn preview_returns_cases_and_persists_nothing() {
 /// cases (same rule as the pipeline's fallback), still stateless.
 #[tokio::test]
 async fn preview_without_llm_returns_template_cases() {
-    let (app, store) = app_no_llm().await;
+    let (app, store, _db) = app_no_llm().await;
     let token = csrf_token(&app).await;
     let res = post_json(
         &app,
@@ -212,7 +216,7 @@ async fn preview_without_llm_returns_template_cases() {
 /// boilerplate constraint line in user-visible case text (appended at execution).
 #[tokio::test]
 async fn preview_template_cases_do_not_embed_constraints() {
-    let (app, _store) = app_no_llm().await;
+    let (app, _store, _db) = app_no_llm().await;
     let token = csrf_token(&app).await;
     let res = post_json(
         &app,
@@ -249,7 +253,7 @@ async fn preview_template_cases_do_not_embed_constraints() {
 /// Preview rejects an empty brief and an over-cap brief with 400.
 #[tokio::test]
 async fn preview_validates_the_brief() {
-    let (app, store) = app_with_llm(DECOMPOSE_JSON).await;
+    let (app, store, _db) = app_with_llm(DECOMPOSE_JSON).await;
     let token = csrf_token(&app).await;
     for brief in ["", "   "] {
         let res = post_json(&app, "/api/preview", json!({"brief": brief}), Some(&token)).await;
@@ -264,7 +268,7 @@ async fn preview_validates_the_brief() {
 /// CSRF is enforced on BOTH dialog endpoints: preview and confirm.
 #[tokio::test]
 async fn csrf_enforced_on_preview_and_confirm() {
-    let (app, store) = app_with_llm(DECOMPOSE_JSON).await;
+    let (app, store, _db) = app_with_llm(DECOMPOSE_JSON).await;
     let cases = json!({"cases": [{"label": "a", "impl_prompt": "p"}]});
     // no cookie / no token
     let res = post_json(&app, "/api/preview", json!({"brief": "x site"}), None).await;
@@ -307,7 +311,7 @@ async fn csrf_enforced_on_preview_and_confirm() {
 /// cases.len() and each lane's variant_json carries the edited prompt.
 #[tokio::test]
 async fn confirm_persists_run_with_edited_cases() {
-    let (app, store) = app_with_llm(DECOMPOSE_JSON).await;
+    let (app, store, _db) = app_with_llm(DECOMPOSE_JSON).await;
     let token = csrf_token(&app).await;
     // The user edits the plan before confirming: different labels/prompts
     // than what the fake LLM returned.
@@ -364,7 +368,7 @@ async fn confirm_persists_run_with_edited_cases() {
 /// More than 8 cases is rejected (the UI caps at 8; the server enforces it).
 #[tokio::test]
 async fn confirm_rejects_more_than_eight_cases() {
-    let (app, store) = app_with_llm(DECOMPOSE_JSON).await;
+    let (app, store, _db) = app_with_llm(DECOMPOSE_JSON).await;
     let token = csrf_token(&app).await;
     let cases: Vec<Value> = (0..9)
         .map(|i| json!({"label": format!("w{i}"), "impl_prompt": format!("prompt {i}")}))
@@ -385,7 +389,7 @@ async fn confirm_rejects_more_than_eight_cases() {
 /// An empty (or whitespace-only) prompt is rejected; nothing is persisted.
 #[tokio::test]
 async fn confirm_rejects_empty_prompt() {
-    let (app, store) = app_with_llm(DECOMPOSE_JSON).await;
+    let (app, store, _db) = app_with_llm(DECOMPOSE_JSON).await;
     let token = csrf_token(&app).await;
     for prompt in ["", "   "] {
         let res = post_json(
@@ -416,7 +420,7 @@ async fn confirm_rejects_empty_prompt() {
 /// output: a case carrying an [INJECTION?] marker is rejected.
 #[tokio::test]
 async fn confirm_rejects_injection_markers() {
-    let (app, store) = app_with_llm(DECOMPOSE_JSON).await;
+    let (app, store, _db) = app_with_llm(DECOMPOSE_JSON).await;
     let token = csrf_token(&app).await;
     let res = post_json(
         &app,
@@ -439,7 +443,7 @@ async fn confirm_rejects_injection_markers() {
 /// instead of erroring (same as the pipeline's phase).
 #[tokio::test]
 async fn preview_falls_back_to_raw_brief_when_llm_output_is_rejected() {
-    let (app, store) = app_with_llm("not json at all").await;
+    let (app, store, _db) = app_with_llm("not json at all").await;
     let token = csrf_token(&app).await;
     let res = post_json(
         &app,

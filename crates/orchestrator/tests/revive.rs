@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use orchestrator::revive::{revive_lane, ReviveOutcome, EVENT_REVIVED, EVENT_REVIVE_FAILED};
 use sprites_client::{SpriteClient, SpriteConfig};
-use store::Store;
+
+mod common;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn dead_lane_is_revived_from_the_stored_run_command_and_capped() {
@@ -22,8 +23,9 @@ async fn dead_lane_is_revived_from_the_stored_run_command_and_capped() {
     std::env::set_var("MOCK_CREATE_MS", "0");
     std::env::set_var("MOCK_EXEC_MS", "0");
 
-    let store = Store::connect_in_memory().await.unwrap();
-    store.migrate().await.unwrap();
+    // F34: file-backed unique DB — an idle-reaped in-memory pool reopens an
+    // EMPTY database under load ("no such table: runs").
+    let store = common::migrated_store_in(dir.path()).await;
     store.create_run("brief", 1, 0).await.unwrap();
     let run = store.list_runs().await.unwrap().remove(0);
     store.insert_lane(&run.id, 0, "{}").await.unwrap();
@@ -38,7 +40,10 @@ async fn dead_lane_is_revived_from_the_stored_run_command_and_capped() {
             .unwrap_or_else(|| {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/mock-sprite-cli")
             }),
-        command_timeout: Duration::from_secs(30),
+        // Load-tolerant ceiling (F34): under full-suite parallel load a mock
+        // CLI invocation can take minutes of wall time; solo it finishes in
+        // milliseconds. Ceiling only.
+        command_timeout: Duration::from_secs(common::wait_secs()),
         ..SpriteConfig::default()
     });
     sprite.create("revive-test-lane").await.unwrap();

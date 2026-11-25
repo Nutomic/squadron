@@ -20,6 +20,27 @@ pub fn wait_secs() -> u64 {
         .unwrap_or(600)
 }
 
+/// Migrated store on a UNIQUE file-backed DB under `dir` (each test owns a
+/// tempdir). `Store::connect_in_memory` pools a single `sqlite::memory:`
+/// connection; sqlx's idle reaper (600s default) closes it when a loaded run
+/// starves the test for that long, and the re-opened connection finds an
+/// EMPTY in-memory database — later queries panic with `no such table: runs`
+/// (the dialog.rs failure at ~601s binary runtime). A file-backed DB survives
+/// connection recycling, and sqlx's default 5s busy_timeout absorbs sqlite
+/// contention between the parallel test binaries.
+#[allow(dead_code)] // used by the wave suites only
+pub async fn migrated_store_in(dir: &std::path::Path) -> store::Store {
+    let db = dir.join("squadron-test.db");
+    let store = store::Store::connect(&format!("sqlite://{}?mode=rwc", db.display()))
+        .await
+        .expect("connect file-backed test store");
+    store
+        .migrate()
+        .await
+        .expect("migrate file-backed test store");
+    store
+}
+
 /// Bounded, event-driven wait for the hub registry to drain a terminal run's
 /// channel (audit R3 finding 5).
 ///

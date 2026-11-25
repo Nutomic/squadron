@@ -32,6 +32,10 @@ use sprites_client::{SpriteClient, SpriteConfig};
 use squadron::{router, AppState};
 use store::Store;
 
+mod common;
+
+use common::wait_secs;
+
 const STATIC_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/static");
 
 const MOCK_CONNECT_INFO: SocketAddr =
@@ -95,9 +99,13 @@ fn base_config(dir: &std::path::Path, max_running_slots: usize) -> PipelineConfi
         max_running_slots,
         test_mode: true,
         data_dir: dir.join("data"),
-        impl_deadline: Duration::from_secs(30),
-        val_deadline: Duration::from_secs(30),
-        judge_deadline: Duration::from_secs(15),
+        // Load-tolerant ceilings (F34, same class as the F20 pipeline_gates
+        // fix): the mock steps are instant, but under 20-binary parallel load
+        // a 30s/15s deadline fired before output arrived, failing lanes with
+        // "deadline exceeded" and flipping the expected run status.
+        impl_deadline: Duration::from_secs(wait_secs()),
+        val_deadline: Duration::from_secs(wait_secs()),
+        judge_deadline: Duration::from_secs(wait_secs()),
         // F26: no 7s create spacing in tests (the throttle serializes lane
         // creates process-wide; tests start many lanes in quick succession).
         sprite_create_spacing: Duration::ZERO,
@@ -109,6 +117,9 @@ struct TestEnv {
     state: AppState,
     store: Store,
     _tmp: tempfile::TempDir,
+    // F34: the file-backed store's DB lives here; keep it until the store is
+    // dropped.
+    _db: tempfile::TempDir,
     _guard: tokio::sync::MutexGuard<'static, ()>,
 }
 
@@ -122,11 +133,15 @@ async fn setup(max_running_slots: usize) -> TestEnv {
     std::env::set_var("MOCK_CREATE_MS", "0");
     std::env::set_var("MOCK_EXEC_MS", "0");
 
-    let store = Store::connect_in_memory().await.unwrap();
-    store.migrate().await.unwrap();
+    // F34: file-backed unique DB — an idle-reaped in-memory pool reopens an
+    // EMPTY database under load ("no such table: runs").
+    let (store, db_dir) = common::migrated_store().await;
     let sprite = SpriteClient::new(SpriteConfig {
         cli_path: mock_cli_path(),
-        command_timeout: Duration::from_secs(10),
+        // Load-tolerant ceiling (F34): under full-suite parallel load a mock
+        // CLI invocation can take minutes of wall time; solo it finishes in
+        // milliseconds. Ceiling only.
+        command_timeout: Duration::from_secs(wait_secs()),
         ..SpriteConfig::default()
     });
     let config = base_config(dir.path(), max_running_slots);
@@ -137,6 +152,7 @@ async fn setup(max_running_slots: usize) -> TestEnv {
         state,
         store,
         _tmp: dir,
+        _db: db_dir,
         _guard: guard,
     }
 }
@@ -150,7 +166,8 @@ async fn setup(max_running_slots: usize) -> TestEnv {
 fn restart(env: &TestEnv, config: PipelineConfig, harness: HarnessMode) -> AppState {
     let sprite = SpriteClient::new(SpriteConfig {
         cli_path: mock_cli_path(),
-        command_timeout: Duration::from_secs(10),
+        // Load-tolerant ceiling (F34): see setup().
+        command_timeout: Duration::from_secs(wait_secs()),
         ..SpriteConfig::default()
     });
     std::fs::create_dir_all(&config.data_dir).unwrap();
@@ -203,7 +220,13 @@ async fn confirm_submitted_cases_execute_to_judged() {
     assert_eq!(run.n_lanes, 3);
     assert_eq!(run.status, "running", "lanes that fit must start");
 
-    let status = wait_run_status(&env.store, &run.id, &["judged", "partial", "failed"], 60).await;
+    let status = wait_run_status(
+        &env.store,
+        &run.id,
+        &["judged", "partial", "failed"],
+        wait_secs(),
+    )
+    .await;
     assert_eq!(status, "judged", "submitted cases must run to the judge");
     let final_run = env.store.get_run(&run.id).await.unwrap().unwrap();
     assert!(final_run.judge_verdict.is_some(), "a judge verdict exists");
@@ -309,7 +332,9 @@ async fn queued_run_is_picked_up_and_promoted_after_restart() {
         )
         .await
         .unwrap();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    // Load-tolerant ceiling (F34): the filler lanes start instantly in mock
+    // mode, but under full-suite parallel load a 10s bound false-failed.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs());
     loop {
         let lanes = env.store.list_lanes(&fill.id).await.unwrap();
         if lanes.len() == 3 && lanes.iter().all(|l| l.state == "running") {
@@ -352,7 +377,7 @@ async fn queued_run_is_picked_up_and_promoted_after_restart() {
         &env.store,
         &subject.id,
         &["judged", "partial", "failed"],
-        60,
+        wait_secs(),
     )
     .await;
     assert_eq!(

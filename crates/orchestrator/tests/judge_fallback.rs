@@ -196,15 +196,19 @@ fn per_lane_command(fail_lane: i64, fail_json: &str, pass_json: &str) -> String 
 }
 
 async fn test_ctx(dir: &std::path::Path, endpoint: &str) -> (Arc<PipelineCtx>, Store) {
-    let store = Store::connect_in_memory().await.unwrap();
-    store.migrate().await.unwrap();
+    // F34: file-backed unique DB — an idle-reaped in-memory pool reopens an
+    // EMPTY database under load ("no such table: runs").
+    let store = common::migrated_store_in(dir).await;
     let sprite = SpriteClient::new(SpriteConfig {
         cli_path: option_env!("CARGO_BIN_EXE_mock-sprite-cli")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/mock-sprite-cli")
             }),
-        command_timeout: Duration::from_secs(10),
+        // Load-tolerant ceiling (F34): under full-suite parallel load a mock
+        // CLI invocation can take minutes of wall time; solo these finish in
+        // milliseconds. Ceiling only — no sleeps added.
+        command_timeout: Duration::from_secs(wait_secs()),
         ..SpriteConfig::default()
     });
     let config = PipelineConfig {
@@ -213,9 +217,13 @@ async fn test_ctx(dir: &std::path::Path, endpoint: &str) -> (Arc<PipelineCtx>, S
         retries_per_lane: 0,
         test_mode: true,
         data_dir: dir.join("data"),
-        impl_deadline: Duration::from_secs(30),
-        val_deadline: Duration::from_secs(30),
-        judge_deadline: Duration::from_secs(15),
+        // Load-tolerant ceilings (F34, same class as the F20 pipeline_gates
+        // fix): the mock steps are instant, but under 20-binary parallel load
+        // a 30s/15s deadline fired before output arrived, failing lanes with
+        // "deadline exceeded" and flipping the expected run status.
+        impl_deadline: Duration::from_secs(wait_secs()),
+        val_deadline: Duration::from_secs(wait_secs()),
+        judge_deadline: Duration::from_secs(wait_secs()),
         ..PipelineConfig::default()
     };
     std::fs::create_dir_all(&config.data_dir).unwrap();
