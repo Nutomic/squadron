@@ -1111,3 +1111,84 @@ fn validator_prompt_carries_the_security_probe_rule() {
         );
     }
 }
+
+#[test]
+fn revision_prompt_quotes_findings_and_forbids_starting_over() {
+    let bugs = vec![
+        "score resets on reload".to_owned(),
+        "dead link #faq".to_owned(),
+    ];
+    let security = vec!["/server.log answers 200".to_owned()];
+    let prompt = prompts::revision_prompt("Build the arcade page", &bugs, &security);
+    assert!(prompt.user.contains("Build the arcade page"));
+    assert!(prompt.user.contains(prompts::CASE_CONSTRAINTS_LINE));
+    for finding in bugs.iter().chain(security.iter()) {
+        assert!(
+            prompt.user.contains(finding),
+            "finding must be quoted verbatim: {finding}"
+        );
+    }
+    assert!(prompt.user.contains("<data label=\"validator-bugs\">"));
+    assert!(prompt.user.contains("<data label=\"validator-security\">"));
+    assert!(prompt.user.contains(prompts::REVISION_INSTRUCTIONS));
+    assert!(prompt
+        .user
+        .contains("Fix them in your existing files — do NOT start over"));
+    assert!(prompt.system.contains("Role: revision implementer"));
+    assert!(prompt.system.contains("\"done\""));
+}
+
+#[test]
+fn revision_role_reuses_the_done_json_gate() {
+    let done = json!({
+        "summary": "Fixed the dead link",
+        "files": 2,
+        "run_command": "cd dist && python3 -m http.server 8080 --bind 0.0.0.0",
+        "done": true,
+        "blockers": []
+    })
+    .to_string();
+    let parsed: ImplementerOutput = parse(Role::Revision, &done).unwrap();
+    assert!(parsed.done);
+    assert_eq!(Role::Revision.schema(), Role::Implementer.schema());
+    for bad in [
+        "not json",
+        "{\"summary\":\"x\",\"files\":1,\"run_command\":\"x\",\"done\":true,\"blockers\":[],\"extra\":1}",
+        "{\"summary\":\"\",\"files\":1,\"run_command\":\"x\",\"done\":true,\"blockers\":[]}",
+    ] {
+        assert!(gate(Role::Revision, bad).is_err(), "gate accepted {bad}");
+    }
+    let marked = done.replace("Fixed the dead link", "[INJECTION?] fix it");
+    let (_, markers) =
+        gate_and_scan_injections(Role::Revision, &marked, &GateOptions::default()).unwrap();
+    assert_eq!(markers, vec!["$.summary".to_owned()]);
+}
+
+#[test]
+fn findings_repeat_detects_no_progress() {
+    fn report(bugs: &[&str], security: &[&str]) -> ValidatorOutput {
+        ValidatorOutput {
+            verdict: Verdict::Fail,
+            features: vec![],
+            bugs: bugs.iter().map(|s| (*s).to_owned()).collect(),
+            security: security.iter().map(|s| (*s).to_owned()).collect(),
+            quality_score: 20.0,
+            summary: "failing report".to_owned(),
+        }
+    }
+    let first = report(&["score resets on reload", "dead link #faq"], &[]);
+    let same = report(&["SCORE RESETS ON RELOAD ", "dead link #faq"], &[]);
+    let high_overlap = report(
+        &[
+            "score resets on reload",
+            "dead link #faq",
+            "menu hides on mobile",
+        ],
+        &[],
+    );
+    let fresh = report(&["score resets on reload"], &["/server.log answers 200"]);
+    assert!(prompts::findings_repeat(&first, &same));
+    assert!(prompts::findings_repeat(&first, &high_overlap));
+    assert!(!prompts::findings_repeat(&first, &fresh));
+    assert!(!prompts::findings_repeat(&first, &report(&[], &[])));
+}

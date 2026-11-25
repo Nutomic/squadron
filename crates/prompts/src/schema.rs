@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -7,6 +9,7 @@ use serde_json::{json, Value};
 pub enum Role {
     Diversity,
     Implementer,
+    Revision,
     Validator,
     Judge,
     Decompose,
@@ -17,6 +20,7 @@ impl Role {
         match self {
             Self::Diversity => "diversity generator",
             Self::Implementer => "implementer",
+            Self::Revision => "revision implementer",
             Self::Validator => "validator",
             Self::Judge => "judge",
             Self::Decompose => "brief decomposer",
@@ -43,7 +47,7 @@ impl Role {
                 "required": ["variants"],
                 "additionalProperties": false
             }),
-            Self::Implementer => json!({
+            Self::Implementer | Self::Revision => json!({
                 "type": "object",
                 "properties": {
                     "summary": {"type": "string"},
@@ -316,6 +320,30 @@ pub fn parse_validator_report(json: &str) -> Option<ValidatorOutput> {
     Some(parsed)
 }
 
+pub fn findings_repeat(previous: &ValidatorOutput, current: &ValidatorOutput) -> bool {
+    fn entries(report: &ValidatorOutput) -> BTreeSet<String> {
+        report
+            .bugs
+            .iter()
+            .chain(report.security.iter())
+            .map(|entry| entry.trim().to_lowercase())
+            .filter(|entry| !entry.is_empty())
+            .take(2)
+            .collect()
+    }
+    let previous = entries(previous);
+    let current = entries(current);
+    if previous.is_empty() || current.is_empty() {
+        return false;
+    }
+    if previous == current {
+        return true;
+    }
+    let overlap = previous.intersection(&current).count();
+    let total = previous.union(&current).count();
+    overlap as f64 / total as f64 >= 0.8
+}
+
 /// Pre-F18 row shape: the report arrays were `TextOrList` (string or array).
 /// Used only to read legacy `val_report_json` values.
 #[derive(Debug, Clone, Deserialize)]
@@ -363,14 +391,16 @@ pub fn gate_with_options(
                 }
                 Ok(())
             }),
-        Role::Implementer => serde_json::from_value::<ImplementerOutput>(value.clone())
-            .map_err(|error| format!("{error}"))
-            .and_then(|parsed| {
-                if parsed.summary.trim().is_empty() {
-                    return Err("summary must not be empty".to_owned());
-                }
-                Ok(())
-            }),
+        Role::Implementer | Role::Revision => {
+            serde_json::from_value::<ImplementerOutput>(value.clone())
+                .map_err(|error| format!("{error}"))
+                .and_then(|parsed| {
+                    if parsed.summary.trim().is_empty() {
+                        return Err("summary must not be empty".to_owned());
+                    }
+                    Ok(())
+                })
+        }
         Role::Validator => serde_json::from_value::<ValidatorOutput>(value.clone())
             .map_err(|error| format!("{error}"))
             .and_then(|parsed| {

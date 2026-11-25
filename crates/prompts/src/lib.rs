@@ -10,11 +10,12 @@ pub use preamble::{
 };
 pub use roles::{
     decompose_prompt, diversity_prompt, impl_prompt_with_constraints, implementer_case_prompt,
-    implementer_prompt, judge_prompt, planning_first_rule, validator_prompt, Prompt,
-    CASE_CONSTRAINTS_LINE, IMPLEMENTER_SITE_CONSTRAINTS,
+    implementer_prompt, judge_prompt, planning_first_rule, revision_prompt,
+    revision_prompt_from_report, revision_prompt_with_plan, validator_prompt, Prompt,
+    CASE_CONSTRAINTS_LINE, IMPLEMENTER_SITE_CONSTRAINTS, REVISION_INSTRUCTIONS,
 };
 pub use schema::{
-    gate, gate_and_scan_injections, gate_with_options, injection_markers, parse,
+    findings_repeat, gate, gate_and_scan_injections, gate_with_options, injection_markers, parse,
     parse_validator_report, sentence_count, BriefFulfillment, BriefFulfillmentState, DecomposeCase,
     DecomposeOutput, DiversityOutput, GateOptions, ImplementerOutput, JudgeOutput, LaneJudgeReport,
     Role, SchemaError, TextOrList, ValidatorOutput, Variant, Verdict,
