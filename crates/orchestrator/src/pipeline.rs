@@ -1983,9 +1983,9 @@ async fn run_judge_phase(
             extracts.push(String::new());
         }
     }
-    // F29: judge failures are lane-level degradations, never run-level ones.
-    // Exhaust the image-capable ladder, then fall back to a deterministic
-    // winner among survivors so the run still finishes with its F27 status.
+    // F29/F35b: judge failures are lane-level degradations, never run-level
+    // ones. Exhaust the flash+images → deepseek text-only ladder, then fall
+    // back to a deterministic winner so the run still finishes with F27 status.
     let (verdict, judge_cost, rung) = if let Some(llm) = &ctx.machine_llm {
         let images = collect_lane_screenshot_images(&ctx.config.data_dir, run_id, validated).await;
         match judge::run_judge_ladder(

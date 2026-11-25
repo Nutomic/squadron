@@ -200,7 +200,7 @@ async fn foundation_pipeline_composes_against_mock_sprite_and_stub_llm() {
         format!("http://127.0.0.1:{judge_port}/chat/completions"),
     );
     let response = judge_llm
-        .chat(&ChatRequest::new("glm-5.3").user("judge"))
+        .chat(&ChatRequest::new(llm_gateway::JUDGE_MODEL).user("judge"))
         .await
         .unwrap();
     let verdict: JudgeOutput = parse(Role::Judge, &response.text().unwrap()).unwrap();

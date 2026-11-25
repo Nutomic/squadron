@@ -10,7 +10,6 @@ use prompts::{gate_with_options, parse, GateOptions, JudgeOutput, Role, Validato
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JudgeRung {
     PrimaryWithImages,
-    FlashWithImages,
     TextOnly,
     Deterministic,
 }
@@ -18,9 +17,8 @@ pub enum JudgeRung {
 impl JudgeRung {
     pub fn label(self) -> &'static str {
         match self {
-            Self::PrimaryWithImages => "glm-5.3+images",
-            Self::FlashWithImages => "glm-5.3-flash+images",
-            Self::TextOnly => "glm-5.3 text-only",
+            Self::PrimaryWithImages => "glm-5.3-flash+images",
+            Self::TextOnly => "deepseek-v4.1-flash text-only",
             Self::Deterministic => "deterministic_fallback",
         }
     }
@@ -53,10 +51,10 @@ pub async fn run_judge(
         .map(|v| (v.output, v.cost_usd))
 }
 
-/// F29: never let one judge request kill a run. Try the primary judge with
-/// screenshots, then the pinned flash variant with the SAME image parts (the
-/// big model now rejects image input upstream), then the primary text-only,
-/// before reporting failure so the caller can pick a deterministic winner.
+/// F29/F35b: never let one judge request kill a run. Try the pinned flash
+/// primary WITH screenshots (image-capable, probe-verified 2026-11-25), then
+/// the different-family deepseek text-only rung before reporting failure so
+/// the caller can pick a deterministic winner.
 pub async fn run_judge_ladder(
     client: &MachineLlmClient,
     session: &str,
@@ -85,28 +83,23 @@ pub async fn run_judge_ladder(
     // a brief_fulfillment assessment for the winning lane.
     let prompt = prompts::judge_prompt(brief, reports, extracts);
     let has_images = images.iter().any(|i| i.is_some());
-    let per_rung = deadline / 3;
+    let per_rung = deadline / 2;
     timeout(deadline, async {
         let mut last_error = "judge: no rung attempted".to_owned();
         let rungs = [
             JudgeAttempt {
                 rung: JudgeRung::PrimaryWithImages,
                 model: llm_gateway::JUDGE_MODEL,
-                with_images: has_images,
-            },
-            JudgeAttempt {
-                rung: JudgeRung::FlashWithImages,
-                model: llm_gateway::JUDGE_IMAGE_FALLBACK_MODEL,
-                with_images: has_images,
+                with_images: true,
             },
             JudgeAttempt {
                 rung: JudgeRung::TextOnly,
-                model: llm_gateway::JUDGE_MODEL,
+                model: llm_gateway::JUDGE_TEXT_FALLBACK_MODEL,
                 with_images: false,
             },
         ];
         for attempt in rungs {
-            if !attempt.with_images && attempt.rung != JudgeRung::TextOnly {
+            if attempt.with_images && !has_images {
                 continue;
             }
             let call = judge_once(client, session, &prompt, reports, images, &opts, &attempt);

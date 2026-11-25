@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use llm_gateway::MachineLlmClient;
+use llm_gateway::{MachineLlmClient, JUDGE_MODEL, JUDGE_TEXT_FALLBACK_MODEL};
 
 fn app(captured: Arc<Mutex<Vec<Value>>>, judge_content: Value) -> Router {
     Router::new()
@@ -99,6 +99,11 @@ async fn judge_sends_screenshot_image_parts_when_available() {
 
     let bodies = captured.lock().await;
     let body = &bodies[0];
+    assert_eq!(
+        body["model"],
+        json!(JUDGE_MODEL),
+        "flash is the image-capable primary"
+    );
     let content = body["messages"][1]["content"].as_array().unwrap();
     assert!(
         content
@@ -155,6 +160,7 @@ async fn judge_without_images_uses_text_only_request() {
     assert_eq!(out.winner, 0);
 
     let bodies = captured.lock().await;
+    assert_eq!(bodies[0]["model"], json!(JUDGE_TEXT_FALLBACK_MODEL));
     assert!(bodies[0]["messages"][1]["content"].is_string());
 }
 

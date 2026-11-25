@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::panic)] // test code: panics on failure are the assertion mechanism
 
-//! F29 fake-gateway regressions: the judge call must never kill a run. A local
-//! stub replays the production HTTP 400 for the primary image-capable judge,
-//! then controls how far the ladder gets before a verdict is produced.
+//! F29/F35b fake-gateway regressions: the judge call must never kill a run. A
+//! local stub replays the production HTTP 400 for the flash primary image
+//! request, then controls how far the ladder gets before a verdict is produced.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use axum::extract::{Json as AxumJson, State};
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
-use llm_gateway::{MachineLlmClient, JUDGE_IMAGE_FALLBACK_MODEL, JUDGE_MODEL};
+use llm_gateway::{MachineLlmClient, JUDGE_MODEL, JUDGE_TEXT_FALLBACK_MODEL};
 use orchestrator::{
     HarnessMode, PipelineConfig, PipelineCtx, RunRequest, ScreenshotQueue, SlotSemaphore, SseHub,
 };
@@ -29,7 +29,6 @@ use common::wait_secs;
 #[derive(Clone, Copy)]
 enum Failure {
     PrimaryImages,
-    BothImageRungs,
     AllRungs,
 }
 
@@ -88,7 +87,6 @@ fn router(state: Arc<StubState>, failure: Failure) -> Router {
                 let has_images = body["messages"][1]["content"].is_array();
                 let reject = match failure {
                     Failure::PrimaryImages => model == JUDGE_MODEL && has_images,
-                    Failure::BothImageRungs => has_images,
                     Failure::AllRungs => true,
                 };
                 if reject {
@@ -139,19 +137,6 @@ fn judge_calls(state: &StubState) -> Vec<Value> {
         })
         .cloned()
         .collect()
-}
-
-fn image_urls(call: &Value) -> Vec<Value> {
-    call["messages"][1]["content"]
-        .as_array()
-        .map(|parts| {
-            parts
-                .iter()
-                .filter(|p| p["type"] == "image_url")
-                .map(|p| p["image_url"]["url"].clone())
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn canned_impl() -> String {
@@ -308,10 +293,10 @@ async fn assert_no_run_failed(store: &Store, run: &store::Run) {
     }
 }
 
-/// (a) the production 400 on the primary image rung must promote the flash
-/// variant with the identical screenshot parts, not fail the run.
+/// (a) the production 400 on the flash primary image rung must promote the
+/// different-family deepseek text-only rung, not fail the run.
 #[tokio::test(flavor = "multi_thread")]
-async fn primary_judge_400_uses_flash_with_images() {
+async fn primary_judge_400_uses_deepseek_text_only() {
     let _env = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     env_setup(dir.path());
@@ -323,46 +308,59 @@ async fn primary_judge_400_uses_flash_with_images() {
     assert_eq!(final_run.status, "judged");
     assert!(final_run.winner_lane.is_some());
     let calls = judge_calls(&stub);
-    assert_eq!(calls.len(), 2, "primary then flash: {calls:?}");
+    assert_eq!(calls.len(), 2, "flash image then deepseek text: {calls:?}");
     assert_eq!(calls[0]["model"], json!(JUDGE_MODEL));
-    assert_eq!(calls[1]["model"], json!(JUDGE_IMAGE_FALLBACK_MODEL));
+    assert_eq!(calls[1]["model"], json!(JUDGE_TEXT_FALLBACK_MODEL));
     assert!(calls[0]["messages"][1]["content"].is_array());
-    assert_eq!(
-        image_urls(&calls[0]),
-        image_urls(&calls[1]),
-        "flash rung must reuse the same screenshot parts"
+    assert!(
+        calls[1]["messages"][1]["content"].is_string(),
+        "deepseek is text-only on 2026-11-25 probes"
     );
-    assert_rung(&store, &final_run, "glm-5.3-flash+images").await;
+    assert_rung(&store, &final_run, "deepseek-v4.1-flash text-only").await;
     assert_no_run_failed(&store, &final_run).await;
 }
 
-/// (b) when both image rungs reject the request, the big model is retried
-/// text-only before the deterministic fallback is considered.
+/// (b) without screenshots the flash image rung is skipped entirely; the
+/// deepseek text-only rung keeps the prompt and serves the verdict.
 #[tokio::test(flavor = "multi_thread")]
-async fn both_image_rungs_failing_falls_back_to_text_only() {
-    let _env = ENV_LOCK.lock().await;
-    let dir = tempfile::tempdir().unwrap();
-    env_setup(dir.path());
-    let (endpoint, stub) = spawn_stub(Failure::BothImageRungs).await;
-    let (ctx, store) = test_ctx(dir.path(), &endpoint).await;
-    let run = start(ctx, None).await;
-    let final_run = wait_run(&store, &run.id).await;
+async fn no_screenshots_uses_deepseek_text_only() {
+    let (endpoint, stub) = spawn_stub(Failure::PrimaryImages).await;
+    let client = MachineLlmClient::new("test-key", &endpoint);
+    let report = prompts::LaneJudgeReport::new(
+        0,
+        prompts::ValidatorOutput {
+            verdict: prompts::Verdict::Pass,
+            summary: "ok".to_owned(),
+            features: vec!["feature".to_owned()],
+            bugs: Vec::new(),
+            security: Vec::new(),
+            quality_score: 8.0,
+        },
+    );
+    let verdict = orchestrator::judge::run_judge_ladder(
+        &client,
+        "squadron-test-run",
+        "build a small page",
+        &[report],
+        &["<extract>".to_owned()],
+        &[None],
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
 
-    assert_eq!(final_run.status, "judged");
+    assert_eq!(verdict.rung, orchestrator::judge::JudgeRung::TextOnly);
     let calls = judge_calls(&stub);
-    assert_eq!(calls.len(), 3, "all three rungs tried: {calls:?}");
-    assert_eq!(calls[0]["model"], json!(JUDGE_MODEL));
-    assert_eq!(calls[1]["model"], json!(JUDGE_IMAGE_FALLBACK_MODEL));
-    assert_eq!(calls[2]["model"], json!(JUDGE_MODEL));
-    let text = calls[2]["messages"][1]["content"]
+    assert_eq!(calls.len(), 1, "image rung skipped: {calls:?}");
+    assert_eq!(calls[0]["model"], json!(JUDGE_TEXT_FALLBACK_MODEL));
+    let text = calls[0]["messages"][1]["content"]
         .as_str()
         .unwrap_or_default();
     assert!(
         text.contains("validator-reports"),
         "text rung keeps the prompt"
     );
-    assert_rung(&store, &final_run, "glm-5.3 text-only").await;
-    assert_no_run_failed(&store, &final_run).await;
+    assert!(text.contains("original-brief"), "text rung keeps the brief");
 }
 
 /// (c) exact production shape: one lane validates while the other fails, and
@@ -390,7 +388,7 @@ async fn all_judge_rungs_failing_still_yields_partial_with_fallback_winner() {
         "validated"
     );
     assert_eq!(lanes.iter().find(|l| l.idx == 1).unwrap().state, "failed");
-    assert_eq!(judge_calls(&stub).len(), 3, "every rung was attempted");
+    assert_eq!(judge_calls(&stub).len(), 2, "both rungs were attempted");
     assert_rung(&store, &final_run, "deterministic_fallback").await;
 }
 

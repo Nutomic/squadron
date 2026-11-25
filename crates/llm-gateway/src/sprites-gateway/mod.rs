@@ -13,7 +13,8 @@ pub fn gateway_endpoint() -> String {
 }
 pub const SESSION_HEADER: &str = "x-opencode-session";
 // Model pinning moved to crate::models (single source of truth: implementer
-// lanes pinned to glm-5.3-flash, validator deepseek-v4.1-flash, judge glm-5.3).
+// lanes pinned to glm-5.3-flash, validator deepseek-v4.1-flash, judge
+// glm-5.3-flash with a deepseek-v4.1-flash text-only fallback).
 pub use crate::models::{
     lane_model, DIVERSITY_MODEL, IMPLEMENTER_MODEL, JUDGE_MODEL, LANE_MODELS, VALIDATOR_MODEL,
 };

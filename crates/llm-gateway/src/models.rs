@@ -6,9 +6,9 @@
 //!   models.
 //! - The validator (curl-floor reviewer) MUST be a different model than the
 //!   implementer: same-model self-review is a rubber stamp.
-//! - The judge stays on the full-strength glm-5.3 (which also differs from
-//!   the validator, so the judge never re-runs the reviewer's model either),
-//!   with a pinned same-family flash fallback for image-bearing requests.
+//! - The judge runs glm-5.3-flash with screenshots (image-capable,
+//!   probe-verified 2026-11-25), then a different-family deepseek-v4.1-flash
+//!   text-only fallback so a gateway/model failure cannot kill a run.
 
 /// Implementer lanes: glm-5.3-flash only (lane alternation removed).
 pub const IMPLEMENTER_MODEL: &str = "glm-5.3-flash";
@@ -21,15 +21,17 @@ pub const IMPLEMENTER_MODEL: &str = "glm-5.3-flash";
 /// model-not-found errors, check the console privacy region first.
 pub const VALIDATOR_MODEL: &str = "deepseek-v4.1-flash";
 
-/// Machine judge: full-strength glm-5.3 (unchanged; differs from the
-/// validator's model too).
-pub const JUDGE_MODEL: &str = "glm-5.3";
+/// Machine judge: glm-5.3-flash WITH screenshots. Live probe 2026-11-25:
+/// the identical image parts that glm-5.3 rejects with HTTP 400
+/// `[invalid_request]` (first seen 2026-11-24, reconfirmed 2026-11-25) returned
+/// 200 in 3.7s with coherent ranked output. `reasoning_effort` stays low.
+pub const JUDGE_MODEL: &str = "glm-5.3-flash";
 
-/// Judge fallback for screenshot-bearing requests: the same family as the
-/// primary judge, but the big model started rejecting image input upstream
-/// (HTTP 400 `[invalid_request]`); the flash variant was probe-verified to
-/// still accept the identical image parts on 2026-11-24.
-pub const JUDGE_IMAGE_FALLBACK_MODEL: &str = "glm-5.3-flash";
+/// Judge text-only fallback: deepseek-v4.1-flash, a DIFFERENT model family so
+/// it is a different failure domain from the flash primary. Live probe
+/// 2026-11-25: text-only requests succeed while image requests 400, hence this
+/// rung carries no image parts.
+pub const JUDGE_TEXT_FALLBACK_MODEL: &str = "deepseek-v4.1-flash";
 
 /// Machine-side diversity generator (prompt-level diversity stays).
 pub const DIVERSITY_MODEL: &str = "glm-5.3";

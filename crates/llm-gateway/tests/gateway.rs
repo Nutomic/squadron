@@ -196,7 +196,7 @@ async fn sprite_recipe_uses_gateway_headers_without_auth() {
         "https://api.sprites.dev/v1/gateway/custom_api/sanCSEiLn9Np-G_Y5q2jKA/chat/completions"
     );
     assert_eq!(GATEWAY_CONNECTOR_ID, "sanCSEiLn9Np-G_Y5q2jKA");
-    assert_eq!(JUDGE_MODEL, "glm-5.3");
+    assert_eq!(JUDGE_MODEL, "glm-5.3-flash");
     assert_eq!(lane_model(0), "glm-5.3-flash");
     assert_eq!(lane_model(1), "glm-5.3-flash"); // pinned: no per-lane alternation
     let recipe = SpriteRecipe::for_model("lane-7", lane_model(0));

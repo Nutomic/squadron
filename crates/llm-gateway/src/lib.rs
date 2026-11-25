@@ -9,8 +9,8 @@ pub mod types;
 pub use error::LlmError;
 pub use machine::{machine_session_id, MachineLlmClient, REASONING_EFFORT_ENV};
 pub use models::{
-    lane_model, DECOMPOSE_MODEL, DIVERSITY_MODEL, IMPLEMENTER_MODEL, JUDGE_IMAGE_FALLBACK_MODEL,
-    JUDGE_MODEL, LANE_MODELS, VALIDATOR_MODEL,
+    lane_model, DECOMPOSE_MODEL, DIVERSITY_MODEL, IMPLEMENTER_MODEL, JUDGE_MODEL,
+    JUDGE_TEXT_FALLBACK_MODEL, LANE_MODELS, VALIDATOR_MODEL,
 };
 pub use sprites_gateway::{gateway_endpoint, SpriteRecipe, GATEWAY_CONNECTOR_ID, SESSION_HEADER};
 pub use types::{
