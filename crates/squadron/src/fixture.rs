@@ -30,6 +30,7 @@ pub fn fixture_snapshot() -> Snapshot {
             LaneSnapshot {
                 idx: 0,
                 state: "running".to_owned(),
+                revisions: 0,
                 model: Some("glm-5.3-flash".to_owned()),
                 impl_url: Some("https://squadron-fixture-0.sprites.app".to_owned()),
                 cost_usd: Some(0.42),
@@ -54,6 +55,7 @@ pub fn fixture_snapshot() -> Snapshot {
             LaneSnapshot {
                 idx: 1,
                 state: "validated".to_owned(),
+                revisions: 2,
                 model: Some("glm-5.3-flash".to_owned()),
                 impl_url: Some("https://squadron-fixture-1.sprites.app".to_owned()),
                 cost_usd: Some(0.87),
@@ -78,6 +80,7 @@ pub fn fixture_snapshot() -> Snapshot {
             LaneSnapshot {
                 idx: 2,
                 state: "failed".to_owned(),
+                revisions: 0,
                 model: Some("glm-5.3-flash".to_owned()),
                 impl_url: None,
                 cost_usd: Some(0.09),

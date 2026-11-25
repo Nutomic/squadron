@@ -829,6 +829,8 @@ async fn fixture_snapshot_matches_contract() {
         "\"screenshotState\":\"pending\"",
         "\"state\":\"failed\"",
         "\"state\":\"validated\"",
+        "\"revisions\":0",
+        "\"revisions\":2",
         "\"valVerdict\":\"pass\"",
         "\"implUrl\":",
     ] {

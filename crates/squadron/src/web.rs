@@ -810,23 +810,6 @@ fn spawn_lane_revive(state: &AppState, run_id: &str, lane: &Lane) {
     });
 }
 
-async fn lane_tokei(
-    State(state): State<SharedState>,
-    Path((run_id, idx)): Path<(String, i64)>,
-) -> Response {
-    if !valid_id(&run_id) {
-        return not_found();
-    }
-    let Some(lane) = state.store.get_lane(&run_id, idx).await.ok().flatten() else {
-        return not_found();
-    };
-    let tpl = TokeiTemplate {
-        idx: lane.idx,
-        tokei_json: lane.tokei_json.clone().unwrap_or_default(),
-    };
-    HtmlResponse(tpl.render().unwrap_or_default()).into_response()
-}
-
 async fn thumb(
     State(state): State<SharedState>,
     Path((run_id, idx)): Path<(String, i64)>,

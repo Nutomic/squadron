@@ -6,6 +6,7 @@
     creating: { label: 'creating', cls: 'chip chip-info chip-pulse' },
     running: { label: 'running', cls: 'chip chip-info chip-pulse' },
     done: { label: 'warm', cls: 'chip chip-neutral' },
+    revising: { label: 'revising', cls: 'chip chip-info chip-pulse' },
     validated: { label: 'verified', cls: 'chip chip-success' },
     failed: { label: 'failed', cls: 'chip chip-error' },
     skipped: { label: 'skipped', cls: 'chip chip-neutral' }
@@ -17,6 +18,7 @@
   let hasThumb = $derived(lane.screenshotState === 'done');
   let thumbUrl = $derived(lane.thumbnailDataUrl ?? `/${runId}/thumb/${lane.idx}`);
   let buildLabel = $derived(lane.buildMs == null ? null : fmtBuild(lane.buildMs));
+  let revisionBadge = $derived(lane.revisions > 0 ? `rev ${lane.revisions}` : null);
 
   function fmtBuild(ms) {
     const mins = Math.floor(ms / 60000);
@@ -74,7 +76,12 @@
       <span class="flex items-center gap-2 text-sm font-semibold tracking-tight">
         <span class="lane-dot"></span>Lane {lane.idx}
       </span>
-      <span class={chip.cls}>{chip.label}</span>
+      <span class="flex items-center gap-1">
+        {#if revisionBadge}
+          <span class="chip chip-info chip-no-dot">{revisionBadge}</span>
+        {/if}
+        <span class={chip.cls}>{chip.label}</span>
+      </span>
     </div>
 
     <div class="mono-num text-base-content/60 truncate">{lane.model ?? 'agent not started'}</div>
