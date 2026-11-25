@@ -462,12 +462,12 @@ async fn judge_output_with_injection_markers_advances_the_ladder() {
     let calls = judge_calls(&stub);
     assert_eq!(calls.len(), 2, "marker rung rejected, ladder advanced");
     assert_eq!(calls[0]["model"], json!(JUDGE_MODEL));
-    assert_eq!(calls[1]["model"], json!(JUDGE_IMAGE_FALLBACK_MODEL));
+    assert_eq!(calls[1]["model"], json!(JUDGE_TEXT_FALLBACK_MODEL));
     let verdict = final_run.judge_verdict.clone().unwrap_or_default();
     assert!(
         !verdict.contains("[INJECTION?]"),
         "marker must not reach the verdict card: {verdict}"
     );
-    assert_rung(&store, &final_run, "glm-5.3-flash+images").await;
+    assert_rung(&store, &final_run, "deepseek-v4.1-flash text-only").await;
     assert_no_run_failed(&store, &final_run).await;
 }
