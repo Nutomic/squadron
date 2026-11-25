@@ -10,6 +10,10 @@ brief to verdict. The control plane is Rust: axum HTTP server, SQLx/SQLite
 persistence, a lane state machine and slot-limited pipeline, and a prompt
 schema gate.
 
+The full agent workflow:
+
+![Agent workflow](docs/assets/workflow.png)
+
 ## Architecture
 
 Six-crate Cargo workspace plus the binary crate that ties it together:
@@ -97,81 +101,3 @@ Lane sprites are provisioned at runtime through the `sprite` CLI (the
 `SPRITE_TOKEN` secret authenticates the boot step); nothing else needs to be
 manually created.
 
-## What I got wrong and fixed
-
-Honest list of the failure classes hit while building this, and the fixes:
-
-- Run IDs are case-sensitive capability tokens, but the sprite CLI only accepts
-  `^[a-z0-9][a-z0-9-]*$` names — sprite names now lowercase/strip the run-ID
-  segment before building `squadron-<run>-impl-<i>`.
-- Sprite auto-sleep killed what looked like "detached" long-running sessions —
-  a supervisor pattern (keep-alive pinned to the sprite for the duration of
-  lane work) fixed it.
-- Implementer dev servers died the moment the harness session ended, so the
-  public 200-check always failed — agents now follow a detached-serving
-  protocol (nohup-style serving that outlives the agent process).
-- Agents that bound to loopback produced servers unreachable via the assigned
-  public `*.sprites.app` URL — prompts now require binding to `0.0.0.0` on the
-  assigned public URL, verified by the 200-check.
-- Interrupted harness runs left 0-byte output files with the useful content
-  lost — the runner now captures a tail of the last partial response instead
-  of failing on empty output.
-- The gateway sometimes answered with reasoning-only responses (no wire
-  content) on the curl floor — fixed with retry-at-lower-reasoning-effort and
-  raw-response logging to diagnose the shape.
-- The smoke test timed out at 30 s even on clean main because test mode still
-  performed real HTTP probes against fake sprite URLs — test mode now
-  short-circuits all network paths, and liveness gates no longer stall.
-- Codex 0.167 dropped the chat-completions wire API (Responses-API only), so it
-  cannot speak the gateway recipe — blacklisted as a harness choice.
-- `tokio::process::Command::wait_with_output()` captured nothing because
-  stdio defaulted to inherited — explicit `Stdio::piped()` on both streams
-  (symptom: `sprite list` returned `[]` with empty stderr).
-- SQLx type inference surprises: `TEXT PRIMARY KEY` inferred as
-  `Option<String>`, `COALESCE(MAX(ts),0)` as non-null — mapped explicitly
-  instead of trusting inference.
-- Concurrent SQLite writers deadlocked (`SQLITE_BUSY`) with sqlx's deferred
-  `BEGIN` — both event/cost paths now use `BEGIN IMMEDIATE`.
-- The harness-choice cache was process-wide, so lane 0's probe result was
-  reused for every other sprite — the cache is keyed per sprite name.
-- Harness-attributable failures burned the scarce lane-retry budget — retries
-  now use a separate harness budget that walks the chain down to the curl
-  floor, with failed choices blacklisted.
-- Costs were double-counted (agent-reported usage inside its own JSON vs the
-  gateway-reported run cost) — only gateway-reported costs are summed; unknown
-  components persist as NULL and render as `-`.
-- A validator `verdict: fail` still left the lane `validated`, so failing
-  lanes could win — failing lanes are demoted to failed-with-report and
-  excluded from the judge set.
-- Manual state events and a `judged` lane transition fought the spec's lane
-  state machine — all transitions funnel through one `transition()` append.
-- Shell-script test fixtures flaked with `ETXTBSY` under parallel tests on
-  overlayfs — replaced with a compiled fixture binary symlinked per tempdir.
-- Prompt injection was only schema-checked — a `[INJECTION?]` marker scan now
-  runs with the schema gate, and any marker fails the lane hard.
-- The mock CLI's HTTP 200 probe hung forever on a listening-but-silent port —
-  bounded `connect_timeout` plus read timeout.
-
-## Harness choice
-
-Each lane needs a coding-agent harness to run the implementer/validator
-prompts on its sprite. The chain (first available wins, per-sprite probed and
-cached, escalating on harness-attributable failure):
-
-1. **opencode** — the default. Installs in-lane (`curl -fsSL https://opencode.ai/install | bash`), configured through an `opencode.json` that points it at the no-auth LLM gateway recipe (stable session, model constants, `reasoning_effort=low`), and its final JSON output is schema-gated like every other path.
-2. **claude** — second fallback if opencode is unavailable on that sprite.
-3. **curl-loop floor** — guaranteed last resort: a plain `curl` loop against the gateway's chat endpoint with a 12-turn budget. It has no shell access, so the orchestrator materializes the agent's declared files itself; this keeps a lane buildable even with zero agent CLIs installed.
-
-Why not codex: codex 0.167 removed the chat-completions wire API and speaks
-only the Responses API, which the gateway recipe cannot emulate — it is
-blacklisted (`HarnessChoice::Codex` is never probed).
-
-Why opencode won: it is a single self-contained binary, installs without root,
-runs headless with a config-file recipe (no interactive auth), emits
-machine-parseable output, and its model/endpoint are fully controlled by the
-orchestrator. The curl floor exists because "no agent CLI available" must
-still produce a schema-valid implementer output, not a dead lane.
-
-## License
-
-MIT.
