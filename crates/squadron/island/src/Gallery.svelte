@@ -67,7 +67,7 @@
   );
   let winner = $derived(hasWinner ? snap?.run?.winnerLane : null);
   let verdict = $derived(snap?.run?.judgeVerdict);
-  let briefFulfillment = $derived(snap?.run?.judgeBriefFulfillment);
+  let caseFulfillment = $derived(snap?.run?.judgeCaseFulfillment);
   let totalCost = $derived(
     snap?.lanes?.reduce((acc, l) => acc + (l.costUsd ?? 0), 0) ?? null
   );
@@ -101,7 +101,7 @@
         {#if briefFulfillment}
           <div class="mt-2.5 flex items-start gap-2.5">
             <span class="chip chip-no-dot flex-none {briefFulfillment.state === 'fulfilled' ? 'chip-success' : briefFulfillment.state === 'unfulfilled' ? 'chip-error' : 'chip-neutral'}">
-              {briefFulfillment.state === 'fulfilled' ? 'brief fulfilled' : briefFulfillment.state === 'unfulfilled' ? 'brief not fulfilled' : 'brief: cannot verify from evidence'}
+              {caseFulfillment.state === 'fulfilled' ? 'case fulfilled' : caseFulfillment.state === 'unfulfilled' ? 'case not fulfilled' : 'case: cannot verify from evidence'}
             </span>
             <p class="text-xs leading-relaxed text-base-content/60">{briefFulfillment.evidence}</p>
           </div>
