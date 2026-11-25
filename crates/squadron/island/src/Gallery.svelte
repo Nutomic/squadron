@@ -1,7 +1,7 @@
 <script>
   import LaneCard from './LaneCard.svelte';
 
-  let { runId, eventsUrl, snapshotUrl, initialStatus, csrfToken } = $props();
+  let { runId, eventsUrl, snapshotUrl, initialStatus } = $props();
 
   // Terminal runs have no live hub to subscribe to (R3 leak fix), so opening
   // an EventSource would only loop through reconnect forever.
@@ -60,11 +60,11 @@
   let runStatus = $derived(snap?.run?.status ?? initialStatus ?? null);
   let runStatusChip = $derived(runStatus ? (STATUS_CHIPS[runStatus] ?? 'chip-neutral') : null);
   // A partial run (F27: some lanes validated, some failed) still has a winner
-  // among the survivors — it renders the verdict card and is promotable.
+  // among the survivors — it renders the verdict card. Legacy `promoted` runs
+  // (set by the removed promote-winner feature) keep their winner ribbon.
   let hasWinner = $derived(
     runStatus === 'judged' || runStatus === 'partial' || runStatus === 'promoted'
   );
-  let promotable = $derived(runStatus === 'judged' || runStatus === 'partial');
   let winner = $derived(hasWinner ? snap?.run?.winnerLane : null);
   let verdict = $derived(snap?.run?.judgeVerdict);
   let briefFulfillment = $derived(snap?.run?.judgeBriefFulfillment);
@@ -109,17 +109,6 @@
       </div>
     </div>
   </div>
-{/if}
-
-{#if snap && promotable}
-  <!-- CSRF double-submit token (review F3 #3): the server sets the same
-       token in the squadron_csrf cookie on this page's GET. -->
-  <form method="post" action="/{runId}/promote" class="mb-6">
-    <input type="hidden" name="csrf_token" value={csrfToken ?? ''}>
-    <button type="submit" class="btn btn-primary btn-sm rounded-full px-5 font-semibold border-0">
-      Promote winner (lane {winner})
-    </button>
-  </form>
 {/if}
 
 {#if snap?.lanes?.length}

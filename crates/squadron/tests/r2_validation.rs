@@ -162,21 +162,6 @@ async fn invalid_run_id_is_404_everywhere() {
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND, "GET {uri}");
     }
-    // promote is POST; it must also gate (the form extractor must succeed for
-    // the handler's valid_id gate to run, so send a well-formed body)
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/{bad}/promote"))
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from("csrf_token=x"))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
 
 /// R2-3#2: static assets keep the handler's max-age (not clobbered by the

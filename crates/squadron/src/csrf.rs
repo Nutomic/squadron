@@ -1,10 +1,10 @@
 //! Review F3 #3: double-submit CSRF tokens for the HTML form endpoints
-//! (POST /runs and POST /{run_id}/promote). The service is public-by-design
+//! (POST /runs). The service is public-by-design
 //! (no login), so a stateless double-submit cookie is the fit:
 //!
 //! - every GET that renders a form issues a fresh unguessable token and sets
-//!   it both in a cookie (`squadron_csrf`) and in the page (hidden input /
-//!   `data-csrf-token` for the island's promote form);
+//!   it both in a cookie (`squadron_csrf`) and in the page
+//!   (`data-csrf-token` for the island's launch dialog);
 //! - the POST is accepted only when the cookie and the form token are both
 //!   present, non-empty and equal;
 //! - the JSON API is unaffected (it does not rely on ambient cookie auth).

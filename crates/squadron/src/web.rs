@@ -1,8 +1,8 @@
 use askama::Template;
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Form, Json, Path, State};
+use axum::extract::{ConnectInfo, Json, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{Html as HtmlResponse, IntoResponse, Redirect, Response};
+use axum::response::{Html as HtmlResponse, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::{TimeZone, Utc};
@@ -37,12 +37,6 @@ fn is_terminal_status(status: &str) -> bool {
     matches!(status, "judged" | "partial" | "failed" | "promoted")
 }
 
-/// F27: partial runs have a winner among the validated survivors, so they are
-/// promotable exactly like `judged` runs.
-fn is_promotable_status(status: &str) -> bool {
-    matches!(status, "judged" | "partial")
-}
-
 /// F28: the samples demo the decomposition features — explicit counts and
 /// "or"-alternatives become one parallel worker per item.
 const SAMPLE_BRIEFS: [&str; 3] = [
@@ -72,7 +66,6 @@ pub fn router(state: SharedState) -> Router {
         .route("/{run_id}/lane/{idx}", get(lane_detail))
         .route("/{run_id}/thumb/{idx}", get(thumb))
         .route("/{run_id}/source/{idx}", get(source))
-        .route("/{run_id}/promote", post(promote))
         .route("/robots.txt", get(robots_txt))
         .route("/static/{*path}", get(serve_static))
         .with_state(state)
@@ -534,8 +527,8 @@ pub struct GalleryTemplate {
     pub events_url: String,
     pub snapshot_url: String,
     pub status: String,
-    /// Review F3 #3: CSRF token for the island's promote form (also set as a
-    /// cookie on this GET).
+    /// Review F3 #3: CSRF token (also set as a cookie on this GET) for the
+    /// island's launch dialog.
     pub csrf_token: String,
 }
 
@@ -881,35 +874,6 @@ async fn source(
             res
         }
         Err(_) => not_found(),
-    }
-}
-
-/// Review F3 #3: the promote POST carries the double-submit token too (the
-/// island's promote form includes it; the token is also rendered as
-/// data-csrf-token on the island root).
-#[derive(Deserialize)]
-pub struct PromoteForm {
-    pub csrf_token: Option<String>,
-}
-
-async fn promote(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    Path(run_id): Path<String>,
-    Form(form): Form<PromoteForm>,
-) -> Response {
-    if !valid_id(&run_id) {
-        return not_found();
-    }
-    if !csrf::check(&headers, form.csrf_token.as_deref()) {
-        return (StatusCode::FORBIDDEN, "invalid or missing CSRF token").into_response();
-    }
-    match get_run(&state, &run_id).await {
-        Some(run) if is_promotable_status(&run.status) => {
-            let _ = state.store.update_run_status(&run_id, "promoted").await;
-            Redirect::to(&format!("/{run_id}")).into_response()
-        }
-        _ => (StatusCode::BAD_REQUEST, "run is not judged").into_response(),
     }
 }
 

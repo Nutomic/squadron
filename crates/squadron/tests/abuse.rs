@@ -162,71 +162,10 @@ async fn confirm_requires_matching_csrf_token() {
     assert_eq!(store.list_runs().await.unwrap().len(), 1);
 }
 
-/// POST /{run_id}/promote is CSRF-checked too; the JSON API is not.
+/// The JSON API is not CSRF-checked (cookie-auth-free API).
 #[tokio::test]
-async fn promote_requires_token_but_json_api_is_unaffected() {
-    let (app, store) = app().await;
-    let run = store
-        .create_run("promote csrf", 2, 1_732_020_000_000)
-        .await
-        .unwrap();
-    store
-        .finish_run(&run.id, "judged", "ok", 0, None, 1)
-        .await
-        .unwrap();
-    let token = {
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/{}", run.id))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        res.headers()
-            .get(header::SET_COOKIE)
-            .and_then(|v| v.to_str().ok())
-            .expect("gallery GET must set squadron_csrf")
-            .strip_prefix("squadron_csrf=")
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned()
-    };
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/{}/promote", run.id))
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(format!("csrf_token={token}")))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::FORBIDDEN, "cookie missing");
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/{}/promote", run.id))
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("squadron_csrf={token}"))
-                .body(Body::from(format!("csrf_token={token}")))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::SEE_OTHER);
-    assert_eq!(
-        store.get_run(&run.id).await.unwrap().unwrap().status,
-        "promoted"
-    );
+async fn json_api_is_not_csrf_checked() {
+    let (app, _store) = app().await;
 
     // JSON /api/runs is NOT CSRF-checked (cookie-auth-free API).
     let res = app
