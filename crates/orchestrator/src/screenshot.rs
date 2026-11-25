@@ -439,21 +439,21 @@ impl ScreenshotQueue {
     /// Without this the gate still probes and rejects a dead URL's capture,
     /// but cannot attempt a revive.
     pub fn with_revive(self, sprite: SpriteClient, allow_loopback: bool) -> Self {
-        *self.revive.write().unwrap() = Some((sprite, allow_loopback));
+        *self.revive.write().unwrap_or_else(|p| p.into_inner()) = Some((sprite, allow_loopback));
         self
     }
 
     /// F37: test-only probe injection (deterministic dead/alive states
     /// without the network). Production callers leave it unset.
     pub fn with_probe_hook(self, probe: StatusProbe) -> Self {
-        *self.probe_hook.write().unwrap() = Some(probe);
+        *self.probe_hook.write().unwrap_or_else(|p| p.into_inner()) = Some(probe);
         self
     }
 
     /// F37: test-only detached-restart injection (deterministic revive
     /// outcomes without sprite infra). Production callers leave it unset.
     pub fn with_revive_hook(self, revive: ReviveExecHook) -> Self {
-        *self.revive_hook.write().unwrap() = Some(revive);
+        *self.revive_hook.write().unwrap_or_else(|p| p.into_inner()) = Some(revive);
         self
     }
 
@@ -492,9 +492,18 @@ impl ScreenshotQueue {
             while let Some(job) = rx.recv().await {
                 // Snapshot the wiring for this job; the guards drop here,
                 // before any await below.
-                let probe_worker_opt = probe_worker.read().unwrap().clone();
-                let revive_hook_worker_opt = revive_hook_worker.read().unwrap().clone();
-                let revive_worker_opt = revive_worker.read().unwrap().clone();
+                let probe_worker_opt = probe_worker
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
+                let revive_hook_worker_opt = revive_hook_worker
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
+                let revive_worker_opt = revive_worker
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
                 {
                     pending_worker
                         .write()
