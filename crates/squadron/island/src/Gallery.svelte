@@ -98,12 +98,12 @@
       <span class="chip chip-info chip-no-dot flex-none mt-0.5">Judge</span>
       <div class="min-w-0 flex-1">
         <p class="text-sm leading-relaxed text-base-content/80">{verdict}</p>
-        {#if briefFulfillment}
+        {#if caseFulfillment}
           <div class="mt-2.5 flex items-start gap-2.5">
-            <span class="chip chip-no-dot flex-none {briefFulfillment.state === 'fulfilled' ? 'chip-success' : briefFulfillment.state === 'unfulfilled' ? 'chip-error' : 'chip-neutral'}">
+            <span class="chip chip-no-dot flex-none {caseFulfillment.state === 'fulfilled' ? 'chip-success' : caseFulfillment.state === 'unfulfilled' ? 'chip-error' : 'chip-neutral'}">
               {caseFulfillment.state === 'fulfilled' ? 'case fulfilled' : caseFulfillment.state === 'unfulfilled' ? 'case not fulfilled' : 'case: cannot verify from evidence'}
             </span>
-            <p class="text-xs leading-relaxed text-base-content/60">{briefFulfillment.evidence}</p>
+            <p class="text-xs leading-relaxed text-base-content/60">{caseFulfillment.evidence}</p>
           </div>
         {/if}
       </div>
