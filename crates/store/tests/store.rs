@@ -116,6 +116,13 @@ async fn lanes_store_all_pipeline_fields() {
 
     let lane = store.get_lane(&run.id, 0).await.unwrap().unwrap();
     assert_eq!(lane.state, "running");
+    assert_eq!(lane.revisions, 0);
+    store.set_lane_revisions(&run.id, 0, 2).await.unwrap();
+    store.increment_lane_revisions(&run.id, 0).await.unwrap();
+    assert_eq!(
+        store.get_lane(&run.id, 0).await.unwrap().unwrap().revisions,
+        3
+    );
     assert_eq!(lane.sprite_name.as_deref(), Some("squadron-abc-impl-0"));
     assert_eq!(lane.impl_model.as_deref(), Some("glm-5.3-flash"));
     assert_eq!(lane.impl_files, Some(7));

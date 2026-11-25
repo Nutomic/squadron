@@ -1,0 +1,170 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT run_id, idx, variant_json, sprite_name, impl_url, state, revisions, impl_model, impl_summary, impl_files, impl_started_at, impl_deadline, val_model, val_verdict, val_summary, val_quality, val_started_at, val_deadline, val_report_json, tarball_path, tokei_json, screenshot_path, screenshot_state, console_tail, cost_usd, error FROM lanes WHERE run_id = ? ORDER BY idx ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "run_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "idx",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "variant_json",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "sprite_name",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "impl_url",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "state",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "revisions",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "impl_model",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "impl_summary",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "impl_files",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "impl_started_at",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "impl_deadline",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "val_model",
+        "ordinal": 12,
+        "type_info": "Text"
+      },
+      {
+        "name": "val_verdict",
+        "ordinal": 13,
+        "type_info": "Text"
+      },
+      {
+        "name": "val_summary",
+        "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "val_quality",
+        "ordinal": 15,
+        "type_info": "Float"
+      },
+      {
+        "name": "val_started_at",
+        "ordinal": 16,
+        "type_info": "Integer"
+      },
+      {
+        "name": "val_deadline",
+        "ordinal": 17,
+        "type_info": "Integer"
+      },
+      {
+        "name": "val_report_json",
+        "ordinal": 18,
+        "type_info": "Text"
+      },
+      {
+        "name": "tarball_path",
+        "ordinal": 19,
+        "type_info": "Text"
+      },
+      {
+        "name": "tokei_json",
+        "ordinal": 20,
+        "type_info": "Text"
+      },
+      {
+        "name": "screenshot_path",
+        "ordinal": 21,
+        "type_info": "Text"
+      },
+      {
+        "name": "screenshot_state",
+        "ordinal": 22,
+        "type_info": "Text"
+      },
+      {
+        "name": "console_tail",
+        "ordinal": 23,
+        "type_info": "Text"
+      },
+      {
+        "name": "cost_usd",
+        "ordinal": 24,
+        "type_info": "Float"
+      },
+      {
+        "name": "error",
+        "ordinal": 25,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "37aca3f24f3c567ac41026ebf5d70fd6fb745312fdc11644e52322bd7fa2006d"
+}

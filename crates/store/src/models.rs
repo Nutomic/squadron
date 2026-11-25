@@ -21,6 +21,7 @@ pub struct Lane {
     pub sprite_name: Option<String>,
     pub impl_url: Option<String>,
     pub state: String,
+    pub revisions: i64,
     pub impl_model: Option<String>,
     pub impl_summary: Option<String>,
     pub impl_files: Option<i64>,

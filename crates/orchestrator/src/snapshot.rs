@@ -42,6 +42,7 @@ pub struct RunSnapshot {
 pub struct LaneSnapshot {
     pub idx: i64,
     pub state: String,
+    pub revisions: i64,
     pub model: Option<String>,
     pub impl_url: Option<String>,
     pub cost_usd: Option<f64>,
@@ -104,6 +105,7 @@ pub fn lane_snapshot(run: &Run, lane: &Lane, cost_series: Option<Vec<f64>>) -> L
     LaneSnapshot {
         idx: lane.idx,
         state: lane.state.clone(),
+        revisions: lane.revisions,
         model: lane.impl_model.clone(),
         impl_url: lane.impl_url.clone(),
         cost_usd: lane.cost_usd,
@@ -217,6 +219,7 @@ mod tests {
             sprite_name: None,
             impl_url: None,
             state: "validated".to_owned(),
+            revisions: 0,
             impl_model: None,
             impl_summary: None,
             impl_files: None,
@@ -312,6 +315,16 @@ mod tests {
         let mut u = lane();
         u.variant_json = "not json".to_owned();
         assert_eq!(lane_snapshot(&run(), &u, None).impl_prompt, None);
+    }
+
+    #[test]
+    fn lane_snapshot_exposes_revisions() {
+        let mut l = lane();
+        l.revisions = 2;
+        let snap = lane_snapshot(&run(), &l, None);
+        assert_eq!(snap.revisions, 2);
+        let json = serde_json::to_string(&snap).unwrap_or_default();
+        assert!(json.contains("\"revisions\":2"), "snapshot JSON: {json}");
     }
 
     /// Wave D: progress payloads parse strictly; garbage is ignored.

@@ -12,6 +12,7 @@ macro_rules! lane_from_query_row {
             sprite_name: $row.sprite_name,
             impl_url: $row.impl_url,
             state: $row.state,
+            revisions: $row.revisions,
             impl_model: $row.impl_model,
             impl_summary: $row.impl_summary,
             impl_files: $row.impl_files,
@@ -269,7 +270,7 @@ impl Store {
 
     pub async fn get_lane(&self, run_id: &str, idx: i64) -> Result<Option<Lane>, StoreError> {
         let row = sqlx::query!(
-            "SELECT run_id, idx, variant_json, sprite_name, impl_url, state, impl_model, impl_summary, impl_files, impl_started_at, impl_deadline, val_model, val_verdict, val_summary, val_quality, val_started_at, val_deadline, val_report_json, tarball_path, tokei_json, screenshot_path, screenshot_state, console_tail, cost_usd, error FROM lanes WHERE run_id = ? AND idx = ?",
+            "SELECT run_id, idx, variant_json, sprite_name, impl_url, state, revisions, impl_model, impl_summary, impl_files, impl_started_at, impl_deadline, val_model, val_verdict, val_summary, val_quality, val_started_at, val_deadline, val_report_json, tarball_path, tokei_json, screenshot_path, screenshot_state, console_tail, cost_usd, error FROM lanes WHERE run_id = ? AND idx = ?",
             run_id,
             idx
         )
@@ -280,7 +281,7 @@ impl Store {
 
     pub async fn list_lanes(&self, run_id: &str) -> Result<Vec<Lane>, StoreError> {
         let rows = sqlx::query!(
-            "SELECT run_id, idx, variant_json, sprite_name, impl_url, state, impl_model, impl_summary, impl_files, impl_started_at, impl_deadline, val_model, val_verdict, val_summary, val_quality, val_started_at, val_deadline, val_report_json, tarball_path, tokei_json, screenshot_path, screenshot_state, console_tail, cost_usd, error FROM lanes WHERE run_id = ? ORDER BY idx ASC",
+            "SELECT run_id, idx, variant_json, sprite_name, impl_url, state, revisions, impl_model, impl_summary, impl_files, impl_started_at, impl_deadline, val_model, val_verdict, val_summary, val_quality, val_started_at, val_deadline, val_report_json, tarball_path, tokei_json, screenshot_path, screenshot_state, console_tail, cost_usd, error FROM lanes WHERE run_id = ? ORDER BY idx ASC",
             run_id
         )
         .fetch_all(&self.pool)
@@ -475,6 +476,31 @@ impl Store {
         )
         .execute(&self.pool)
         .await?;
+        ensure_lane(result.rows_affected(), run_id, idx)
+    }
+
+    pub async fn set_lane_revisions(
+        &self,
+        run_id: &str,
+        idx: i64,
+        revisions: i64,
+    ) -> Result<(), StoreError> {
+        let result = sqlx::query("UPDATE lanes SET revisions = ? WHERE run_id = ? AND idx = ?")
+            .bind(revisions)
+            .bind(run_id)
+            .bind(idx)
+            .execute(&self.pool)
+            .await?;
+        ensure_lane(result.rows_affected(), run_id, idx)
+    }
+
+    pub async fn increment_lane_revisions(&self, run_id: &str, idx: i64) -> Result<(), StoreError> {
+        let result =
+            sqlx::query("UPDATE lanes SET revisions = revisions + 1 WHERE run_id = ? AND idx = ?")
+                .bind(run_id)
+                .bind(idx)
+                .execute(&self.pool)
+                .await?;
         ensure_lane(result.rows_affected(), run_id, idx)
     }
 

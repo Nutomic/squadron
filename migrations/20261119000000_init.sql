@@ -17,6 +17,7 @@ CREATE TABLE lanes (
   sprite_name       TEXT,
   impl_url          TEXT,
   state             TEXT NOT NULL,
+  revisions         INTEGER NOT NULL DEFAULT 0,
   impl_model        TEXT,
   impl_summary      TEXT,
   impl_files        INTEGER,
