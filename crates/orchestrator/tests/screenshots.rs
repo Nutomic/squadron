@@ -174,7 +174,13 @@ async fn real_mode_creates_dest_dir_before_render_attempt() {
     store.insert_lane(&run.id, 0, "{}").await.unwrap();
 
     let (_dir, data_dir) = queue_data_dir(); // does NOT pre-create screenshots/
-    let queue = ScreenshotQueue::with_data_dir(store.clone(), false, data_dir.clone());
+                                             // F37: the capture gate probes the public URL before any render; wire a
+                                             // deterministic 200 probe so this test reaches the render (with the bogus
+                                             // chromium) and still proves the F14 mkdir-before-render fix.
+    let probe: orchestrator::StatusProbe =
+        Arc::new(|_: String| Box::pin(async { Ok::<u16, String>(200) }));
+    let queue = ScreenshotQueue::with_data_dir(store.clone(), false, data_dir.clone())
+        .with_probe_hook(probe);
     let state = queue
         .ensure_rendered(
             &run.id,

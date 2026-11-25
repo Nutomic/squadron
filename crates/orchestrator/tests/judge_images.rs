@@ -15,8 +15,7 @@ use llm_gateway::{MachineLlmClient, JUDGE_MODEL, JUDGE_TEXT_FALLBACK_MODEL};
 fn context() -> prompts::LaneJudgeContext {
     prompts::LaneJudgeContext {
         case_label: Some("case".to_owned()),
-        case_prompt: Some("build a small page. Angle: minimal".to_owned(),
-        ),
+        case_prompt: Some("build a small page. Angle: minimal".to_owned()),
         live_check: "live: 200 (rechecked 14:32)".to_owned(),
     }
 }

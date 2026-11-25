@@ -394,14 +394,17 @@ pub struct ScreenshotQueue {
     hubs: Option<HubRegistry>,
     /// F37: probe override point (tests inject deterministic fakes). None =
     /// the shared SSRF-safe `net::fetch_public_status` with `allow_loopback`.
-    probe_hook: Option<StatusProbe>,
+    /// Shared with the worker so builder methods applied after `build`
+    /// (e.g. `with_revive` in state.rs) still take effect.
+    probe_hook: Arc<std::sync::RwLock<Option<StatusProbe>>>,
     /// F37: detached-restart override for the capture gate's revive step
     /// (tests inject fakes). None = `sprite exec` via the wired sprite.
-    revive_hook: Option<ReviveExecHook>,
+    /// Same shared-cell contract as `probe_hook`.
+    revive_hook: Arc<std::sync::RwLock<Option<ReviveExecHook>>>,
     /// F37: sprite + loopback policy for the gate's probe/revive steps.
     /// None = revive is not wired; the gate still probes and rejects a dead
     /// URL's capture without a revive attempt.
-    revive: Option<(SpriteClient, bool)>,
+    revive: Arc<std::sync::RwLock<Option<(SpriteClient, bool)>>>,
 }
 
 impl ScreenshotQueue {
@@ -435,22 +438,22 @@ impl ScreenshotQueue {
     /// the detached restart exec) and the loopback policy for the probe.
     /// Without this the gate still probes and rejects a dead URL's capture,
     /// but cannot attempt a revive.
-    pub fn with_revive(mut self, sprite: SpriteClient, allow_loopback: bool) -> Self {
-        self.revive = Some((sprite, allow_loopback));
+    pub fn with_revive(self, sprite: SpriteClient, allow_loopback: bool) -> Self {
+        *self.revive.write().unwrap() = Some((sprite, allow_loopback));
         self
     }
 
     /// F37: test-only probe injection (deterministic dead/alive states
     /// without the network). Production callers leave it unset.
-    pub fn with_probe_hook(mut self, probe: StatusProbe) -> Self {
-        self.probe_hook = Some(probe);
+    pub fn with_probe_hook(self, probe: StatusProbe) -> Self {
+        *self.probe_hook.write().unwrap() = Some(probe);
         self
     }
 
     /// F37: test-only detached-restart injection (deterministic revive
     /// outcomes without sprite infra). Production callers leave it unset.
-    pub fn with_revive_hook(mut self, revive: ReviveExecHook) -> Self {
-        self.revive_hook = Some(revive);
+    pub fn with_revive_hook(self, revive: ReviveExecHook) -> Self {
+        *self.revive_hook.write().unwrap() = Some(revive);
         self
     }
 
@@ -473,12 +476,25 @@ impl ScreenshotQueue {
         let pending_worker = pending.clone();
         let notify_worker = notify.clone();
         let hubs_worker = hubs.clone();
-        let probe_worker = probe_hook.clone();
-        let revive_hook_worker = revive_hook.clone();
-        let revive_worker = revive.clone();
+        // F37: the gate wiring (probe hook, revive hook, sprite) lives in
+        // shared cells — builders may run after `build` (state.rs wires
+        // `with_revive` on the queue returned here, tests chain the hook
+        // builders), so the worker snapshots the current wiring per job
+        // instead of capturing it once at spawn time.
+        let probe_cell = Arc::new(std::sync::RwLock::new(probe_hook));
+        let revive_hook_cell = Arc::new(std::sync::RwLock::new(revive_hook));
+        let revive_cell = Arc::new(std::sync::RwLock::new(revive));
+        let probe_worker = probe_cell.clone();
+        let revive_hook_worker = revive_hook_cell.clone();
+        let revive_worker = revive_cell.clone();
         tokio::spawn(async move {
             // serial: one-at-a-time by nature of single consumer loop
             while let Some(job) = rx.recv().await {
+                // Snapshot the wiring for this job; the guards drop here,
+                // before any await below.
+                let probe_worker_opt = probe_worker.read().unwrap().clone();
+                let revive_hook_worker_opt = revive_hook_worker.read().unwrap().clone();
+                let revive_worker_opt = revive_worker.read().unwrap().clone();
                 {
                     pending_worker
                         .write()
@@ -530,9 +546,9 @@ impl ScreenshotQueue {
                     let gate = capture_gate(
                         &store_worker,
                         &job,
-                        probe_worker.as_ref(),
-                        revive_hook_worker.as_ref(),
-                        revive_worker.as_ref(),
+                        probe_worker_opt.as_ref(),
+                        revive_hook_worker_opt.as_ref(),
+                        revive_worker_opt.as_ref(),
                     )
                     .await;
                     match gate {
@@ -544,9 +560,7 @@ impl ScreenshotQueue {
                                     job.lane_idx,
                                     now_ms(),
                                     "log",
-                                    &format!(
-                                        "screenshot capture gate: {reason}; no frame stored"
-                                    ),
+                                    &format!("screenshot capture gate: {reason}; no frame stored"),
                                 )
                                 .await;
                             ("failed".to_owned(), None)
@@ -566,8 +580,11 @@ impl ScreenshotQueue {
                                     // the stored frame is an error page —
                                     // reject it instead of storing it.
                                     let still_live = probe_is_2xx(
-                                        probe_worker.as_ref(),
-                                        revive_worker.as_ref().map(|(_, lo)| *lo).unwrap_or(false),
+                                        probe_worker_opt.as_ref(),
+                                        revive_worker_opt
+                                            .as_ref()
+                                            .map(|(_, lo)| *lo)
+                                            .unwrap_or(false),
                                         &job.url,
                                     )
                                     .await;
@@ -591,10 +608,16 @@ impl ScreenshotQueue {
                                                 job.lane_idx,
                                                 ts,
                                                 "state",
-                                                &format!("screenshot_render_mode={}", mode.as_str()),
+                                                &format!(
+                                                    "screenshot_render_mode={}",
+                                                    mode.as_str()
+                                                ),
                                             )
                                             .await;
-                                        ("done".to_owned(), Some(dest.to_string_lossy().into_owned()))
+                                        (
+                                            "done".to_owned(),
+                                            Some(dest.to_string_lossy().into_owned()),
+                                        )
                                     }
                                 }
                                 Err(e) => {
@@ -635,9 +658,9 @@ impl ScreenshotQueue {
             pending,
             notify,
             hubs,
-            probe_hook,
-            revive_hook,
-            revive,
+            probe_hook: probe_cell,
+            revive_hook: revive_hook_cell,
+            revive: revive_cell,
         }
     }
 
@@ -974,7 +997,10 @@ mod tests {
                 );
                 break;
             }
-            assert!(tokio::time::Instant::now() < deadline, "gate never finished");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "gate never finished"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         // No file was written at the render destination either.
@@ -1062,11 +1088,13 @@ mod tests {
             }
             // The revive ran exactly once (bounded) and the restart command
             // was the detached nohup form built from the stored run_command.
-            let cmds = revive_cmds.lock().unwrap();
+            // F37 clippy(await-holding-lock): snapshot the recorded revive
+            // commands into owned data so the std MutexGuard is dropped
+            // before the awaits below.
+            let cmds = revive_cmds.lock().unwrap().clone();
             assert_eq!(cmds.len(), 1, "exactly one revive try: {cmds:?}");
             assert!(
-                cmds[0].contains("nohup sh -c")
-                    && cmds[0].contains("python3 -m http.server 8080"),
+                cmds[0].contains("nohup sh -c") && cmds[0].contains("python3 -m http.server 8080"),
                 "restart must be the detached stored run_command: {cmds:?}"
             );
             // The gate passed (the revive attempt is logged) — the failure
@@ -1074,9 +1102,9 @@ mod tests {
             // allowed to proceed only after the revive.
             let events = store.list_lane_events(&run.id, 0).await.unwrap();
             assert!(
-                events.iter().any(|e| e
-                    .payload
-                    .contains("revive attempt 1/2")),
+                events
+                    .iter()
+                    .any(|e| e.payload.contains("revive attempt 1/2")),
                 "the revive-before-capture attempt must be logged: {events:?}"
             );
         }

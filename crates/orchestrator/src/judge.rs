@@ -40,6 +40,7 @@ struct JudgeAttempt {
     with_images: bool,
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors run_judge_ladder's shape
 pub async fn run_judge(
     client: &MachineLlmClient,
     session: &str,
@@ -51,14 +52,7 @@ pub async fn run_judge(
     deadline: Duration,
 ) -> Result<(JudgeOutput, Option<f64>), String> {
     run_judge_ladder(
-        client,
-        session,
-        brief,
-        reports,
-        extracts,
-        images,
-        contexts,
-        deadline,
+        client, session, brief, reports, extracts, images, contexts, deadline,
     )
     .await
     .map(|v| (v.output, v.cost_usd))
@@ -68,6 +62,7 @@ pub async fn run_judge(
 /// primary WITH screenshots (image-capable, probe-verified 2026-11-25), then
 /// the different-family deepseek text-only rung before reporting failure so
 /// the caller can pick a deterministic winner.
+#[allow(clippy::too_many_arguments)] // mirrors the pipeline phase-fn convention
 pub async fn run_judge_ladder(
     client: &MachineLlmClient,
     session: &str,
@@ -282,10 +277,7 @@ pub fn lane_case_from_variant_json(variant_json: &str) -> (Option<String>, Optio
 /// A 2xx probe yields "live: 200 (rechecked HH:MM)" (UTC); anything else —
 /// non-200 status or transport failure — yields the unreachable form so the
 /// judge cannot mistake a stale screenshot frame for the current state.
-pub async fn live_check_text(
-    url: Option<&str>,
-    allow_loopback: bool,
-) -> String {
+pub async fn live_check_text(url: Option<&str>, allow_loopback: bool) -> String {
     let Some(url) = url else {
         return "live: unreachable at judge time (no public URL)".to_owned();
     };
@@ -514,7 +506,9 @@ mod tests {
         );
         assert_eq!(label.as_deref(), Some("navy palette"));
         assert!(
-            case.as_deref().unwrap_or_default().contains("navy and steel blue"),
+            case.as_deref()
+                .unwrap_or_default()
+                .contains("navy and steel blue"),
             "case: {case:?}"
         );
         // Legacy template variant: the angle stands in for the case.
@@ -522,7 +516,9 @@ mod tests {
             lane_case_from_variant_json(r#"{"angle":"retro arcade","stack":"vanilla js"}"#);
         assert_eq!(label.as_deref(), Some("retro arcade"));
         assert!(
-            case.as_deref().unwrap_or_default().contains("Angle: retro arcade"),
+            case.as_deref()
+                .unwrap_or_default()
+                .contains("Angle: retro arcade"),
             "case: {case:?}"
         );
         // Unparsable / case-less JSON yields nothing.
@@ -537,8 +533,8 @@ mod tests {
         // 1h 1m after the epoch (UTC).
         assert_eq!(utc_hhmm((3600 + 60) * 1000), "01:01");
         // Day wrap: 23:59 then midnight.
-        assert_eq!(utc_hhmm(23 * 3600_000 + 59 * 60_000), "23:59");
-        assert_eq!(utc_hhmm(24 * 3600_000), "00:00");
+        assert_eq!(utc_hhmm(23 * 3_600_000 + 59 * 60_000), "23:59");
+        assert_eq!(utc_hhmm(24 * 3_600_000), "00:00");
         // Negative timestamps (defensive) stay on [0,24).
         assert_eq!(utc_hhmm(-60_000), "23:59");
     }

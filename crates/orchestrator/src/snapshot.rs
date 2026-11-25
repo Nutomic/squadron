@@ -166,8 +166,7 @@ pub async fn build_snapshot(store: &Store, run_id: &str) -> Option<Snapshot> {
         .ok()
         .flatten()
     {
-        run_snap.judge_case_fulfillment =
-            serde_json::from_str::<CaseFulfillmentView>(&json).ok();
+        run_snap.judge_case_fulfillment = serde_json::from_str::<CaseFulfillmentView>(&json).ok();
     }
     let mut lane_snaps = Vec::with_capacity(lanes.len());
     for lane in lanes {

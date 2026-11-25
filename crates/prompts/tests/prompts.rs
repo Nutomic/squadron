@@ -324,7 +324,9 @@ fn role_prompts_include_schema_and_untrusted_data_rule() {
         &["sanitized page text".to_owned()],
         &[prompts::LaneJudgeContext {
             case_label: Some("arcade case".to_owned()),
-            case_prompt: Some("build a small arcade game. Angle: arcade loop and score table".to_owned()),
+            case_prompt: Some(
+                "build a small arcade game. Angle: arcade loop and score table".to_owned(),
+            ),
             live_check: "live: 200 (rechecked 14:32)".to_owned(),
         }],
     );
@@ -339,7 +341,9 @@ fn role_prompts_include_schema_and_untrusted_data_rule() {
         judge.user
     );
     assert!(
-        judge.user.contains("The parent prompt is context, not the per-lane rubric"),
+        judge
+            .user
+            .contains("The parent prompt is context, not the per-lane rubric"),
         "parent-prompt context rule missing: {}",
         judge.user
     );
@@ -372,9 +376,9 @@ fn role_prompts_include_schema_and_untrusted_data_rule() {
         judge.user
     );
     assert!(
-        judge
-            .user
-            .contains("If evidence conflicts, note the conflict and weight recency and verification depth"),
+        judge.user.contains(
+            "If evidence conflicts, note the conflict and weight recency and verification depth"
+        ),
         "conflict rule missing: {}",
         judge.user
     );
