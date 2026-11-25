@@ -35,9 +35,9 @@ pub const JUDGE_IMAGE_FALLBACK_MODEL: &str = "glm-5.3-flash";
 pub const DIVERSITY_MODEL: &str = "glm-5.3";
 
 /// Wave B: machine-side brief decomposition (lane count + per-case implementer
-/// prompts). Full-strength glm-5.3 at low reasoning effort, same tier as the
-/// judge/diversity machine calls.
-pub const DECOMPOSE_MODEL: &str = "glm-5.3";
+/// prompts). Planner is a simple splitting task; glm-5.3-flash is probe-verified
+/// 2× faster than glm-5.3 at equal quality (reasoning_effort stays low).
+pub const DECOMPOSE_MODEL: &str = "glm-5.3-flash";
 
 /// Alternation removed: every implementer lane runs the pinned model. Kept as
 /// a one-element list so `lane_model` call sites stay valid.

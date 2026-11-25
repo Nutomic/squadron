@@ -1,9 +1,9 @@
 #![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
 
-//! Wave A model-pinning contract: implementer lanes run glm-5.3-flash only,
+//! Wave A/F35 model-pinning contract: implementer lanes run glm-5.3-flash only,
 //! the curl-floor validator (reviewer) runs deepseek-v4.1-flash — a DIFFERENT
 //! model than the implementer, so a review is never same-model self-review —
-//! and the judge stays glm-5.3.
+//! the judge stays glm-5.3, and decomposition uses glm-5.3-flash.
 
 use llm_gateway::{
     lane_model, SpriteRecipe, DECOMPOSE_MODEL, DIVERSITY_MODEL, IMPLEMENTER_MODEL,
@@ -27,7 +27,7 @@ fn pinned_models_have_their_contracted_values() {
     // model (probe-verified 2026-11-24 after the big model rejected images).
     assert_eq!(JUDGE_IMAGE_FALLBACK_MODEL, "glm-5.3-flash");
     assert_eq!(DIVERSITY_MODEL, "glm-5.3");
-    assert_eq!(DECOMPOSE_MODEL, "glm-5.3");
+    assert_eq!(DECOMPOSE_MODEL, "glm-5.3-flash");
 }
 
 #[test]
