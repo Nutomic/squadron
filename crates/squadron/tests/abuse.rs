@@ -258,7 +258,7 @@ async fn process_active_run_cap_returns_429_with_retry_after() {
                     .method("POST")
                     .uri("/api/runs")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .header("x-forwarded-for", ip)
+                    .header("fly-client-ip", ip)
                     .body(Body::from(r#"{"brief":"cap","n_lanes":2}"#))
                     .unwrap(),
             )
@@ -276,7 +276,7 @@ async fn process_active_run_cap_returns_429_with_retry_after() {
                 .method("POST")
                 .uri("/api/runs")
                 .header(header::CONTENT_TYPE, "application/json")
-                .header("x-forwarded-for", "10.0.0.5")
+                .header("fly-client-ip", "10.0.0.5")
                 .body(Body::from(r#"{"brief":"cap","n_lanes":2}"#))
                 .unwrap(),
         )
@@ -353,7 +353,7 @@ async fn per_ip_concurrent_run_cap() {
                     .method("POST")
                     .uri("/api/runs")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .header("x-forwarded-for", "1.1.1.1")
+                    .header("fly-client-ip", "1.1.1.1")
                     .body(Body::from(format!(r#"{{"brief":"ip{i}","n_lanes":2}}"#)))
                     .unwrap(),
             )
@@ -368,7 +368,7 @@ async fn per_ip_concurrent_run_cap() {
                 .method("POST")
                 .uri("/api/runs")
                 .header(header::CONTENT_TYPE, "application/json")
-                .header("x-forwarded-for", "1.1.1.1")
+                .header("fly-client-ip", "1.1.1.1")
                 .body(Body::from(r#"{"brief":"4th","n_lanes":2}"#))
                 .unwrap(),
         )
@@ -383,7 +383,7 @@ async fn per_ip_concurrent_run_cap() {
                 .method("POST")
                 .uri("/api/runs")
                 .header(header::CONTENT_TYPE, "application/json")
-                .header("x-forwarded-for", "2.2.2.2")
+                .header("fly-client-ip", "2.2.2.2")
                 .body(Body::from(r#"{"brief":"other ip","n_lanes":2}"#))
                 .unwrap(),
         )
@@ -407,7 +407,7 @@ async fn per_ip_concurrent_run_cap() {
                 .method("POST")
                 .uri("/api/runs")
                 .header(header::CONTENT_TYPE, "application/json")
-                .header("x-forwarded-for", "1.1.1.1")
+                .header("fly-client-ip", "1.1.1.1")
                 .body(Body::from(r#"{"brief":"4th retry","n_lanes":2}"#))
                 .unwrap(),
         )
@@ -433,7 +433,7 @@ async fn per_ip_hourly_creation_cap() {
                     .method("POST")
                     .uri("/api/runs")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .header("x-forwarded-for", "3.3.3.3")
+                    .header("fly-client-ip", "3.3.3.3")
                     .body(Body::from(format!(r#"{{"brief":"h{i}","n_lanes":2}}"#)))
                     .unwrap(),
             )
@@ -456,7 +456,7 @@ async fn per_ip_hourly_creation_cap() {
                 .method("POST")
                 .uri("/api/runs")
                 .header(header::CONTENT_TYPE, "application/json")
-                .header("x-forwarded-for", "3.3.3.3")
+                .header("fly-client-ip", "3.3.3.3")
                 .body(Body::from(r#"{"brief":"11th","n_lanes":2}"#))
                 .unwrap(),
         )
@@ -471,7 +471,7 @@ async fn per_ip_hourly_creation_cap() {
                 .method("POST")
                 .uri("/api/runs")
                 .header(header::CONTENT_TYPE, "application/json")
-                .header("x-forwarded-for", "4.4.4.4")
+                .header("fly-client-ip", "4.4.4.4")
                 .body(Body::from(r#"{"brief":"fresh ip","n_lanes":2}"#))
                 .unwrap(),
         )

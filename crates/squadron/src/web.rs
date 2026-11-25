@@ -334,17 +334,17 @@ fn too_many_requests_json(rejection: &Rejection) -> Response {
 }
 
 /// Review F3 #1: best-effort client IP for the per-IP run-creation limit.
-/// Reverse-proxy headers first (Fly sets `Fly-Client-IP`), then the socket
-/// address when the service was made with connect info, else a shared
-/// "unknown" bucket.
+/// ONLY `Fly-Client-IP` is trusted: Fly's edge proxy sets it from the real
+/// connection, so clients cannot spoof it. Raw `X-Forwarded-For` is never
+/// trusted — any client can forge it and rotate the per-IP limit. Without
+/// the header (local dev) the socket address is used when the service was
+/// made with connect info, else a shared "unknown" bucket.
 pub(crate) fn client_ip(headers: &HeaderMap, info: ConnectInfo<SocketAddr>) -> String {
-    for name in ["x-forwarded-for", "fly-client-ip"] {
-        if let Some(value) = headers.get(name).and_then(|v| v.to_str().ok()) {
-            if let Some(first) = value.split(',').next() {
-                let ip = first.trim();
-                if !ip.is_empty() {
-                    return ip.to_owned();
-                }
+    if let Some(value) = headers.get("fly-client-ip").and_then(|v| v.to_str().ok()) {
+        if let Some(first) = value.split(',').next() {
+            let ip = first.trim();
+            if !ip.is_empty() {
+                return ip.to_owned();
             }
         }
     }
@@ -984,3 +984,46 @@ fn not_found() -> Response {
 #[derive(Template)]
 #[template(path = "404.html")]
 struct NotFoundTemplate;
+
+#[cfg(test)]
+mod client_ip_tests {
+    #![allow(clippy::unwrap_used)] // test code: panics on failure are the assertion mechanism
+
+    use super::*;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                axum::http::HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    fn socket() -> ConnectInfo<SocketAddr> {
+        ConnectInfo("10.1.2.3:4321".parse().unwrap())
+    }
+
+    /// Security review F36: a spoofed `X-Forwarded-For` must be ignored —
+    /// trusting it let a client rotate the per-IP run limit for free.
+    #[test]
+    fn spoofed_x_forwarded_for_is_ignored() {
+        let h = headers(&[("x-forwarded-for", "6.6.6.6, 7.7.7.7")]);
+        assert_eq!(client_ip(&h, socket()), "10.1.2.3");
+    }
+
+    /// `fly-client-ip` is edge-set (unspoofable) and wins over anything else.
+    #[test]
+    fn fly_client_ip_wins() {
+        let h = headers(&[("x-forwarded-for", "6.6.6.6"), ("fly-client-ip", "5.5.5.5")]);
+        assert_eq!(client_ip(&h, socket()), "5.5.5.5");
+    }
+
+    /// Local dev has no proxy headers: the socket address is the identity.
+    #[test]
+    fn socket_fallback_without_headers() {
+        assert_eq!(client_ip(&headers(&[]), socket()), "10.1.2.3");
+    }
+}
