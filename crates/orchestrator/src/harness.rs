@@ -580,14 +580,14 @@ where
         // (it is not even allowed to echo it), so for non-implementer roles
         // the loop stops itself as soon as the answer carries a verdict.
         let done = match role {
-            Role::Implementer => done,
+            Role::Implementer | Role::Revision => done,
             _ => done || floor_validator_final(&text),
         };
         // F9: the final answer is finalized per role — the implementer gets
         // its `files` integer synthesized, the validator gets the
         // implementer-role keys stripped so the schema gate accepts it.
         let final_text = match role {
-            Role::Implementer => finalize_floor_answer(&text, written.len()),
+            Role::Implementer | Role::Revision => finalize_floor_answer(&text, written.len()),
             _ => finalize_validator_floor_answer(&text),
         };
         if done || turn_n == CURL_FLOOR_MAX_TURNS {
@@ -595,8 +595,8 @@ where
         }
         let left = CURL_FLOOR_MAX_TURNS - turn_n;
         let lead = match (role, parsed) {
-            (Role::Implementer, true) => CURL_FLOOR_CONTINUATION,
-            (Role::Implementer, false) => CURL_FLOOR_REPAIR,
+            (Role::Implementer | Role::Revision, true) => CURL_FLOOR_CONTINUATION,
+            (Role::Implementer | Role::Revision, false) => CURL_FLOOR_REPAIR,
             _ => CURL_FLOOR_VALIDATOR_RETRY,
         };
         current = format!(
@@ -775,7 +775,9 @@ pub async fn run_prompt(
                 // validator gets the exact-keys/no-echo/pre-embedded-evidence
                 // protocol.
                 let floor_user = match role {
-                    Role::Implementer => format!("{user}\n\n{CURL_FLOOR_PROTOCOL}"),
+                    Role::Implementer | Role::Revision => {
+                        format!("{user}\n\n{CURL_FLOOR_PROTOCOL}")
+                    }
                     _ => format!("{user}\n\n{CURL_FLOOR_VALIDATOR_PROTOCOL}"),
                 };
                 // Failure round: remember the last raw curl stdout (the
@@ -888,7 +890,7 @@ pub async fn run_prompt(
                         // validator turn's spurious writes must never mutate
                         // the implementer's workdir (the validator's evidence).
                         let plan = floor_plan(&text);
-                        if role == Role::Implementer {
+                        if matches!(role, Role::Implementer | Role::Revision) {
                             if let Some(dir) = &workdir {
                                 if !plan.files.is_empty() {
                                     let cmd = sprite_write_files_cmd(dir, &plan.files);
@@ -925,7 +927,7 @@ pub async fn run_prompt(
                         // orchestrator's post-session HTTP 200 check stays the
                         // authority. F9: validator floor turns write no site and
                         // run no start script.
-                        if role == Role::Implementer {
+                        if matches!(role, Role::Implementer | Role::Revision) {
                             if let Some(dir) = &workdir {
                                 let cmd = cd_prefix(&floor_start_cmd(dir));
                                 let _ = sprite.exec(name, &cmd, &opts).await;

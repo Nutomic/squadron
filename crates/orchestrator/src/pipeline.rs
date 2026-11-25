@@ -5,8 +5,8 @@ use std::time::Duration;
 use base64::Engine as _;
 use llm_gateway::{MachineLlmClient, IMPLEMENTER_MODEL, VALIDATOR_MODEL};
 use prompts::{
-    gate_and_scan_injections, parse, BriefFulfillment, BriefFulfillmentState, GateOptions,
-    ImplementerOutput, JudgeOutput, Role, ValidatorOutput, Verdict,
+    findings_repeat, gate_and_scan_injections, parse, BriefFulfillment, BriefFulfillmentState,
+    GateOptions, ImplementerOutput, JudgeOutput, Role, ValidatorOutput, Verdict,
 };
 use serde_json::Value;
 use sprites_client::{ExecOptions, SpriteClient};
@@ -26,6 +26,8 @@ use crate::screenshot::ScreenshotQueue;
 use crate::slots::SlotSemaphore;
 use crate::snapshot;
 use crate::sse::SseHub;
+
+const MAX_REVISIONS: i64 = 2;
 
 #[derive(Debug, Clone)]
 pub struct PipelineCtx {
@@ -640,48 +642,155 @@ async fn run_lane(
         impl_out,
         tarball_bytes,
     } = phase;
+    let lane = ctx
+        .store
+        .get_lane(&run_id, idx)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("lane {idx} missing"))?;
+    let variant_json = lane.variant_json.clone();
+    let plan_rule = prompts::planning_first_rule(&queue::plan_until_label(
+        lane.impl_started_at.unwrap_or_else(now_ms),
+        ctx.config.impl_deadline,
+    ));
+    let mut impl_out = impl_out;
+    let mut tarball_bytes = tarball_bytes;
+    let mut previous_report: Option<ValidatorOutput> = None;
+    let mut revisions = 0i64;
 
-    // --- Validator phase (F9): failures retry IN PLACE. A validator-phase
-    // failure must NOT recreate the implementer's sprite or rerun the
-    // implementer (run 7: one schema-gate hiccup escalated the harness and
-    // recreated the sprite, burning a good implementer build). New validator
-    // session on the same sprite; the site and workdir stay intact.
     let max_val_retries = ctx.config.retries_per_lane;
-    let mut val_retries = 0;
     loop {
-        let res = run_validator_phase(
+        let mut val_retries = 0;
+        let val_out = loop {
+            let res = run_validator_phase(
+                &ctx,
+                &run_id,
+                idx,
+                &sprite_name,
+                &impl_url,
+                &impl_out,
+                tarball_bytes.as_deref(),
+                &harness,
+            )
+            .await;
+            match res {
+                Ok(v) => break v,
+                Err(e) => {
+                    let ts = now_ms();
+                    if val_retries < max_val_retries {
+                        val_retries += 1;
+                        let _ = ctx
+                            .store
+                            .append_lane_event(
+                                &run_id,
+                                idx,
+                                ts,
+                                "log",
+                                &format!(
+                                    "validator attempt {} failed; retrying in place (sprite and site kept): {e}",
+                                    val_retries
+                                ),
+                            )
+                            .await;
+                        continue;
+                    }
+                    let _ = ctx
+                        .store
+                        .set_lane_error(&run_id, idx, &lane_error_message(&e))
+                        .await;
+                    let _ = transition(&ctx, &run_id, idx, LaneState::Failed).await;
+                    let _ = ctx.sprite.destroy(&sprite_name).await;
+                    publish(&ctx, &run_id).await;
+                    return Err(e);
+                }
+            }
+        };
+
+        let has_findings = !val_out.report.bugs.is_empty() || !val_out.report.security.is_empty();
+        let needs_revision = val_out.verdict == Verdict::Fail && has_findings;
+        if val_out.verdict == Verdict::Fail && !has_findings {
+            let _ = ctx
+                .store
+                .append_lane_event(
+                    &run_id,
+                    idx,
+                    now_ms(),
+                    "log",
+                    &format!(
+                        "validator verdict fail without affirmative findings; calibration: unverifiable pass, quality {}",
+                        val_out.quality_score
+                    ),
+                )
+                .await;
+        }
+        let stored_verdict = if needs_revision { "fail" } else { "pass" };
+        ctx.store
+            .finish_validation(
+                &run_id,
+                idx,
+                stored_verdict,
+                &val_out.summary,
+                val_out.quality_score,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(cost) = val_out.cost_usd {
+            ctx.store.add_lane_cost(&run_id, idx, cost).await.ok();
+        }
+        if !needs_revision {
+            transition(&ctx, &run_id, idx, LaneState::Validated).await?;
+            publish(&ctx, &run_id).await;
+            return Ok(());
+        }
+
+        let report = val_out.report;
+        let stop = if previous_report
+            .as_ref()
+            .is_some_and(|prev| findings_repeat(prev, &report))
+        {
+            Some("validator: no progress, repeated findings (report retained)")
+        } else if revisions >= MAX_REVISIONS {
+            Some("validator: verdict fail after 2 revisions (report retained)")
+        } else {
+            None
+        };
+        if let Some(error) = stop {
+            let _ = ctx
+                .store
+                .append_lane_event(
+                    &run_id,
+                    idx,
+                    now_ms(),
+                    "log",
+                    &format!("{error}; lane excluded from judge set"),
+                )
+                .await;
+            let _ = ctx.store.set_lane_error(&run_id, idx, error).await;
+            let _ = transition(&ctx, &run_id, idx, LaneState::Failed).await;
+            let _ = ctx.sprite.destroy(&sprite_name).await;
+            publish(&ctx, &run_id).await;
+            return Err(error.to_owned());
+        }
+        previous_report = Some(report.clone());
+        revisions += 1;
+        match run_revision_pass(
             &ctx,
             &run_id,
             idx,
             &sprite_name,
-            &impl_url,
-            &impl_out,
-            tarball_bytes.as_deref(),
+            &variant_json,
+            &plan_rule,
+            &report,
             &harness,
+            revisions,
         )
-        .await;
-        match res {
-            Ok(()) => return Ok(()),
+        .await
+        {
+            Ok((next_impl, next_tarball)) => {
+                impl_out = next_impl;
+                tarball_bytes = next_tarball;
+            }
             Err(e) => {
-                let ts = now_ms();
-                if val_retries < max_val_retries {
-                    val_retries += 1;
-                    let _ = ctx
-                        .store
-                        .append_lane_event(
-                            &run_id,
-                            idx,
-                            ts,
-                            "log",
-                            &format!(
-                                "validator attempt {} failed; retrying in place (sprite and site kept): {e}",
-                                val_retries
-                            ),
-                        )
-                        .await;
-                    continue;
-                }
-                // retries exhausted: hard fail / skip
                 let _ = ctx
                     .store
                     .set_lane_error(&run_id, idx, &lane_error_message(&e))
@@ -1075,6 +1184,7 @@ async fn run_implementer_phase(
     // run implementer harness (deadline enforced)
     let plan_rule =
         prompts::planning_first_rule(&queue::plan_until_label(started, ctx.config.impl_deadline));
+    let prompt = impl_prompt_for(&variant_json, &plan_rule)?;
     let impl_result = tokio::time::timeout(
         ctx.config.impl_deadline,
         run_implementer(
@@ -1083,8 +1193,8 @@ async fn run_implementer_phase(
             idx,
             &sprite_name,
             &model,
-            &variant_json,
-            &plan_rule,
+            &prompt,
+            Role::Implementer,
             harness,
         ),
     )
@@ -1209,7 +1319,7 @@ async fn run_validator_phase(
     impl_out: &ImplRunResult,
     tarball_bytes: Option<&[u8]>,
     harness: &HarnessMode,
-) -> Result<(), String> {
+) -> Result<ValRunResult, String> {
     // --- Validator phase: acquires its own slot ---
     let _val_permit = ctx.slots.acquire().await;
     let val_started = now_ms();
@@ -1250,49 +1360,7 @@ async fn run_validator_phase(
         Ok(Err(e)) => return Err(format!("validator: {e}")),
         Err(_) => return Err("validator: deadline exceeded".to_owned()),
     };
-    let verdict_str = match val_out.verdict {
-        Verdict::Pass => "pass",
-        Verdict::Fail => "fail",
-    };
-    ctx.store
-        .finish_validation(
-            run_id,
-            idx,
-            verdict_str,
-            &val_out.summary,
-            val_out.quality_score,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    if let Some(cost) = val_out.cost_usd {
-        ctx.store.add_lane_cost(run_id, idx, cost).await.ok();
-    }
-    // R2 finding 5: a validator `verdict: fail` must demote the lane out of
-    // the judge set. The report stays persisted (val_verdict, val_report_json)
-    // so the detail view keeps showing it; the lane is failed-with-report.
-    if val_out.verdict == Verdict::Fail {
-        let _ = ctx
-            .store
-            .append_lane_event(
-                run_id,
-                idx,
-                now_ms(),
-                "log",
-                "validator verdict: fail; lane excluded from judge set",
-            )
-            .await;
-        let _ = ctx
-            .store
-            .set_lane_error(run_id, idx, "validator: verdict fail (report retained)")
-            .await;
-        transition(ctx, run_id, idx, LaneState::Failed).await?;
-        publish(ctx, run_id).await;
-        return Ok(());
-    }
-    transition(ctx, run_id, idx, LaneState::Validated).await?;
-    publish(ctx, run_id).await;
-
-    Ok(())
+    Ok(val_out)
 }
 
 #[derive(Debug, Clone)]
@@ -1312,6 +1380,41 @@ struct ValRunResult {
     summary: String,
     quality_score: f64,
     cost_usd: Option<f64>,
+    report: ValidatorOutput,
+}
+
+fn impl_prompt_for(variant_json: &str, plan_rule: &str) -> Result<prompts::Prompt, String> {
+    let variant: Value =
+        serde_json::from_str(variant_json).map_err(|e| format!("implementer variant: {e}"))?;
+    Ok(match variant.get("impl_prompt").and_then(Value::as_str) {
+        Some(case_impl_prompt) => prompts::implementer_case_prompt(
+            &prompts::impl_prompt_with_constraints(case_impl_prompt),
+            plan_rule,
+        ),
+        None => prompts::implementer_prompt(&variant, plan_rule),
+    })
+}
+
+fn revision_impl_prompt_for(
+    variant_json: &str,
+    plan_rule: &str,
+    report: &ValidatorOutput,
+) -> Result<prompts::Prompt, String> {
+    let variant: Value =
+        serde_json::from_str(variant_json).map_err(|e| format!("implementer variant: {e}"))?;
+    let original = match variant.get("impl_prompt").and_then(Value::as_str) {
+        Some(case_impl_prompt) => case_impl_prompt.to_owned(),
+        None => format!(
+            "Build the web project described by the variant:\n{}",
+            serde_json::to_string_pretty(&variant).unwrap_or_default()
+        ),
+    };
+    Ok(prompts::revision_prompt_with_plan(
+        &original,
+        &report.bugs,
+        &report.security,
+        plan_rule,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1321,8 +1424,8 @@ async fn run_implementer(
     idx: i64,
     sprite_name: &str,
     model: &str,
-    variant_json: &str,
-    plan_rule: &str,
+    prompt: &prompts::Prompt,
+    role: Role,
     harness: &HarnessMode,
 ) -> Result<ImplRunResult, String> {
     let mut used_choice: Option<harness::HarnessChoice> = None;
@@ -1343,24 +1446,11 @@ async fn run_implementer(
             (out.stdout, Some(0.0))
         }
         HarnessMode::Real { .. } => {
-            let variant: Value = serde_json::from_str(variant_json)
-                .map_err(|e| format!("implementer variant: {e}"))?;
-            // Wave B / F25: decomposition lanes carry the USER-VISIBLE case
-            // prompt (brief + the case's distinct angle, no boilerplate
-            // constraints). The standard site constraints are appended HERE —
-            // the single execution-time append site — so the implementer still
-            // receives them verbatim (the system prompt carries the full
-            // IMPLEMENTER_SITE_CONSTRAINTS too). Template-fallback lanes keep
-            // the classic variant shape.
-            let prompt = match variant.get("impl_prompt").and_then(Value::as_str) {
-                Some(case_impl_prompt) => prompts::implementer_case_prompt(
-                    &prompts::impl_prompt_with_constraints(case_impl_prompt),
-                    plan_rule,
-                ),
-                None => prompts::implementer_prompt(&variant, plan_rule),
+            let session = match role {
+                Role::Revision => format!("{run_id}-{idx}-rev"),
+                _ => format!("{run_id}-{idx}"),
             };
-            let recipe =
-                llm_gateway::SpriteRecipe::for_model(format!("{run_id}-{idx}"), model.to_owned());
+            let recipe = llm_gateway::SpriteRecipe::for_model(session, model.to_owned());
             let connector_env = (
                 "OPENCODE_GATEWAY_CONNECTOR".to_owned(),
                 ctx.config.gateway_connector_id.clone(),
@@ -1376,7 +1466,7 @@ async fn run_implementer(
                     timeout: ctx.config.impl_deadline,
                     connector_env: Some(connector_env),
                     workdir: Some(&sprite_workdir(run_id, idx)),
-                    role: Role::Implementer,
+                    role,
                     retry_backoff: harness::GATEWAY_BACKOFF_BASE,
                 },
             )
@@ -1441,27 +1531,24 @@ async fn run_implementer(
         }
     };
     let stdout = stdout.trim().to_string();
-    let (parsed, markers) = match gate_last_json::<ImplementerOutput>(
-        Role::Implementer,
-        &stdout,
-        &GateOptions::default(),
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            // R2-2: a schema-gate failure is harness-attributable (the agent
-            // produced unusable output); blacklist the choice so the retry
-            // probes the next chain member within the harness budget.
-            if let Some(c) = used_choice {
-                ctx.harness_cache.invalidate_choice(sprite_name, c).await;
+    let (parsed, markers) =
+        match gate_last_json::<ImplementerOutput>(role, &stdout, &GateOptions::default()) {
+            Ok(v) => v,
+            Err(e) => {
+                // R2-2: a schema-gate failure is harness-attributable (the agent
+                // produced unusable output); blacklist the choice so the retry
+                // probes the next chain member within the harness budget.
+                if let Some(c) = used_choice {
+                    ctx.harness_cache.invalidate_choice(sprite_name, c).await;
+                }
+                return Err(format!(
+                    // the raw agent output is untrusted data: name the gate failure
+                    // and its size, never echo the payload itself
+                    "implementer: schema gate failed ({e}; output {} bytes, not stored)",
+                    stdout.len()
+                ));
             }
-            return Err(format!(
-                // the raw agent output is untrusted data: name the gate failure
-                // and its size, never echo the payload itself
-                "implementer: schema gate failed ({e}; output {} bytes, not stored)",
-                stdout.len()
-            ));
-        }
-    };
+        };
     // R2 finding 4 (#21 regression): injection markers must actually act.
     // An injection marker fails the lane; the error propagates through
     // run_lane (transient? no) to a hard failure.
@@ -1474,12 +1561,12 @@ async fn run_implementer(
                 idx,
                 now_ms(),
                 "injection",
-                &format!("role={} paths={joined}", Role::Implementer.as_str()),
+                &format!("role={} paths={joined}", role.as_str()),
             )
             .await;
         return Err(format!(
             "injection: marker detected in {} output (paths: {joined})",
-            Role::Implementer.as_str()
+            role.as_str()
         ));
     }
     // #13: honor the implementer's own report; a not-done or blocked claim is
@@ -1500,6 +1587,122 @@ async fn run_implementer(
         cost_usd: harness_cost,
         console_tail: tail_4k(&stdout),
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_revision_pass(
+    ctx: &PipelineCtx,
+    run_id: &str,
+    idx: i64,
+    sprite_name: &str,
+    variant_json: &str,
+    plan_rule: &str,
+    report: &ValidatorOutput,
+    harness: &HarnessMode,
+    revision: i64,
+) -> Result<(ImplRunResult, Option<Vec<u8>>), String> {
+    let prompt = revision_impl_prompt_for(variant_json, plan_rule, report)?;
+    let event_payload = serde_json::json!({"revision": revision}).to_string();
+    let _rev_permit = ctx.slots.acquire().await;
+    transition(ctx, run_id, idx, LaneState::Revising).await?;
+    let _ = ctx
+        .store
+        .append_lane_event(
+            run_id,
+            idx,
+            now_ms(),
+            "revision_prompt_sent",
+            &event_payload,
+        )
+        .await;
+    transition(ctx, run_id, idx, LaneState::Running).await?;
+
+    let model = IMPLEMENTER_MODEL.to_owned();
+    let impl_result = tokio::time::timeout(
+        ctx.config.impl_deadline,
+        run_implementer(
+            ctx,
+            run_id,
+            idx,
+            sprite_name,
+            &model,
+            &prompt,
+            Role::Revision,
+            harness,
+        ),
+    )
+    .await;
+    drop(_rev_permit);
+    ctx.notify_slots_free();
+    let mut impl_out = match impl_result {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => return Err(format!("revision {revision}: {e}")),
+        Err(_) => return Err(format!("revision {revision}: deadline exceeded")),
+    };
+    ctx.store
+        .finish_impl(run_id, idx, &impl_out.summary, impl_out.files as i64)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(cost) = impl_out.cost_usd {
+        ctx.store.add_lane_cost(run_id, idx, cost).await.ok();
+    }
+    let _ = ctx
+        .store
+        .append_lane_event(run_id, idx, now_ms(), "run_command", &impl_out.run_command)
+        .await;
+    transition(ctx, run_id, idx, LaneState::Done).await?;
+
+    let artifacts_dir = artifacts::lane_artifacts_dir(&ctx.config, run_id, idx);
+    let console_tail = impl_out.console_tail.clone();
+    let collected = if ctx.config.test_mode {
+        let workdir = lane_workdir(ctx, run_id, idx);
+        artifacts::collect_artifacts(&ctx.config, run_id, idx, &workdir, &console_tail).await
+    } else {
+        artifacts::collect_artifacts_from_sprite(
+            &ctx.sprite,
+            sprite_name,
+            &sprite_workdir(run_id, idx),
+            &artifacts_dir,
+            &console_tail,
+        )
+        .await
+    };
+    let tarball_bytes = match &collected {
+        Ok((tarball_path, ..)) => tokio::fs::read(tarball_path).await.ok(),
+        Err(_) => None,
+    };
+    match collected {
+        Ok((tarball, tokei_json, files_n, _loc_n)) => {
+            let _ = ctx
+                .store
+                .set_artifacts(run_id, idx, &tarball, &tokei_json, &console_tail)
+                .await;
+            if let Some(files) = files_n {
+                impl_out.files = u32::try_from(files).unwrap_or(impl_out.files);
+                let _ = ctx
+                    .store
+                    .finish_impl(run_id, idx, &impl_out.summary, files)
+                    .await;
+            }
+        }
+        Err(_) => {
+            let tokei_json = serde_json::json!({"loc": 0, "files": impl_out.files}).to_string();
+            let _ = ctx
+                .store
+                .set_artifacts(run_id, idx, "", &tokei_json, &console_tail)
+                .await;
+        }
+    }
+    ctx.store
+        .increment_lane_revisions(run_id, idx)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = ctx
+        .store
+        .append_lane_event(run_id, idx, now_ms(), "revision_done", &event_payload)
+        .await;
+    publish(ctx, run_id).await;
+    Ok((impl_out, tarball_bytes))
 }
 
 #[allow(clippy::too_many_arguments)] // phase fn mirrors the pipeline's call shape
@@ -1676,10 +1879,11 @@ async fn run_validator(
             .await;
     }
     Ok(ValRunResult {
-        verdict: parsed.verdict,
-        summary: parsed.summary,
+        verdict: parsed.verdict.clone(),
+        summary: parsed.summary.clone(),
         quality_score: parsed.quality_score,
         cost_usd: harness_cost,
+        report: parsed,
     })
 }
 

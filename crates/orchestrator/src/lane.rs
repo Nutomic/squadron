@@ -4,6 +4,7 @@ pub enum LaneState {
     Creating,
     Running,
     Done,
+    Revising,
     Validated,
     Failed,
     Judged,
@@ -16,6 +17,7 @@ impl LaneState {
             Self::Creating => "creating",
             Self::Running => "running",
             Self::Done => "done",
+            Self::Revising => "revising",
             Self::Validated => "validated",
             Self::Failed => "failed",
             Self::Judged => "judged",
@@ -28,6 +30,7 @@ impl LaneState {
             "creating" => Self::Creating,
             "running" => Self::Running,
             "done" => Self::Done,
+            "revising" => Self::Revising,
             "validated" => Self::Validated,
             "failed" => Self::Failed,
             "judged" => Self::Judged,
@@ -46,7 +49,10 @@ impl LaneState {
                 | (Running, Done)
                 | (Running, Failed)
                 | (Done, Validated)
+                | (Done, Revising)
                 | (Done, Failed)
+                | (Revising, Running)
+                | (Revising, Failed)
                 | (Validated, Judged)
         )
     }
