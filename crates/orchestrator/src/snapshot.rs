@@ -13,13 +13,14 @@ pub struct Snapshot {
     pub ts: i64,
 }
 
-/// Wave A: the judge's brief-fulfillment verdict for the winning lane, as
+/// F37: the judge's CASE-fulfillment verdict for the winning lane, as
 /// rendered on the run page's verdict card. `state` is one of
 /// "fulfilled" | "unfulfilled" | "unverifiable" (verbatim from the judge
 /// schema); `evidence` is judge-written text (untrusted DATA — the island
-/// renders it escaped).
+/// renders it escaped). The judge measures the winner's ASSIGNED CASE, not
+/// the parent brief.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BriefFulfillmentView {
+pub struct CaseFulfillmentView {
     pub state: String,
     pub evidence: String,
 }
@@ -31,10 +32,12 @@ pub struct RunSnapshot {
     pub status: String,
     pub judge_verdict: Option<String>,
     pub winner_lane: Option<i64>,
-    /// Wave A: None for runs judged before the field existed (or when the
-    /// stored JSON failed to parse) — the island omits the line.
+    /// F37: None for runs judged before the field existed (or when the
+    /// stored JSON failed to parse) — the island omits the line. Serialized
+    /// as `judgeCaseFulfillment` (the island label "brief fulfilled" needs a
+    /// matching rename to "case fulfilled" on the squadron side).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub judge_brief_fulfillment: Option<BriefFulfillmentView>,
+    pub judge_case_fulfillment: Option<CaseFulfillmentView>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -80,7 +83,7 @@ pub fn run_snapshot(run: &Run) -> RunSnapshot {
         status: run.status.clone(),
         judge_verdict: run.judge_verdict.clone(),
         winner_lane: run.winner_lane,
-        judge_brief_fulfillment: None,
+        judge_case_fulfillment: None,
     }
 }
 
@@ -154,15 +157,17 @@ pub async fn build_snapshot(store: &Store, run_id: &str) -> Option<Snapshot> {
     let run = store.get_run(run_id).await.ok()??;
     let lanes = store.list_lanes(run_id).await.ok()?;
     let mut run_snap = run_snapshot(&run);
-    // Wave A: hydrate the judge's brief-fulfillment verdict (None for runs
-    // judged before the column existed or with unparsable JSON).
+    // F37: hydrate the judge's case-fulfillment verdict (None for runs
+    // judged before the column existed or with unparsable JSON). The store
+    // column keeps its historical `judge_brief_fulfillment` name.
     if let Some(json) = store
         .get_judge_brief_fulfillment(run_id)
         .await
         .ok()
         .flatten()
     {
-        run_snap.judge_brief_fulfillment = serde_json::from_str::<BriefFulfillmentView>(&json).ok();
+        run_snap.judge_case_fulfillment =
+            serde_json::from_str::<CaseFulfillmentView>(&json).ok();
     }
     let mut lane_snaps = Vec::with_capacity(lanes.len());
     for lane in lanes {
@@ -256,7 +261,7 @@ mod tests {
         }
     }
 
-    /// Wave A: a run judged after the brief_fulfillment column existed.
+    /// F37: a run judged after the case_fulfillment column existed.
     fn judged_run_with_fulfillment() -> Run {
         Run {
             judge_verdict: Some("Bold and playable. It wins.".to_owned()),
@@ -270,7 +275,7 @@ mod tests {
         // run_snapshot alone has no brief fulfillment (hydrated in
         // build_snapshot from the store).
         assert_eq!(
-            run_snapshot(&judged_run_with_fulfillment()).judge_brief_fulfillment,
+            run_snapshot(&judged_run_with_fulfillment()).judge_case_fulfillment,
             None
         );
     }

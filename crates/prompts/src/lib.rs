@@ -16,7 +16,8 @@ pub use roles::{
 };
 pub use schema::{
     findings_repeat, gate, gate_and_scan_injections, gate_with_options, injection_markers, parse,
-    parse_validator_report, sentence_count, BriefFulfillment, BriefFulfillmentState, DecomposeCase,
-    DecomposeOutput, DiversityOutput, GateOptions, ImplementerOutput, JudgeOutput, LaneJudgeReport,
-    Role, SchemaError, TextOrList, ValidatorOutput, Variant, Verdict,
+    parse_validator_report, sentence_count, CaseFulfillment, CaseFulfillmentState, DecomposeCase,
+    DecomposeOutput, DiversityOutput, GateOptions, ImplementerOutput, JudgeOutput,
+    LaneJudgeContext, LaneJudgeReport, Role, SchemaError, TextOrList, ValidatorOutput, Variant,
+    Verdict,
 };

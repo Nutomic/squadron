@@ -731,7 +731,7 @@ async fn fixture_snapshot_matches_contract() {
     for key in [
         "\"winnerLane\":1",
         "\"judgeVerdict\":",
-        "\"judgeBriefFulfillment\":{\"state\":\"fulfilled\",\"evidence\":",
+        "\"judgeCaseFulfillment\":{\"state\":\"fulfilled\",\"evidence\":",
         "\"thumbnailDataUrl\":\"data:image/png;base64,",
         "\"costSeries\":",
         "\"consoleTail\":",
@@ -1470,7 +1470,7 @@ async fn sse_stream_ends_when_hub_reports_terminal_status() {
             status: "judged".to_owned(),
             judge_verdict: Some("winner card".to_owned()),
             winner_lane: Some(0),
-            judge_brief_fulfillment: None,
+            judge_case_fulfillment: None,
         },
         lanes: vec![],
         ts: 1_732_021_000_000,

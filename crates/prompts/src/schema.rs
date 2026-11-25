@@ -79,7 +79,7 @@ impl Role {
                     "winner": {"type": "integer", "minimum": 0},
                     "verdict_card": {"type": "string", "maxLength": 320},
                     "reasons": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
-                    "brief_fulfillment": {
+                    "case_fulfillment": {
                         "type": "object",
                         "properties": {
                             "state": {"type": "string", "enum": ["fulfilled", "unfulfilled", "unverifiable"]},
@@ -89,7 +89,7 @@ impl Role {
                         "additionalProperties": false
                     }
                 },
-                "required": ["ranking", "winner", "verdict_card", "reasons", "brief_fulfillment"],
+                "required": ["ranking", "winner", "verdict_card", "reasons", "case_fulfillment"],
                 "additionalProperties": false
             }),
             // Wave B: brief decomposition turns the user's brief into distinct
@@ -194,25 +194,43 @@ impl LaneJudgeReport {
     }
 }
 
-/// Brief-fulfillment states for the judge's verdict (Wave A). Calibration
-/// follows the validator rules: `unfulfilled` requires AFFIRMATIVE evidence
-/// of a missed requirement; "cannot verify from evidence" is NOT
-/// unfulfilled — it is the separate `unverifiable` state.
+/// F37: per-lane judging context, aligned with the reports/extracts order.
+/// `case_label`/`case_prompt` come from the lane's persisted variant_json
+/// (the decomposition case the lane was assigned); `live_check` is the
+/// freshly formatted judge-time liveness line ("live: 200 (rechecked HH:MM)"
+/// or "live: unreachable at judge time"). All fields are untrusted DATA
+/// downstream (case text is agent/decomposer output; the live line is
+/// orchestrator-fabricated).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LaneJudgeContext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub case_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub case_prompt: Option<String>,
+    pub live_check: String,
+}
+
+/// Case-fulfillment states for the judge's verdict (F37). The lane's contract
+/// is its ASSIGNED CASE (the decomposition case it was built from), not the
+/// parent brief. Calibration follows the validator rules: `unfulfilled`
+/// requires AFFIRMATIVE evidence of a missed requirement; "cannot verify from
+/// evidence" is NOT unfulfilled — it is the separate `unverifiable` state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum BriefFulfillmentState {
+pub enum CaseFulfillmentState {
     Fulfilled,
     Unfulfilled,
     Unverifiable,
 }
 
-/// The judge's brief-fulfillment verdict for the winning lane. `evidence`
-/// must cite something concrete from the winner's site extract or validator
-/// report — the gate rejects empty evidence.
+/// The judge's case-fulfillment verdict for the winning lane, measured
+/// against the winner's ASSIGNED CASE (F37). `evidence` must cite something
+/// concrete from the winner's site extract, live check, or validator report —
+/// the gate rejects empty evidence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BriefFulfillment {
-    pub state: BriefFulfillmentState,
+pub struct CaseFulfillment {
+    pub state: CaseFulfillmentState,
     pub evidence: String,
 }
 
@@ -223,7 +241,7 @@ pub struct JudgeOutput {
     pub winner: usize,
     pub verdict_card: String,
     pub reasons: TextOrList,
-    pub brief_fulfillment: BriefFulfillment,
+    pub case_fulfillment: CaseFulfillment,
 }
 
 /// Wave B / F25: one decomposition case — a distinct interpretation of the
@@ -440,9 +458,9 @@ pub fn gate_with_options(
                 if sentence_count(&parsed.verdict_card) > limit {
                     return Err(format!("verdict_card must be at most {limit} sentences"));
                 }
-                if parsed.brief_fulfillment.evidence.trim().is_empty() {
+                if parsed.case_fulfillment.evidence.trim().is_empty() {
                     return Err(
-                        "brief_fulfillment.evidence must cite concrete evidence from the lane's site or validator report"
+                        "case_fulfillment.evidence must cite concrete evidence from the lane's site, live check, or validator report"
                             .to_owned(),
                     );
                 }

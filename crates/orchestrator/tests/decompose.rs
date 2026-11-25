@@ -98,7 +98,7 @@ fn judge_json_for(body: &Value) -> Value {
         "winner": 0,
         "verdict_card": "Case 0 wins. Well built.",
         "reasons": ["stub judge picked the first lane"],
-        "brief_fulfillment": {"state": "unverifiable", "evidence": "stub judge has no real evidence"}
+        "case_fulfillment": {"state": "unverifiable", "evidence": "stub judge has no real evidence"}
     })
 }
 

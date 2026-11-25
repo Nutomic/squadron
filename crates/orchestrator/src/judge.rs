@@ -3,7 +3,10 @@ use std::time::Duration;
 use tokio::time::{timeout, timeout_at, Instant};
 
 pub use prompts::LaneJudgeReport;
-use prompts::{gate_and_scan_injections, parse, GateOptions, JudgeOutput, Role, ValidatorOutput};
+use prompts::{
+    gate_and_scan_injections, parse, GateOptions, JudgeOutput, LaneJudgeContext, Role,
+    ValidatorOutput,
+};
 
 /// Which rung of the judge ladder produced the verdict. Logged into lane
 /// events so a run's verdict can be audited without replaying gateway traffic.
@@ -44,11 +47,21 @@ pub async fn run_judge(
     reports: &[LaneJudgeReport],
     extracts: &[String],
     images: &[Option<String>],
+    contexts: &[LaneJudgeContext],
     deadline: Duration,
 ) -> Result<(JudgeOutput, Option<f64>), String> {
-    run_judge_ladder(client, session, brief, reports, extracts, images, deadline)
-        .await
-        .map(|v| (v.output, v.cost_usd))
+    run_judge_ladder(
+        client,
+        session,
+        brief,
+        reports,
+        extracts,
+        images,
+        contexts,
+        deadline,
+    )
+    .await
+    .map(|v| (v.output, v.cost_usd))
 }
 
 /// F29/F35b: never let one judge request kill a run. Try the pinned flash
@@ -62,6 +75,7 @@ pub async fn run_judge_ladder(
     reports: &[LaneJudgeReport],
     extracts: &[String],
     images: &[Option<String>],
+    contexts: &[LaneJudgeContext],
     deadline: Duration,
 ) -> Result<JudgeVerdict, String> {
     if reports.is_empty() {
@@ -73,15 +87,19 @@ pub async fn run_judge_ladder(
     if images.len() != reports.len() {
         return Err("judge: images/reports length mismatch".to_owned());
     }
+    if contexts.len() != reports.len() {
+        return Err("judge: contexts/reports length mismatch".to_owned());
+    }
     let lane_indices: Vec<usize> = reports.iter().map(|r| r.lane_idx).collect();
     let opts = GateOptions {
         expected_variants: None,
         max_verdict_sentences: Some(2),
         expected_lane_indices: Some(lane_indices),
     };
-    // Wave A: the judge sees the user's ORIGINAL brief so its verdict carries
-    // a brief_fulfillment assessment for the winning lane.
-    let prompt = prompts::judge_prompt(brief, reports, extracts);
+    // Wave A: the judge sees the user's ORIGINAL brief as context; the
+    // per-lane rubric is each lane's ASSIGNED CASE (F37), carried in the
+    // contexts so the verdict's case_fulfillment measures the winner's case.
+    let prompt = prompts::judge_prompt(brief, reports, extracts, contexts);
     let has_images = images.iter().any(|i| i.is_some());
     let per_rung = deadline / 2;
     timeout(deadline, async {
@@ -230,6 +248,63 @@ pub fn validator_reports_from_lanes(lanes: &[store::Lane]) -> Vec<LaneJudgeRepor
         reports.push(LaneJudgeReport::new(l.idx as usize, out));
     }
     reports
+}
+
+/// F37: the lane's assigned case, parsed from the persisted variant_json.
+/// Decomposition cases carry `{label, impl_prompt}` (the same shape the
+/// confirm dialog persists); legacy template variants carry
+/// `{angle, stack, ...}` — the angle is the closest thing those lanes had
+/// to a case contract. Unparsable JSON yields no case (the judge's section
+/// then says so explicitly).
+pub fn lane_case_from_variant_json(variant_json: &str) -> (Option<String>, Option<String>) {
+    let Ok(variant) = serde_json::from_str::<serde_json::Value>(variant_json) else {
+        return (None, None);
+    };
+    if let Some(case) = variant.get("impl_prompt").and_then(|v| v.as_str()) {
+        let label = variant
+            .get("label")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        return (label, Some(case.to_owned()));
+    }
+    if let Some(angle) = variant.get("angle").and_then(|v| v.as_str()) {
+        let stack = variant.get("stack").and_then(|v| v.as_str());
+        let case = match stack {
+            Some(stack) => format!("Angle: {angle} (stack: {stack})"),
+            None => format!("Angle: {angle}"),
+        };
+        return (Some(angle.to_owned()), Some(case));
+    }
+    (None, None)
+}
+
+/// F37: format the judge-time fresh live-check line for one surviving lane.
+/// A 2xx probe yields "live: 200 (rechecked HH:MM)" (UTC); anything else —
+/// non-200 status or transport failure — yields the unreachable form so the
+/// judge cannot mistake a stale screenshot frame for the current state.
+pub async fn live_check_text(
+    url: Option<&str>,
+    allow_loopback: bool,
+) -> String {
+    let Some(url) = url else {
+        return "live: unreachable at judge time (no public URL)".to_owned();
+    };
+    match crate::net::fetch_public_status(url, allow_loopback).await {
+        Ok(status) if (200..300).contains(&status) => {
+            format!("live: {status} (rechecked {})", utc_hhmm(store::now_ms()))
+        }
+        Ok(status) => format!("live: unreachable at judge time (HTTP {status})"),
+        Err(_) => "live: unreachable at judge time".to_owned(),
+    }
+}
+
+/// UTC HH:MM for a fresh-check timestamp, derived from epoch ms without a
+/// calendar dependency (judge-time evidence only needs minute resolution).
+pub fn utc_hhmm(epoch_ms: i64) -> String {
+    let secs = epoch_ms.div_euclid(1000);
+    let hour = secs.div_euclid(3600).rem_euclid(24);
+    let minute = secs.div_euclid(60).rem_euclid(60);
+    format!("{hour:02}:{minute:02}")
 }
 
 fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
@@ -426,6 +501,47 @@ fn truncate_chars(s: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F37: the lane's assigned case is parsed from the persisted
+    /// variant_json — decomposition cases carry {label, impl_prompt};
+    /// legacy template variants carry the angle as the closest case
+    /// contract; garbage yields no case.
+    #[test]
+    fn lane_case_from_variant_json_shapes() {
+        // Decomposition case (the shape the confirm dialog persists).
+        let (label, case) = lane_case_from_variant_json(
+            r#"{"label":"navy palette","impl_prompt":"Build a Netscape-era 1996 homepage. Angle: navy and steel blue palette."}"#,
+        );
+        assert_eq!(label.as_deref(), Some("navy palette"));
+        assert!(
+            case.as_deref().unwrap_or_default().contains("navy and steel blue"),
+            "case: {case:?}"
+        );
+        // Legacy template variant: the angle stands in for the case.
+        let (label, case) =
+            lane_case_from_variant_json(r#"{"angle":"retro arcade","stack":"vanilla js"}"#);
+        assert_eq!(label.as_deref(), Some("retro arcade"));
+        assert!(
+            case.as_deref().unwrap_or_default().contains("Angle: retro arcade"),
+            "case: {case:?}"
+        );
+        // Unparsable / case-less JSON yields nothing.
+        assert_eq!(lane_case_from_variant_json("not json"), (None, None));
+        assert_eq!(lane_case_from_variant_json("{}"), (None, None));
+    }
+
+    /// F37: the fresh-check timestamp renders as UTC HH:MM.
+    #[test]
+    fn utc_hhmm_renders_minutes() {
+        assert_eq!(utc_hhmm(0), "00:00");
+        // 1h 1m after the epoch (UTC).
+        assert_eq!(utc_hhmm((3600 + 60) * 1000), "01:01");
+        // Day wrap: 23:59 then midnight.
+        assert_eq!(utc_hhmm(23 * 3600_000 + 59 * 60_000), "23:59");
+        assert_eq!(utc_hhmm(24 * 3600_000), "00:00");
+        // Negative timestamps (defensive) stay on [0,24).
+        assert_eq!(utc_hhmm(-60_000), "23:59");
+    }
 
     /// #25: an unclosed <script> must be dropped, not passed through.
     #[test]

@@ -63,7 +63,7 @@ fn judge_json_for(body: &Value) -> Value {
         "winner": 0,
         "verdict_card": "Case 0 wins. Well built.",
         "reasons": ["stub judge picked the first lane"],
-        "brief_fulfillment": {"state": "unverifiable", "evidence": "stub judge has no real evidence"}
+        "case_fulfillment": {"state": "unverifiable", "evidence": "stub judge has no real evidence"}
     })
 }
 
@@ -374,6 +374,11 @@ async fn no_screenshots_uses_deepseek_text_only() {
         &[report],
         &["<extract>".to_owned()],
         &[None],
+        &[prompts::LaneJudgeContext {
+            case_label: Some("page case".to_owned()),
+            case_prompt: Some("build a small page. Angle: minimal page".to_owned()),
+            live_check: "live: 200 (rechecked 14:32)".to_owned(),
+        }],
         Duration::from_secs(10),
     )
     .await
@@ -391,6 +396,16 @@ async fn no_screenshots_uses_deepseek_text_only() {
         "text rung keeps the prompt"
     );
     assert!(text.contains("original-brief"), "text rung keeps the brief");
+    // F37: the fresh live check and the lane's assigned case ride with the
+    // lane's judge-evidence section.
+    assert!(
+        text.contains("live-check-lane-0") && text.contains("live: 200 (rechecked 14:32)"),
+        "fresh live-check missing from the judge request: {text}"
+    );
+    assert!(
+        text.contains("case-lane-0") && text.contains("Angle: minimal page"),
+        "assigned case missing from the judge request: {text}"
+    );
 }
 
 /// (c) exact production shape: one lane validates while the other fails, and

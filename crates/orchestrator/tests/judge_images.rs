@@ -12,6 +12,15 @@ use tokio::sync::Mutex;
 
 use llm_gateway::{MachineLlmClient, JUDGE_MODEL, JUDGE_TEXT_FALLBACK_MODEL};
 
+fn context() -> prompts::LaneJudgeContext {
+    prompts::LaneJudgeContext {
+        case_label: Some("case".to_owned()),
+        case_prompt: Some("build a small page. Angle: minimal".to_owned(),
+        ),
+        live_check: "live: 200 (rechecked 14:32)".to_owned(),
+    }
+}
+
 fn app(captured: Arc<Mutex<Vec<Value>>>, judge_content: Value) -> Router {
     Router::new()
         .route(
@@ -36,7 +45,7 @@ async fn spawn_stub() -> (String, Arc<Mutex<Vec<Value>>>) {
         "ranking": [0], "winner": 0,
         "verdict_card": "Lane 0 wins; criteria met.",
         "reasons": "only lane",
-        "brief_fulfillment": {
+        "case_fulfillment": {
             "state": "fulfilled",
             "evidence": "validator report confirms the site answers 200 with the brief's core page"
         }
@@ -91,6 +100,7 @@ async fn judge_sends_screenshot_image_parts_when_available() {
         &[report],
         &["<extract>".to_owned()],
         &[Some(data_url.clone())],
+        &[context()],
         std::time::Duration::from_secs(10),
     )
     .await
@@ -153,6 +163,7 @@ async fn judge_without_images_uses_text_only_request() {
         &[report],
         &["<extract>".to_owned()],
         &[None],
+        &[context()],
         std::time::Duration::from_secs(10),
     )
     .await
@@ -176,7 +187,7 @@ async fn judge_winner_outside_validated_lanes_is_rejected() {
                     "ranking": [0, 9], "winner": 9,
                     "verdict_card": "Lane 9 wins; criteria met.",
                     "reasons": "rogue lane",
-                    "brief_fulfillment": {"state": "fulfilled", "evidence": "extract shows the brief's requirements"}
+                    "case_fulfillment": {"state": "fulfilled", "evidence": "extract shows the brief's requirements"}
                 }).to_string()}}],
                 "usage": {"opencode": {"allowance": {"usd": 0.01}}}
             })),
@@ -210,6 +221,7 @@ async fn judge_winner_outside_validated_lanes_is_rejected() {
         .collect();
     let extracts = vec!["<extract>".to_owned(), "<extract>".to_owned()];
     let images = vec![None, None];
+    let contexts = vec![context(), context()];
 
     let err = judge::run_judge(
         &client,
@@ -218,6 +230,7 @@ async fn judge_winner_outside_validated_lanes_is_rejected() {
         &reports,
         &extracts,
         &images,
+        &contexts,
         std::time::Duration::from_secs(10),
     )
     .await
@@ -237,7 +250,7 @@ async fn judge_labels_each_image_with_its_lane_idx() {
         "ranking": [0, 1], "winner": 0,
         "verdict_card": "Lane 0 wins; criteria met.",
         "reasons": "lane 0 rendered correctly",
-        "brief_fulfillment": {
+        "case_fulfillment": {
             "state": "fulfilled",
             "evidence": "lane 0's extract shows the brief's landing page and pricing table"
         }
@@ -275,6 +288,7 @@ async fn judge_labels_each_image_with_its_lane_idx() {
         &[report(0), report(1)],
         &["<extract 0>".to_owned(), "<extract 1>".to_owned()],
         &[None, Some(data_url.clone())],
+        &[context(), context()],
         std::time::Duration::from_secs(10),
     )
     .await

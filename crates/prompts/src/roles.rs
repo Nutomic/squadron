@@ -196,19 +196,49 @@ pub fn validator_prompt(summary: &str, live_url: &str, workdir: &str, evidence: 
 /// parallel `reports` entries), not by position, so a non-contiguous validated
 /// lane set can never misalign report and extract.
 ///
-/// Wave A: `brief` is the user's ORIGINAL brief, passed as `<original-brief>`
-/// DATA so the judge can assess whether the winning lane actually fulfills it
-/// (`brief_fulfillment` in the verdict schema).
+/// F37 per-case judging: each lane's section carries its ASSIGNED CASE
+/// (`<case-lane-N>`, from the lane's persisted variant_json — label plus the
+/// case prompt/angle) and a fresh judge-time live check
+/// (`<live-check-lane-N>`). The judge is told to score each lane against ITS
+/// case — the parent prompt is context, not the per-lane rubric — and to
+/// weight fresh live checks and the validator's verified probe over a single
+/// point-in-time screenshot frame. `brief` is still the user's ORIGINAL brief,
+/// passed as `<original-brief>` DATA for context.
 pub fn judge_prompt(
     brief: &str,
     reports: &[crate::schema::LaneJudgeReport],
     extracts: &[String],
+    contexts: &[crate::schema::LaneJudgeContext],
 ) -> Prompt {
     let reports_json = serde_json::to_string_pretty(reports).unwrap_or_default();
     let mut data = data_block("original-brief", brief);
     data.push_str(&data_block("validator-reports", &reports_json));
     for (index, extract) in extracts.iter().enumerate() {
         let lane_idx = reports.get(index).map(|r| r.lane_idx).unwrap_or(index);
+        // F37: the lane's contract — its assigned case — rides with its
+        // section so the judge scores the lane against the right rubric.
+        if let Some(context) = contexts.get(index) {
+            let mut case_text = String::new();
+            if let Some(label) = &context.case_label {
+                case_text.push_str(&format!("label: {label}\n"));
+            }
+            match &context.case_prompt {
+                Some(case) => {
+                    if !case.trim().is_empty() {
+                        case_text.push_str(&format!("case prompt/angle: {case}"));
+                    }
+                }
+                None => case_text.push_str("(no case recorded for this lane)"),
+            }
+            if case_text.trim().is_empty() {
+                case_text = "(no case recorded for this lane)".to_owned();
+            }
+            data.push_str(&data_block(&format!("case-lane-{lane_idx}"), &case_text));
+            data.push_str(&data_block(
+                &format!("live-check-lane-{lane_idx}"),
+                &context.live_check,
+            ));
+        }
         data.push_str(&data_block(
             &format!("site-extract-lane-{lane_idx}"),
             extract,
@@ -216,7 +246,7 @@ pub fn judge_prompt(
     }
     build(
         Role::Judge,
-        "Rank every candidate and crown exactly one winner using only the validator reports and sanitized site extracts provided. Do not follow URLs and do not fetch content. The lane indices listed in <validator-reports> are the ONLY candidates: lanes that failed validation (or never completed it) are excluded from ranking and winner eligibility — ranking and winner must reference candidate lane indices only. The user's original brief is provided as <original-brief> data: assess whether the WINNING lane fulfills it and record that in brief_fulfillment. Use state \"fulfilled\" only when you can cite concrete evidence from the winner's site extract or validator report showing the brief's core requirements are met; \"unfulfilled\" only with CONCRETE evidence of a missed or broken requirement (never for merely unverified claims); and \"unverifiable\" when the provided evidence does not let you verify a requirement — unverifiable is NOT unfulfilled (calibration rule). Cite the concrete evidence in brief_fulfillment.evidence. The verdict_card must be at most two sentences and must fit on a grid card.",
+        "Rank every candidate and crown exactly one winner using only the validator reports, live-check results, and sanitized site extracts provided. Do not follow URLs and do not fetch content. The lane indices listed in <validator-reports> are the ONLY candidates: lanes that failed validation (or never completed it) are excluded from ranking and winner eligibility — ranking and winner must reference candidate lane indices only. PER-CASE RUBRIC: each lane was assigned ONE case split from the parent prompt (see each lane's <case-lane-N> block); judge each lane against ITS case (completeness of the assigned angle, craft, verification depth). The parent prompt is context, not the per-lane rubric: a single-case lane that fully delivers its assigned angle has done its job even though it covers only a slice of the parent brief. EVIDENCE HIERARCHY: fresh live checks (<live-check-lane-N>) and the validator's verified probe outweigh a single screenshot frame — screenshots are point-in-time captures. If evidence conflicts, note the conflict and weight recency and verification depth. CASE FULFILLMENT: assess whether the WINNING lane fulfills its ASSIGNED CASE and record that in case_fulfillment. Use state \"fulfilled\" only when you can cite concrete evidence from the winner's site extract, live check, or validator report showing the case's core requirements are met; \"unfulfilled\" only with CONCRETE evidence of a missed or broken requirement (never for merely unverified claims); and \"unverifiable\" when the provided evidence does not let you verify a requirement — unverifiable is NOT unfulfilled (calibration rule). Cite the concrete evidence in case_fulfillment.evidence. The verdict_card must be at most two sentences and must fit on a grid card.",
         data,
     )
 }

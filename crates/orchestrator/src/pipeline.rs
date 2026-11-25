@@ -5,8 +5,8 @@ use std::time::Duration;
 use base64::Engine as _;
 use llm_gateway::{MachineLlmClient, IMPLEMENTER_MODEL, VALIDATOR_MODEL};
 use prompts::{
-    findings_repeat, gate_and_scan_injections, parse, BriefFulfillment, BriefFulfillmentState,
-    GateOptions, ImplementerOutput, JudgeOutput, Role, ValidatorOutput, Verdict,
+    findings_repeat, gate_and_scan_injections, parse, CaseFulfillment, CaseFulfillmentState,
+    GateOptions, ImplementerOutput, JudgeOutput, LaneJudgeContext, Role, ValidatorOutput, Verdict,
 };
 use serde_json::Value;
 use sprites_client::{ExecOptions, SpriteClient};
@@ -1957,8 +1957,10 @@ async fn run_judge_phase(
     final_status: &str,
 ) -> Result<(), String> {
     ensure_judge_renders(ctx, run_id, validated).await;
-    // Wave A: the judge sees the user's ORIGINAL brief (from the run row) so
-    // its verdict can carry a brief_fulfillment assessment of the winner.
+    // Wave A: the judge sees the user's ORIGINAL brief (from the run row) as
+    // CONTEXT; F37: the per-lane rubric is each lane's ASSIGNED CASE, so the
+    // judge's case_fulfillment measures the winner's case, not the parent
+    // brief (single-scheme lanes did their job and can win their own cases).
     let brief = ctx
         .store
         .get_run(run_id)
@@ -1969,7 +1971,23 @@ async fn run_judge_phase(
     // gather validator reports and sanitized extracts
     let reports = judge::validator_reports_from_lanes(validated);
     let mut extracts = Vec::new();
+    let mut contexts = Vec::new();
     for l in validated {
+        // F37: each surviving lane's section carries its assigned case
+        // (label + prompt/angle from the persisted variant_json) and a fresh
+        // judge-time 200-probe with a timestamp.
+        let (case_label, case_prompt) = judge::lane_case_from_variant_json(&l.variant_json);
+        let live_check = if ctx.config.test_mode {
+            // Test mode never points a live probe at the real network.
+            "live: probe skipped (test mode)".to_owned()
+        } else {
+            judge::live_check_text(l.impl_url.as_deref(), ctx.config.probe_allow_loopback).await
+        };
+        contexts.push(LaneJudgeContext {
+            case_label,
+            case_prompt,
+            live_check,
+        });
         if ctx.config.test_mode {
             extracts.push(format!("<test extract for lane {}>", l.idx));
         } else if let Some(url) = &l.impl_url {
@@ -1995,6 +2013,7 @@ async fn run_judge_phase(
             &reports,
             &extracts,
             &images,
+            &contexts,
             ctx.config.judge_deadline,
         )
         .await
@@ -2065,10 +2084,13 @@ async fn persist_judge_verdict(
         )
         .await
         .map_err(|e| e.to_string())?;
-    // Wave A: persist the judge's brief-fulfillment verdict so the run page's
+    // F37: persist the judge's CASE-fulfillment verdict so the run page's
     // verdict card can render it (best-effort; the card text stays the
-    // source of truth for the verdict itself).
-    if let Ok(json) = serde_json::to_string(&verdict.brief_fulfillment) {
+    // source of truth for the verdict itself). The store column keeps its
+    // historical `judge_brief_fulfillment` name (no migration churn); the
+    // JSON shape {state, evidence} is unchanged, only its meaning moved from
+    // the parent brief to the winner's assigned case.
+    if let Ok(json) = serde_json::to_string(&verdict.case_fulfillment) {
         let _ = ctx.store.set_judge_brief_fulfillment(run_id, &json).await;
     }
     for l in &lanes {
@@ -2096,9 +2118,9 @@ fn fallback_verdict(validated: &[store::Lane], reason: &str) -> JudgeOutput {
         winner,
         verdict_card: "Winner selected by fallback. Criteria met.".to_owned(),
         reasons: prompts::TextOrList::Text("fallback".to_owned()),
-        brief_fulfillment: BriefFulfillment {
-            state: BriefFulfillmentState::Unverifiable,
-            evidence: format!("fallback judge ({reason}): brief fulfillment not assessed"),
+        case_fulfillment: CaseFulfillment {
+            state: CaseFulfillmentState::Unverifiable,
+            evidence: format!("fallback judge ({reason}): case fulfillment not assessed"),
         },
     }
 }
