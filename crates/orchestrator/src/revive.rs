@@ -371,12 +371,16 @@ mod tests {
     #[tokio::test]
     async fn revive_skips_within_the_cooldown_window() {
         let (store, run_id) = seeded_lane().await;
+        // Seed the prior attempt 10 minutes in the past: inside the 1h
+        // cooldown for the first call, but far outside the 1ms window of the
+        // second — no dependence on how fast the test itself runs.
+        let past = now_ms() - 10 * 60 * 1000;
         store
-            .append_lane_event(&run_id, 0, now_ms(), "run_command", "x")
+            .append_lane_event(&run_id, 0, past, "run_command", "x")
             .await
             .unwrap();
         store
-            .append_lane_event(&run_id, 0, now_ms(), EVENT_REVIVE_FAILED, "earlier attempt")
+            .append_lane_event(&run_id, 0, past, EVENT_REVIVE_FAILED, "earlier attempt")
             .await
             .unwrap();
         let probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
