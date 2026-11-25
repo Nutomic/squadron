@@ -101,6 +101,7 @@ pub fn revive_exec_cmd(workdir: &str, run_command: &str) -> String {
 
 /// The production entry: real SSRF-safe public probe + real sprite exec.
 /// Callers spawn this (background task) so page renders are never blocked.
+#[allow(clippy::too_many_arguments)] // mirrors the pipeline phase-fn convention
 pub async fn revive_lane(
     store: &Store,
     sprite: &SpriteClient,
@@ -147,6 +148,7 @@ pub async fn revive_lane(
 /// Testable core, parameterized over the public probe and the sprite exec so
 /// tests can serve deterministic dead/alive states without the network or
 /// sprite infra.
+#[allow(clippy::too_many_arguments)] // probe/exec closures mirror the callers' shape
 pub async fn revive_lane_if_dead<P, PFut, E, EFut>(
     store: &Store,
     run_id: &str,
