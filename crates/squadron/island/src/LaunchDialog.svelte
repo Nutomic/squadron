@@ -59,7 +59,7 @@
         impl_prompt: c.impl_prompt ?? ''
       }));
       if (cases.length === 0) {
-        error = 'The planner returned no workers — try rephrasing the brief.';
+        error = 'The planner returned no workers — try rephrasing the prompt.';
       }
     } catch (e) {
       if (e?.name === 'AbortError') return;
@@ -170,7 +170,7 @@
           <h2 class="mt-1 text-lg font-semibold tracking-tight">Review the plan</h2>
           <p class="mt-1 text-[13px] text-base-content/60">
             Each worker is one parallel agent — it builds its own variant on an
-            isolated VM. Edit, delete or add workers; a judge crowns the winner.
+            isolated Sprite. Edit, delete or add workers; a judge crowns the winner.
           </p>
         </div>
         <span class="chip chip-no-dot chip-neutral flex-none">{cases.length}/{MAX_WORKERS}</span>

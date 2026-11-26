@@ -109,7 +109,7 @@ async fn index_renders_form_chips_and_dialog_island() {
     assert!(!html.contains(r#"name="n""#), "n_lanes input removed");
     assert!(html.contains("Netscape-era"));
     assert!(html.contains("arcade"));
-    assert!(html.contains("VM product"));
+    assert!(html.contains("Sprite product"));
 }
 
 #[tokio::test]
@@ -335,7 +335,7 @@ async fn run_page_shows_the_full_brief() {
         html.contains(brief),
         "run page must show the full brief: {html}"
     );
-    assert!(html.contains("Brief"), "brief card label: {html}");
+    assert!(html.contains("Prompt"), "prompt card label: {html}");
 }
 
 #[tokio::test]
@@ -1220,7 +1220,7 @@ async fn index_sample_chips_use_complete_short_labels() {
         .unwrap();
     let html = body_string(res.into_body()).await;
     assert!(html.contains("Netscape homepage ×5 colors"));
-    assert!(html.contains("VM marketing site (Svelte or React)"));
+    assert!(html.contains("Sprite marketing site (Svelte or React)"));
     assert!(html.contains("Pong or Tetris or Space Invaders"));
     assert!(
         !html.contains("&gt;..."),
@@ -1239,7 +1239,7 @@ async fn index_helper_line_explains_or_and_count_splitting() {
         .await
         .unwrap();
     let html = body_string(res.into_body()).await;
-    assert!(html.contains(r#"We split "or"s and counts into parallel workers"#));
+    assert!(html.contains(r#"splits "or"s and counts into parallel worker prompts"#));
     assert!(html.contains(r#"text-base-content/65"#));
 }
 
@@ -1255,7 +1255,7 @@ async fn index_meta_and_mobile_nav_present() {
     assert!(html.contains(r#"<meta name="description""#));
     assert!(html.contains(r#"property="og:title""#));
     assert!(html.contains(r#"name="theme-color""#));
-    assert!(html.contains("one brief, N agents, one winner"));
+    assert!(html.contains("one prompt, N agents, one winner"));
     // The lone nav link is visible at all widths (no `hidden sm:flex`).
     assert!(!html.contains("hidden sm:flex"));
 }

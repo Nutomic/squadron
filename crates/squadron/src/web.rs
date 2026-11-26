@@ -41,14 +41,14 @@ fn is_terminal_status(status: &str) -> bool {
 /// "or"-alternatives become one parallel worker per item.
 const SAMPLE_BRIEFS: [&str; 3] = [
     "Build a Netscape-era 1996 homepage in 5 different color schemes.",
-    "Marketing site for a fictional VM product in Svelte or React.",
+    "Marketing site for a fictional Sprite product in Svelte or React.",
     "Make a playable Pong, Tetris, or Space Invaders arcade game.",
 ];
 
 /// Review F15 #3: complete short chip labels (never truncation ellipses).
 const SAMPLE_SHORTS: [&str; 3] = [
     "Netscape homepage ×5 colors",
-    "VM marketing site (Svelte or React)",
+    "Sprite marketing site (Svelte or React)",
     "Pong or Tetris or Space Invaders",
 ];
 
