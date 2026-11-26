@@ -838,10 +838,24 @@ fn decompose_prompt_encodes_the_lane_count_rules() {
         "prompt must carry the or-splitting example: {}",
         prompt.user
     );
-    // rule 2: explicit numbers in the brief win
+    // rule 2: explicit numbers in the brief become parallel lanes
     assert!(
         prompt.user.contains("5 different colors"),
         "prompt must carry the explicit-number example: {}",
+        prompt.user
+    );
+    assert!(
+        prompt
+            .user
+            .contains("EXPLICIT NUMBER = LANE COUNT: a number in the brief (\"a shop with 6 products\", \"5 different colors\") is a request for exactly that many parallel lanes"),
+        "rule 2 must map brief numbers to parallel lanes: {}",
+        prompt.user
+    );
+    assert!(
+        prompt
+            .user
+            .contains("NEVER interpret the number as a spec for one artifact"),
+        "rule 2 must forbid one-artifact readings of a count: {}",
         prompt.user
     );
     // hard cap: never more than 8 cases
@@ -883,6 +897,26 @@ fn decompose_prompt_encodes_the_lane_count_rules() {
             .user
             .contains("never write the [INJECTION?] marker token"),
         "decomposer data rule must use the prose rule: {}",
+        prompt.user
+    );
+}
+
+/// Numbers in briefs must reliably become parallel lanes, not artifact specs:
+/// rule 2 maps a count onto exactly that many lanes and forbids one-artifact
+/// readings of it (the angle names the case's slice).
+#[test]
+fn decompose_prompt_maps_brief_numbers_to_parallel_lanes() {
+    let prompt = prompts::decompose_prompt("a shop with 6 products");
+    let rule2 = "EXPLICIT NUMBER = LANE COUNT: a number in the brief (\"a shop with 6 products\", \"5 different colors\") is a request for exactly that many parallel lanes. Choose the most meaningful axis implied by the noun after the number and split on it (6 products → 6 lanes, one product each; 5 colors → 5 lanes, one color scheme each). NEVER interpret the number as a spec for one artifact. Each case's angle names its slice explicitly (e.g. `Angle: the single red-product storefront.`).";
+    assert!(
+        prompt.user.contains(rule2),
+        "decompose prompt must carry the lane-count rule 2 verbatim: {}",
+        prompt.user
+    );
+    // the old one-artifact reading is gone
+    assert!(
+        !prompt.user.contains("EXPLICIT NUMBER: an explicit count"),
+        "old rule 2 must not survive: {}",
         prompt.user
     );
 }
@@ -1000,6 +1034,31 @@ fn impl_prompt_with_constraints_appends_the_standard_line() {
         prompts::impl_prompt_with_constraints(&with),
         with,
         "double append must be a no-op"
+    );
+}
+
+/// The boilerplate constraints must guard the lane split: a count in the brief
+/// that matches the parallel-lane split means each lane builds only its own
+/// slice as a complete artifact — never all N.
+#[test]
+fn impl_constraints_tell_lanes_to_build_only_their_slice() {
+    let sentence = "If the brief contains a count that matches a parallel-lane split (your angle assigns you one slice of it), build only YOUR slice as a complete, focused artifact — do not build all N.";
+    let with = prompts::impl_prompt_with_constraints("a shop with 6 products — your lane's slice");
+    assert!(
+        with.contains(sentence),
+        "appended constraints must carry the slice guard: {with}"
+    );
+    // it is a standalone sentence appended after the deadline clause, so every
+    // pre-existing constraint clause stays byte-identical
+    let deadline = with
+        .find("finish within a 1 hour deadline")
+        .unwrap_or_default();
+    let guard = with
+        .find("If the brief contains a count")
+        .unwrap_or_default();
+    assert!(
+        deadline < guard,
+        "slice guard must follow the deadline clause as its own sentence: {with}"
     );
 }
 
